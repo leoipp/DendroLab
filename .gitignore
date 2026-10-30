@@ -1,6 +1,7 @@
 .build/
 .archive/
 app/
+/dist/
 **/bin/
 **/obj/
 *.user

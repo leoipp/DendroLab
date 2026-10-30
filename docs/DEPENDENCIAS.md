@@ -14,7 +14,9 @@ A aplicação usa apenas assemblies gerenciados das seguintes bibliotecas:
 | DocumentFormat.OpenXml.Framework | 3.5.1 | Infraestrutura Open XML | MIT |
 
 A publicação copia os avisos e metadados de licença dos pacotes para
-`app/licenses`. O runtime WPF/.NET 10 x64 é instalado separadamente.
+`app/licenses`. Na publicação tradicional `app`, o runtime WPF/.NET 10 x64 é
+instalado separadamente. Os pacotes gerados por `scripts/package.ps1` incluem
+o runtime e seus avisos de licença; consulte [Distribuição](DISTRIBUICAO.md).
 As ferramentas de desenvolvimento/teste não são dependências do aplicativo.
 O ZIP antigo em `.archive` mantém os avisos das bibliotecas C da versão retirada.
 

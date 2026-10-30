@@ -39,6 +39,7 @@ public enum CommandIconKind
     InventoryAudit,
     BiologicalAsset,
     IntegratedCleaning,
+    Updates,
 }
 
 public sealed class CommandIcon : FrameworkElement
@@ -76,6 +77,7 @@ public sealed class CommandIcon : FrameworkElement
     };
     private static readonly Dictionary<CommandIconKind, string[]> Paths = new()
     {
+        [CommandIconKind.Updates] = ["M4 8 A9 9 0 0 1 20 7 M21 3 V8 H16 M20 16 A9 9 0 0 1 4 17 M3 21 V16 H8", "M12 7 V16 M8.5 12.5 L12 16 15.5 12.5"],
         [CommandIconKind.IntegratedCleaning] = ["M2 4 H10 V14 H2 Z M14 10 H22 V20 H14 Z M4 11 L8 7 M16 17 L20 13", "M10 8 H13 Q16 8 16 5 V3 M13 5 L16 2 19 5 M8 18 H11 M9.5 16.5 V19.5"],
         [CommandIconKind.New] = ["M6 3.5 Q6 2.5 7 2.5 H14 L19 7.5 V20 Q19 21.5 17.5 21.5 H7.5 Q6 21.5 6 20 Z M14 2.5 V7.5 H19", "M9 14 H16 M12.5 10.5 V17.5"],
         [CommandIconKind.Open] = ["M3 7.5 Q3 6 4.5 6 H9 L11 8 H19.5 Q21 8 21 9.5 V10 M3 9 V18.5 Q3 20 4.5 20 H18.5 Q20 20 20.3 18.5 L22 11 H7 L5 18", "M12 4 H19 M16 1.5 L19 4 16 6.5"],

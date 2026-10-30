@@ -74,6 +74,7 @@ public partial class MainWindow : Window
         ShowTools();
         Refresh();
         Loaded += (_, _) => RestoreLayout();
+        Loaded += async (_, _) => { if (!App.IsSelfTest) { await Task.Delay(5000); if (!closing) await CheckUpdates(false); } };
         CommandBindings.Add(
             new CommandBinding(ApplicationCommands.Save, async (_, _) => await SaveProject())
         );

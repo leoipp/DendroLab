@@ -39,7 +39,8 @@ Microsoft Excel, Python, Java ou bibliotecas HDF5 nativas para executar o app.
 ## Requisitos
 
 - Windows x64 compatível com WPF e .NET 10.
-- Para executar: **.NET Desktop Runtime 10 x64**.
+- Para executar a publicação tradicional `app`: **.NET Desktop Runtime 10 x64**.
+  Os pacotes ZIP e instalador de `dist` já incluem esse runtime.
 - Para desenvolver: **SDK .NET 10** e PowerShell.
 - Acesso ao NuGet para restaurar as dependências na primeira compilação.
 
@@ -70,6 +71,11 @@ confere os arquivos copiados, preserva a versão anterior em `.build` e inclui
 a licença do produto e os avisos das dependências.
 
 ## Primeiros passos
+
+Para gerar **ZIP com runtime incluído**, **instalador somente para o usuário**
+e publicar versões reconhecidas pelo atualizador do aplicativo, consulte
+[Distribuição e atualizações](docs/DISTRIBUICAO.md). Com os requisitos de
+compilação instalados, use `./scripts/package.ps1 -Version 1.0.0`.
 
 1. Crie e salve um projeto em **Projeto**.
 2. Adicione os dados em **Conteúdos**, escolhendo a tabela/aba e o cabeçalho.

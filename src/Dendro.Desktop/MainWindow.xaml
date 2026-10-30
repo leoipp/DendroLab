@@ -90,6 +90,7 @@
                     Style="{StaticResource RibbonCommand}"
                     Tag="Settings"
                   />
+                  <Button x:Name="UpdateButton" Content="Verificar atualizações" Click="UpdatesClick" Style="{StaticResource RibbonCommand}" Tag="Updates" ToolTip="Verificar novas versões no GitHub Releases" />
                 </WrapPanel>
                 <TextBlock Text="Preferências" Style="{StaticResource RibbonGroupLabel}" />
               </StackPanel>
