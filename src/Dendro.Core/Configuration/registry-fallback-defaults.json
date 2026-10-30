@@ -1,0 +1,1 @@
+{"ativo":false,"coluna_codigo":"","padrao_ano":"[A-Za-z](?<ano>\\d{2})(?:-\\d+[A-Za-z]*)?$","limite_ano_2000":30,"dia_plantio":1,"mes_plantio":6}

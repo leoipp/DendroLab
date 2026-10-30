@@ -1,0 +1,253 @@
+﻿<ResourceDictionary
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="clr-namespace:Dendro.Desktop"
+  xmlns:adc="clr-namespace:AvalonDock.Controls;assembly=AvalonDock"
+>
+  <Style x:Key="RibbonGroupLabel" TargetType="TextBlock">
+    <Setter Property="Foreground" Value="#788B9A" />
+    <Setter Property="FontSize" Value="10.5" />
+    <Setter Property="HorizontalAlignment" Value="Center" />
+    <Setter Property="Margin" Value="0,2,0,0" />
+  </Style>
+  <DataTemplate x:Key="FitLineSwatch">
+    <Border Background="{Binding curve_color}" Height="3" Width="25" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="1" />
+  </DataTemplate>
+  <DataTemplate x:Key="ContentsItemHeader">
+    <DockPanel LastChildFill="True" Margin="0,1">
+      <local:CommandIcon
+        Kind="{Binding Path=(local:ShellVisuals.Icon), RelativeSource={RelativeSource AncestorType=TreeViewItem}}"
+        Width="16"
+        Height="16"
+        Margin="0,0,7,0"
+        DockPanel.Dock="Left"
+      />
+      <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+    </DockPanel>
+  </DataTemplate>
+  <Style TargetType="TreeViewItem">
+    <Setter Property="Padding" Value="4,2" />
+    <Setter Property="Foreground" Value="#304A60" />
+    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+  </Style>
+  <DataTemplate x:Key="PaneTitle">
+    <DockPanel LastChildFill="True">
+      <local:CommandIcon
+        x:Name="Icon"
+        Kind="Contents"
+        Width="16"
+        Height="16"
+        Margin="0,0,6,0"
+        DockPanel.Dock="Left"
+      />
+      <TextBlock
+        x:Name="Title"
+        Text="{Binding Title}"
+        Foreground="#304A60"
+        FontWeight="SemiBold"
+        VerticalAlignment="Center"
+        TextTrimming="CharacterEllipsis"
+      />
+    </DockPanel>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding IsActive}" Value="True">
+        <Setter TargetName="Title" Property="Foreground" Value="White" />
+        <Setter TargetName="Icon" Property="Tint" Value="White" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding ContentId}" Value="tools">
+        <Setter TargetName="Icon" Property="Kind" Value="Tools" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding ContentId}" Value="history">
+        <Setter TargetName="Icon" Property="Kind" Value="History" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding ContentId}" Value="regression-models">
+        <Setter TargetName="Icon" Property="Kind" Value="Regression" />
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+  <Style x:Key="RoundedAnchorable" TargetType="adc:LayoutAnchorableControl">
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="adc:LayoutAnchorableControl">
+          <local:RoundedPanel
+            x:Name="PaneFrame"
+            CornerRadius="10"
+            Background="White"
+            BorderBrush="#D5DFE9"
+            BorderThickness="1"
+            Margin="4,3"
+            SnapsToDevicePixels="True"
+          >
+            <Grid>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+              </Grid.RowDefinitions>
+              <Border
+                x:Name="Header"
+                Background="#F5F8FB"
+                BorderBrush="#E4EAF1"
+                BorderThickness="0,0,0,1"
+              >
+                <adc:AnchorablePaneTitle
+                  Model="{Binding Model,RelativeSource={RelativeSource TemplatedParent}}"
+                  Foreground="#304A60"
+                  Background="Transparent"
+                  BorderThickness="0"
+                  BorderBrush="Transparent"
+                  Margin="7,2,4,2"
+                  MinHeight="27"
+                />
+              </Border>
+              <ContentPresenter
+                Grid.Row="1"
+                Content="{Binding LayoutItem.View,RelativeSource={RelativeSource TemplatedParent}}"
+                ContentTemplate="{Binding LayoutItem.View.ContentTemplate,RelativeSource={RelativeSource TemplatedParent}}"
+                ContentTemplateSelector="{Binding LayoutItem.View.ContentTemplateSelector,RelativeSource={RelativeSource TemplatedParent}}"
+                FlowDirection="{TemplateBinding FlowDirection}"
+              />
+            </Grid>
+          </local:RoundedPanel>
+          <ControlTemplate.Triggers>
+            <DataTrigger Binding="{Binding Model.IsActive,RelativeSource={RelativeSource Self}}" Value="True">
+              <Setter TargetName="Header" Property="Background" Value="#21669D" />
+              <Setter TargetName="Header" Property="BorderBrush" Value="#21669D" />
+              <Setter TargetName="PaneFrame" Property="BorderBrush" Value="#21669D" />
+            </DataTrigger>
+            <MultiDataTrigger>
+              <MultiDataTrigger.Conditions>
+                <Condition
+                  Binding="{Binding Model.IsFloating,RelativeSource={RelativeSource Self}}"
+                  Value="True"
+                />
+                <Condition
+                  Binding="{Binding Model.Parent.IsDirectlyHostedInFloatingWindow,RelativeSource={RelativeSource Self}}"
+                  Value="True"
+                />
+              </MultiDataTrigger.Conditions>
+              <Setter TargetName="Header" Property="Visibility" Value="Collapsed" />
+            </MultiDataTrigger>
+            <DataTrigger
+              Binding="{Binding Model,RelativeSource={RelativeSource Self}}"
+              Value="{x:Null}"
+            >
+              <Setter TargetName="Header" Property="Visibility" Value="Collapsed" />
+            </DataTrigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <DataTemplate x:Key="ToolCard">
+    <Grid>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="48" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="18" />
+      </Grid.ColumnDefinitions>
+      <Border Background="#F3F5FA" BorderBrush="#E3E8F0" BorderThickness="1" CornerRadius="10" Width="38" Height="40" VerticalAlignment="Top">
+        <local:CommandIcon
+          Kind="{Binding Path=(local:ShellVisuals.Icon),RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+          Width="24"
+          Height="24"
+        />
+      </Border>
+      <DockPanel Grid.Column="1" Margin="4,1,5,0" VerticalAlignment="Center">
+        <local:HelpIcon x:Name="Description" DockPanel.Dock="Right" />
+        <TextBlock Text="{Binding}" FontWeight="SemiBold" Foreground="#26465F" FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap" />
+      </DockPanel>
+      <Path
+        Grid.Column="2"
+        Data="M0,0 L4,4 L0,8"
+        Stroke="#7990A3"
+        StrokeThickness="1.4"
+        VerticalAlignment="Center"
+        HorizontalAlignment="Center"
+      />
+    </Grid>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding}" Value="Fronteira de eficiência"><Setter TargetName="Description" Property="Text" Value="Calcular envelopes por extremos, percentis ou médias de cauda" /></DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="ICA e IMA"><Setter TargetName="Description" Property="Text" Value="Verificar incrementos e culminação das curvas" /></DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Identidade de modelos"><Setter TargetName="Description" Property="Text" Value="Comparar uma equação comum com ajustes por grupo" /></DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Testes estatísticos"><Setter TargetName="Description" Property="Text" Value="Testes t, F, ANOVA e Brown–Forsythe" /></DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Processador">
+        <Setter
+          TargetName="Description"
+          Property="Text"
+          Value="Processar inventários e gerar relatórios"
+        />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Gráficos">
+        <Setter
+          TargetName="Description"
+          Property="Text"
+          Value="Explorar dados em gráficos de dispersão"
+        />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Regressões 1P">
+        <Setter
+          TargetName="Description"
+          Property="Text"
+          Value="Ajustar e comparar modelos em um gráfico"
+        />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Juntar tabelas">
+        <Setter TargetName="Description" Property="Text" Value="Reunir dados de várias tabelas" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Estratificar">
+        <Setter
+          TargetName="Description"
+          Property="Text"
+          Value="Separar uma tabela em grupos e filtrar dados"
+        />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Gerar coluna">
+        <Setter TargetName="Description" Property="Text" Value="Calcular novas colunas com expressões, trechos de texto e condições SE" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Comparar curvas de produção">
+        <Setter TargetName="Description" Property="Text" Value="Comparar ajustes anuais com curvas vigentes e avaliar previsões na mesma base" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Isolation Forest">
+        <Setter TargetName="Description" Property="Text" Value="Treinar modelos de anomalias, aplicar em tabelas e visualizar escores" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Revisão de inventário">
+        <Setter TargetName="Description" Property="Text" Value="Revisar versões IFC/IFPC, aplicar fatores, aprovar e exportar para colheita" />
+      </DataTrigger>
+    </DataTemplate.Triggers>
+  </DataTemplate>
+  <Style x:Key="ToolCardItem" TargetType="ListBoxItem">
+    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    <Setter Property="ContentTemplate" Value="{StaticResource ToolCard}" />
+    <Setter Property="Margin" Value="0,0,0,7" />
+    <Setter Property="Cursor" Value="Hand" />
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ListBoxItem">
+          <Border
+            x:Name="Card"
+            Background="White"
+            BorderBrush="#E0E7EE"
+            BorderThickness="1"
+            CornerRadius="12"
+            Padding="12"
+          >
+            <ContentPresenter />
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Card" Property="Background" Value="#F2F7FC" />
+              <Setter TargetName="Card" Property="BorderBrush" Value="#A9C5DD" />
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+              <Setter TargetName="Card" Property="Background" Value="#E8F2FB" />
+              <Setter TargetName="Card" Property="BorderBrush" Value="#4083B4" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Opacity" Value="0.5" />
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+</ResourceDictionary>

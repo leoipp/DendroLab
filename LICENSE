@@ -1,0 +1,70 @@
+DENDROLAB — LICENÇA PROPRIETÁRIA RESTRITIVA
+Versão 1.0 — 30 de outubro de 2026
+
+Copyright (c) 2026 leoipp. Todos os direitos reservados.
+
+1. TITULARIDADE E ESCOPO
+O código-fonte, os executáveis, a documentação, os elementos gráficos e os
+demais materiais originais do DendroLab são protegidos por direitos autorais.
+Esta licença se aplica apenas aos materiais sobre os quais leoipp detém
+direitos e não altera as licenças dos componentes de terceiros.
+
+2. AUSÊNCIA DE AUTORIZAÇÃO AUTOMÁTICA
+A disponibilização, o acesso ao repositório ou a posse de uma cópia não
+concedem licença de uso, execução, compilação, reprodução, modificação,
+distribuição, sublicenciamento, exploração comercial ou criação de obras
+derivadas. Essas atividades dependem de autorização prévia, expressa e por
+escrito de leoipp, nos limites e pelo prazo nela definidos.
+
+3. RESTRIÇÕES
+Sem a autorização prevista na cláusula 2, é proibido, inclusive para fins
+internos, educacionais, científicos, gratuitos ou comerciais:
+a) instalar, compilar, executar ou utilizar o DendroLab ou parte dele;
+b) copiar, adaptar, traduzir, incorporar, redistribuir ou publicar seus
+   materiais, ou criar e disponibilizar versões modificadas;
+c) vender, alugar, licenciar, sublicenciar ou fornecer o software como serviço,
+   componente de outro produto ou serviço de processamento para terceiros;
+d) extrair ou reutilizar seus algoritmos, interfaces, documentação ou modelos
+   originais em outros produtos, inclusive no treinamento ou ajuste de IA;
+e) remover, ocultar ou alterar avisos de autoria, restrições ou licenciamento;
+f) usar o nome, a identidade visual ou as marcas do projeto para sugerir
+   autorização, associação, patrocínio ou aprovação do titular.
+
+4. REPOSITÓRIO E DIREITOS INDISPONÍVEIS
+Esta é uma licença proprietária; o DendroLab não é software de código aberto.
+Nenhuma disposição elimina direitos ou exceções que a legislação aplicável
+não permita restringir. Permanecem preservadas as permissões estritamente
+necessárias para visualizar o repositório e criar forks dentro do GitHub,
+quando concedidas pelos Termos de Serviço da plataforma. Essas permissões
+não concedem autorização adicional para usar, executar, distribuir fora
+dessas condições, comercializar ou explorar o DendroLab.
+
+5. AUTORIZAÇÕES ESPECÍFICAS
+Uma autorização escrita deve identificar o autorizado, as atividades
+permitidas, o prazo e, quando aplicável, as condições de distribuição e uso
+comercial. O silêncio, o acesso público, contribuições ou a ausência de
+cobrança não constituem autorização. Nenhum direito sobre marcas ou patentes
+é concedido implicitamente.
+
+6. COMPONENTES DE TERCEIROS
+Dependências e materiais de terceiros continuam regidos exclusivamente por
+suas próprias licenças e avisos. Consulte docs/DEPENDENCIAS.md, docs/licenses
+e os avisos incluídos na distribuição. Esta licença não restringe direitos
+concedidos diretamente pelos titulares desses componentes.
+
+7. GARANTIAS E RESPONSABILIDADE
+Na máxima extensão permitida pela legislação aplicável, os materiais são
+fornecidos no estado em que se encontram, sem garantias de funcionamento,
+adequação a finalidade específica ou ausência de erros. Eventual autorização
+de uso não substitui a validação técnica dos dados e resultados. A
+responsabilidade do titular fica limitada na extensão legalmente permitida;
+direitos e responsabilidades inderrogáveis permanecem preservados.
+
+8. DESCUMPRIMENTO
+O descumprimento destas condições não amplia qualquer autorização concedida
+e permite ao titular exercer as medidas legais cabíveis. O término de uma
+autorização não concede direito de continuar a usar ou distribuir os materiais.
+
+9. SOLICITAÇÕES
+Pedidos de autorização devem ser dirigidos a leoipp pelo perfil ou pelos
+canais de contato informados em https://github.com/leoipp.

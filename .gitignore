@@ -1,0 +1,47 @@
+.build/
+.archive/
+app/
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# Ambientes e conteúdo local
+/.idea/
+/.vs/
+/.vscode/
+/projects/
+/outputs/
+TestResults/
+*.log
+*.tmp
+*.bak
+*.write.lock
+
+# Dados de usuários, resultados e modelos externos
+*.dendro
+*.dlb
+*.dendrodb
+*.xlsx
+*.xls
+*.csv
+*.h5
+*.hdf5
+*.keras
+*.pkl
+*.zip
+*.7z
+*.rar
+
+# Fixtures portáveis necessárias aos testes
+!tests/fixtures/**
+# Amostra externa não utilizada na suíte
+/tests/fixtures/libxls-test2.xls
+
+# Credenciais e certificados locais
+.env
+.env.*
+*.pfx
+*.p12
+*.pem
+*.key

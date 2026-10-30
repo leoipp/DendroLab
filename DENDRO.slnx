@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Dendro.Core/Dendro.Core.csproj" />
+    <Project Path="src/Dendro.Desktop/Dendro.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Dendro.Benchmarks/Dendro.Benchmarks.csproj" />
+    <Project Path="tests/Dendro.Core.Tests/Dendro.Core.Tests.csproj" />
+  </Folder>
+</Solution>

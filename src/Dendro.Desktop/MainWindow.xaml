@@ -1,0 +1,288 @@
+<Window
+  x:Class="Dendro.Desktop.MainWindow"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:ad="https://github.com/Dirkster99/AvalonDock"
+  xmlns:local="clr-namespace:Dendro.Desktop"
+  xmlns:themes="clr-namespace:AvalonDock.Themes;assembly=AvalonDock.Themes.VS2013"
+  xmlns:adc="clr-namespace:AvalonDock.Controls;assembly=AvalonDock"
+  FontFamily="Segoe UI"
+  FontSize="13"
+  Foreground="#263D52"
+  Title="DendroLab"
+  Icon="Assets/logo.ico"
+  Width="1500"
+  Height="1000"
+  MinWidth="1050"
+  MinHeight="680"
+  Closing="OnClosing"
+  AllowDrop="True"
+  Drop="OnDrop"
+  UseLayoutRounding="True"
+>
+  <DockPanel>
+    <Border x:Name="RibbonHost" DockPanel.Dock="Top" Background="White" BorderBrush="#DBE3EC" BorderThickness="0,0,0,1" MouseLeave="RibbonMouseLeave">
+      <DockPanel>
+        <Button x:Name="RibbonPin" DockPanel.Dock="Right" Click="RibbonPinClick" VerticalAlignment="Top" Width="22" Height="22" Margin="5,8,8,0" Padding="0" ToolTip="Desafixar menu (Ctrl+F1)" AutomationProperties.Name="Desafixar menu">
+          <Button.Resources>
+            <ResourceDictionary Source="/AvalonDock.Themes.VS2013;component/Themes/Icons/IconGeometry.xaml" />
+          </Button.Resources>
+          <Button.Template>
+            <ControlTemplate TargetType="Button">
+              <Border x:Name="PinBackground" Background="Transparent" CornerRadius="2">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="PinBackground" Property="Background" Value="#E5EFF7" /></Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="PinBackground" Property="Background" Value="#E5EFF7" /></Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Button.Template>
+          <Path x:Name="RibbonPinGlyph" Data="{StaticResource PinAutoHide}" Fill="#304A60" Width="10" Height="10" Stretch="Uniform" />
+        </Button>
+        <TabControl x:Name="Ribbon" Height="152" BorderThickness="0" PreviewMouseLeftButtonUp="RibbonTabClick" SelectionChanged="RibbonTabChanged" ClipToBounds="True">
+          <TabItem Header="Projeto">
+            <StackPanel Orientation="Horizontal" Margin="9,4">
+              <StackPanel>
+                <WrapPanel>
+                  <Button
+                    Content="Novo projeto"
+                    Click="NewClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="New"
+                  />
+                  <Button
+                    Content="Abrir projeto"
+                    Click="OpenClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="Open"
+                  />
+                </WrapPanel>
+                <TextBlock Text="Arquivo" Style="{StaticResource RibbonGroupLabel}" />
+              </StackPanel>
+              <Border Width="1" Background="#E5EBF1" Margin="10,7,10,0" />
+              <StackPanel>
+                <WrapPanel>
+                  <Button
+                    x:Name="SaveButton"
+                    Content="Salvar"
+                    Click="SaveClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="Save"
+                  />
+                  <Button
+                    x:Name="SaveAsButton"
+                    Content="Salvar como…"
+                    Click="SaveAsClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="SaveAs"
+                  />
+                </WrapPanel>
+                <TextBlock Text="Salvar projeto" Style="{StaticResource RibbonGroupLabel}" />
+              </StackPanel>
+              <Border Width="1" Background="#E5EBF1" Margin="10,7,10,0" />
+              <StackPanel>
+                <WrapPanel>
+                  <Button
+                    x:Name="SettingsButton"
+                    Content="Configurações"
+                    Click="SettingsClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="Settings"
+                  />
+                </WrapPanel>
+                <TextBlock Text="Preferências" Style="{StaticResource RibbonGroupLabel}" />
+              </StackPanel>
+            </StackPanel>
+          </TabItem>
+          <TabItem Header="Inventário">
+            <StackPanel HorizontalAlignment="Left" Margin="9,4">
+              <WrapPanel>
+                <Button
+                  x:Name="VolumeButton"
+                  Content="Modelos volumétricos"
+                  Click="VolumeClick"
+                  Style="{StaticResource RibbonCommand}"
+                  Tag="Volume"
+                />
+                <Button
+                  x:Name="GrowthButton"
+                  Content="Crescimento e produção"
+                  Click="GrowthClick"
+                  Style="{StaticResource RibbonCommand}"
+                  Tag="Growth"
+                />
+              </WrapPanel>
+              <TextBlock Text="Modelagem florestal" Style="{StaticResource RibbonGroupLabel}" />
+            </StackPanel>
+          </TabItem>
+          <TabItem Header="Exibir">
+            <StackPanel Orientation="Horizontal" Margin="9,4">
+              <StackPanel>
+                <WrapPanel>
+                  <Button
+                    Content="Conteúdos"
+                    Click="ContentsClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="Contents"
+                  />
+                  <Button
+                    Content="Ferramentas"
+                    Click="ToolsClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="Tools"
+                  />
+                  <Button
+                    Content="Histórico"
+                    Click="HistoryClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="History"
+                  />
+                  <Button Content="Modelos do ajuste" Click="RegressionModelsClick" Style="{StaticResource RibbonCommand}" Tag="Regression" />
+                  <Button Content="Dados do ajuste" Click="RegressionDataClick" Style="{StaticResource RibbonCommand}" Tag="Contents" />
+                </WrapPanel>
+                <TextBlock Text="Painéis" Style="{StaticResource RibbonGroupLabel}" />
+              </StackPanel>
+              <Border Width="1" Background="#E5EBF1" Margin="10,7,10,0" />
+              <StackPanel>
+                <WrapPanel>
+                  <Button
+                    Content="Restaurar layout"
+                    Click="ResetLayoutClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="Layout"
+                  />
+                </WrapPanel>
+                <TextBlock Text="Área de trabalho" Style="{StaticResource RibbonGroupLabel}" />
+              </StackPanel>
+            </StackPanel>
+          </TabItem>
+        </TabControl>
+      </DockPanel>
+    </Border>
+    <Border DockPanel.Dock="Bottom" Height="38" Background="#F5F8FB" BorderBrush="#DBE3EC" BorderThickness="0,1,0,0" Padding="12,0">
+      <Grid HorizontalAlignment="Stretch">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <TextBlock x:Name="StatusText" Text="Crie ou abra um projeto para começar." TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="#526D84" />
+        <StackPanel x:Name="ProgressDisplay" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="18,0" Visibility="Collapsed">
+          <ProgressBar x:Name="Progress" Style="{StaticResource StatusProgress}" Width="230" Height="10" Minimum="0" Maximum="100" VerticalAlignment="Center" />
+          <TextBlock x:Name="ProgressPercent" Text="0%" Width="42" TextAlignment="Right" VerticalAlignment="Center" Margin="8,0,0,0" FontWeight="SemiBold" Foreground="#3C607D" />
+        </StackPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+          <local:Flags />
+          <Button x:Name="CancelOperationButton" Content="Cancelar" Visibility="Collapsed" Click="CancelOperationClick" Margin="10,0,0,0" Padding="9,2" />
+        </StackPanel>
+      </Grid>
+    </Border>
+    <ad:DockingManager
+      x:Name="DockManager"
+      Background="#EBF0F5"
+      AnchorableTitleTemplate="{StaticResource PaneTitle}"
+      AnchorableHeaderTemplate="{StaticResource PaneTitle}"
+    >
+      <ad:DockingManager.Resources>
+        <Style
+          TargetType="adc:LayoutAnchorableControl"
+          BasedOn="{StaticResource RoundedAnchorable}"
+        />
+      </ad:DockingManager.Resources>
+      <ad:DockingManager.Theme>
+        <themes:Vs2013LightTheme />
+      </ad:DockingManager.Theme>
+      <ad:LayoutRoot>
+        <ad:LayoutPanel Orientation="Vertical">
+          <ad:LayoutPanel Orientation="Horizontal">
+            <ad:LayoutAnchorablePane DockWidth="265">
+              <ad:LayoutAnchorable
+                x:Name="ContentsPane"
+                Title="Conteúdos"
+                ContentId="contents"
+                CanClose="False"
+                CanHide="True"
+              >
+                <DockPanel Background="White">
+                  <StackPanel DockPanel.Dock="Top" Margin="10">
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                      <local:CommandIcon Kind="Search" Width="14" Height="14" Margin="0,0,5,0" />
+                      <TextBlock Text="Pesquisar conteúdos" Foreground="#6D8296" FontSize="11" />
+                    </StackPanel>
+                    <TextBox
+                      x:Name="ContentSearch"
+                      ToolTip="Pesquisar conteúdos"
+                      TextChanged="ContentSearchChanged"
+                    />
+                  </StackPanel>
+                  <TreeView
+                    x:Name="ContentsTree"
+                    VirtualizingStackPanel.IsVirtualizing="True"
+                    VirtualizingStackPanel.VirtualizationMode="Recycling"
+                    BorderThickness="0"
+                    Margin="6"
+                    MouseDoubleClick="TreeDoubleClick"
+                    PreviewKeyDown="ContentsKeyDown"
+                  />
+                </DockPanel>
+              </ad:LayoutAnchorable>
+            </ad:LayoutAnchorablePane>
+            <ad:LayoutDocumentPane x:Name="Documents" />
+            <ad:LayoutAnchorablePane DockWidth="370">
+              <ad:LayoutAnchorable
+                x:Name="ToolsPane"
+                Title="Ferramentas"
+                ContentId="tools"
+                CanClose="False"
+                CanHide="True"
+              >
+                <DockPanel Background="White">
+                  <StackPanel DockPanel.Dock="Top" Margin="10">
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                      <local:CommandIcon Kind="Search" Width="14" Height="14" Margin="0,0,5,0" />
+                      <TextBlock Text="Pesquisar ferramentas" Foreground="#6D8296" FontSize="11" />
+                    </StackPanel>
+                    <TextBox
+                      x:Name="ToolSearch"
+                      ToolTip="Pesquisar ferramentas"
+                      TextChanged="ToolSearchChanged"
+                    />
+                  </StackPanel>
+                  <ContentControl x:Name="ToolContent" />
+                </DockPanel>
+              </ad:LayoutAnchorable>
+            </ad:LayoutAnchorablePane>
+          </ad:LayoutPanel>
+          <ad:LayoutAnchorablePane DockHeight="150">
+            <ad:LayoutAnchorable
+              x:Name="HistoryPane"
+              Title="Histórico"
+              ContentId="history"
+              CanClose="False"
+              CanHide="True"
+            >
+              <DockPanel Background="White">
+                <Button
+                  DockPanel.Dock="Top"
+                  Content="Limpar histórico"
+                  HorizontalAlignment="Right"
+                  Click="ClearHistoryClick"
+                />
+                <TextBox
+                  x:Name="HistoryText"
+                  IsReadOnly="True"
+                  AcceptsReturn="True"
+                  TextWrapping="Wrap"
+                  BorderThickness="0"
+                  VerticalScrollBarVisibility="Auto"
+                  Margin="8"
+                />
+              </DockPanel>
+            </ad:LayoutAnchorable>
+          </ad:LayoutAnchorablePane>
+        </ad:LayoutPanel>
+      </ad:LayoutRoot>
+    </ad:DockingManager>
+  </DockPanel>
+</Window>

@@ -1,0 +1,16 @@
+* text=auto eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.props text eol=lf
+*.slnx text eol=lf
+*.xaml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ps1 text eol=crlf
+LICENSE text eol=lf
+*.png binary
+*.ico binary
+*.xlsx binary
+*.xls binary
+*.keras binary
+*.pkl binary

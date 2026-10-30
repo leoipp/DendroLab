@@ -1,0 +1,264 @@
+[
+  { "default": "Cova", "type": 0, "page": 6, "path": "arquivo_entrada.colunas.cova", "label": "Coluna de cova (histórico completo)" },
+  { "default": "Fuste", "type": 0, "page": 6, "path": "arquivo_entrada.colunas.fuste", "label": "Coluna de fuste (histórico completo)" },
+  { "default": "Fila", "type": 0, "page": 6, "path": "arquivo_entrada.colunas.fila", "label": "Coluna de fila (histórico completo)" },
+  {
+    "default": "Talhão",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.chave",
+    "label": "Chave de ligação do inventário"
+  },
+  {
+    "default": "Talhão",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.talhao",
+    "label": "Coluna de talhão"
+  },
+  {
+    "default": "Parcela",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.parcela",
+    "label": "Coluna de parcela"
+  },
+  {
+    "default": "Lote",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.lote",
+    "label": "Coluna de lote"
+  },
+  {
+    "default": "DAP",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.dap",
+    "label": "Coluna de DAP"
+  },
+  {
+    "default": "H",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.altura",
+    "label": "Coluna de altura"
+  },
+  {
+    "default": "Data",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.data_medicao",
+    "label": "Coluna de data da medição"
+  },
+  {
+    "default": "Compr",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.comprimento_parcela",
+    "label": "Comprimento da parcela"
+  },
+  {
+    "default": "Larg",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.largura_parcela",
+    "label": "Largura da parcela"
+  },
+  {
+    "default": "Dec_Compr",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.declinacao_comprimento",
+    "label": "Declinação no comprimento"
+  },
+  {
+    "default": "Dec_Larg",
+    "type": 0,
+    "page": 6,
+    "path": "arquivo_entrada.colunas.declinacao_largura",
+    "label": "Declinação na largura"
+  },
+  {
+    "default": "Talhão",
+    "type": 0,
+    "page": 4,
+    "path": "cadastro.chave",
+    "label": "Chave de ligação do cadastro"
+  },
+  {
+    "default": "Data de Plantio",
+    "type": 0,
+    "page": 4,
+    "path": "cadastro.colunas.data_plantio",
+    "label": "Coluna de data do plantio"
+  },
+  {
+    "default": "Área efetiva (ha)",
+    "type": 0,
+    "page": 4,
+    "path": "cadastro.colunas.area_efetiva",
+    "label": "Coluna de área efetiva (ha)"
+  },
+  {
+    "default": 15.0,
+    "type": 1,
+    "page": 7,
+    "path": "volume.idade_limite_equacao_geral",
+    "label": "Idade limite da equação geral (anos)"
+  },
+  {
+    "default": false,
+    "type": 2,
+    "page": 7,
+    "path": "estatisticas.chave_temporal_ativa",
+    "label": "Separar resumos por ano da medição"
+  },
+  {
+    "default": 0.95,
+    "type": 1,
+    "page": 7,
+    "path": "estatisticas.nivel_confianca",
+    "label": "Nível de confiança (0 a 1)"
+  },
+  {
+    "default": 3.0,
+    "type": 1,
+    "page": 7,
+    "path": "estatisticas.min_parcelas_estatistica",
+    "label": "Mínimo de parcelas para estatísticas"
+  },
+  {
+    "default": 10.0,
+    "type": 1,
+    "page": 7,
+    "path": "estatisticas.erro_maximo_alerta",
+    "label": "Erro relativo para alerta (%)"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 7,
+    "path": "comparativo_ifc.ativo",
+    "label": "Comparar com as curvas de crescimento"
+  },
+  {
+    "default": 5.0,
+    "type": 1,
+    "page": 7,
+    "path": "comparativo_ifc.limiares.verde",
+    "label": "Limite verde da diferença IFC (%)"
+  },
+  {
+    "default": 15.0,
+    "type": 1,
+    "page": 7,
+    "path": "comparativo_ifc.limiares.amarelo",
+    "label": "Limite amarelo da diferença IFC (%)"
+  },
+  {
+    "default": "Plantio dentro do esperado",
+    "type": 0,
+    "page": 7,
+    "path": "comparativo_ifc.descricao.verde",
+    "label": "Descrição da faixa verde"
+  },
+  {
+    "default": "Atenção necessária",
+    "type": 0,
+    "page": 7,
+    "path": "comparativo_ifc.descricao.amarelo",
+    "label": "Descrição da faixa amarela"
+  },
+  {
+    "default": "Investigar causas",
+    "type": 0,
+    "page": 7,
+    "path": "comparativo_ifc.descricao.vermelho",
+    "label": "Descrição da faixa vermelha"
+  },
+  {
+    "default": "_DENDRO",
+    "type": 0,
+    "page": 8,
+    "path": "saida.sufixo_arquivo",
+    "label": "Sufixo do arquivo de saída"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.resultado_arvore",
+    "label": "Exportar resultado por árvore"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.resumo_bylote",
+    "label": "Exportar resumo por lote"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.ajustado",
+    "label": "Exportar AJUSTADO"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.h_ajuste",
+    "label": "Exportar H Ajuste"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.resumo_byplot",
+    "label": "Exportar resumo por parcela"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.resumo_bytalhao",
+    "label": "Exportar resumo por talhão"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.estatisticas_inv",
+    "label": "Exportar estatísticas do inventário"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.graficos",
+    "label": "Exportar gráficos"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.modelos_aplicados",
+    "label": "Exportar auditoria dos modelos"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.informacoes",
+    "label": "Exportar informações do processamento"
+  },
+  {
+    "default": true,
+    "type": 2,
+    "page": 8,
+    "path": "saida.sheets.calculos",
+    "label": "Exportar CALCULOS quando debug ativo"
+  }
+]

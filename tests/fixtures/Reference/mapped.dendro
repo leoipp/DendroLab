@@ -1,0 +1,194 @@
+{
+	"_dendro":	{
+		"format":	"DENDRO_PROJECT",
+		"version":	1,
+		"name":	"Relatório",
+		"files":	[],
+		"input":	"",
+		"registry":	"",
+		"output":	"",
+		"sheet":	""
+	},
+	"arquivo_entrada":	{
+		"chave":	"Campo inventário 0",
+		"colunas":	{
+			"talhao":	"Campo inventário 0",
+			"parcela":	"Campo inventário 1",
+			"lote":	"Campo inventário 2",
+			"dap":	"Campo inventário 3",
+			"altura":	"Campo inventário 4",
+			"data_medicao":	"Campo inventário 5",
+			"comprimento_parcela":	"Campo inventário 6",
+			"largura_parcela":	"Campo inventário 7",
+			"declinacao_comprimento":	"Campo inventário 8",
+			"declinacao_largura":	"Campo inventário 9"
+		}
+	},
+	"cadastro":	{
+		"worksheet":	"Data",
+		"chave":	"Campo cadastro 0",
+		"colunas":	{
+			"data_plantio":	"Campo cadastro 1",
+			"area_efetiva":	"Campo cadastro 2"
+		}
+	},
+	"ajuste_altura":	{
+		"h_mode":	"KEEP_FILE",
+		"ativo":	false,
+		"debug":	true,
+		"por_lote":	true,
+		"fallback_rna_geral":	true,
+		"modelo_geral":	{
+			"caminho":	""
+		},
+		"features":	["SubRegião", "Regime", "DAP", "Código", "Mín. de DAP", "Média de DAP", "Máx. de DAP", "Mín. de H", "Média de H", "Máx. de H", "Idade_m", "AS", "DAP/ Média de DAP", "DAP/ Máx. de DAP"],
+		"finetune":	{
+			"min_amostras_bias":	1,
+			"min_amostras_linear":	10,
+			"min_amostras_finetune":	30,
+			"epochs":	300,
+			"learning_rate":	0.0001,
+			"patience":	15,
+			"batch_size":	32,
+			"ridge_alpha":	10
+		},
+		"rede_neural":	{
+			"epochs":	300,
+			"batch_size":	32,
+			"patience":	30,
+			"n_splits":	5,
+			"learning_rate":	0.0001,
+			"camadas":	[16],
+			"ativacao":	"linear",
+			"min_amostras_treino":	10
+		},
+		"variaveis_customizadas":	[{
+				"nome":	"Idade_m",
+				"tipo":	"data_diff_meses",
+				"col_data1":	"data_medicao",
+				"col_data2":	"data_plantio"
+			}, {
+				"nome":	"DAP/ Média de DAP",
+				"formula":	"DAP/ Média de DAP"
+			}, {
+				"nome":	"DAP/ Máx. de DAP",
+				"formula":	"DAP / Máx. de DAP"
+			}, {
+				"nome":	"SubRegião",
+				"formula":	"Talhão[4:6]"
+			}, {
+				"nome":	"Regime",
+				"formula":	"np.where(np.isin(Lote[11:12], ['R','J','K','L','M','N','O']), 'Talhadia', 'Alto Fuste')"
+			}, {
+				"nome":	"G",
+				"formula":	"soma(AS)"
+			}],
+		"estatisticas_parcela":	[{
+				"nome":	"Média de DAP",
+				"coluna":	"DAP",
+				"funcao":	"mean",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Máx. de DAP",
+				"coluna":	"DAP",
+				"funcao":	"max"
+			}, {
+				"nome":	"Mín. de DAP",
+				"coluna":	"DAP",
+				"funcao":	"min",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Máx. de H",
+				"coluna":	"H",
+				"funcao":	"max",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Média de H",
+				"coluna":	"H",
+				"funcao":	"mean",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Mín. de H",
+				"coluna":	"H",
+				"funcao":	"min",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Gini_DAP",
+				"coluna":	"DAP",
+				"funcao":	"gini",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Homog_DAP",
+				"formula":	"1 - Gini_DAP"
+			}, {
+				"nome":	"AS",
+				"formula":	"pi()*(DAP/10)^2/40000"
+			}]
+	},
+	"volume":	{
+		"idade_limite_equacao_geral":	15,
+		"equacoes":	[{
+				"codigo":	"AL1R",
+				"b0":	0,
+				"b1":	1,
+				"b2":	1
+			}]
+	},
+	"estatisticas":	{
+		"chave_temporal_ativa":	false,
+		"nivel_confianca":	0.95,
+		"min_parcelas_estatistica":	2,
+		"erro_maximo_alerta":	10
+	},
+	"comparativo_ifc":	{
+		"ativo":	true,
+		"limiares":	{
+			"verde":	5,
+			"amarelo":	15
+		},
+		"descricao":	{
+			"verde":	"Plantio dentro do esperado",
+			"amarelo":	"Atenção necessária",
+			"vermelho":	"Investigar causas"
+		}
+	},
+	"saida":	{
+		"sufixo_arquivo":	"_DENDRO",
+		"sheets":	{
+			"ajustado":	true,
+			"h_ajuste":	false,
+			"resumo_byplot":	true,
+			"resumo_bytalhao":	true,
+			"estatisticas_inv":	true,
+			"graficos":	false,
+			"modelos_aplicados":	true,
+			"informacoes":	true,
+			"calculos":	true
+		}
+	},
+	"curvas_crescimento":	{
+		"equacoes":	[{
+				"codigo":	"AL1R",
+				"modelo":	"gompertz",
+				"ano":	2024,
+				"b0":	300,
+				"b1":	1,
+				"b2":	0.03,
+				"vigente":	true,
+				"formula":	"b0 * exp(-exp(b1 - b2*t))",
+				"modelo_nome":	"Gompertz",
+				"unidade_idade":	"meses"
+			}, {
+				"codigo":	"AL1R",
+				"modelo":	"logistica",
+				"ano":	2026,
+				"b0":	900,
+				"b1":	2,
+				"b2":	0.04,
+				"vigente":	false,
+				"formula":	"b0 / (1 + exp(b1 - b2*t))",
+				"modelo_nome":	"Logística",
+				"unidade_idade":	"meses"
+			}]
+	}
+}

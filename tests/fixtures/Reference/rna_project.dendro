@@ -1,0 +1,158 @@
+{
+	"_dendro":	{
+		"format":	"DENDRO_PROJECT",
+		"version":	1,
+		"name":	"RNA test",
+		"files":	[],
+		"input":	"",
+		"registry":	"",
+		"output":	"",
+		"sheet":	""
+	},
+	"arquivo_entrada":	{
+		"chave":	"Talhão",
+		"colunas":	{
+			"talhao":	"Talhão",
+			"parcela":	"Parcela",
+			"lote":	"Lote",
+			"dap":	"DAP",
+			"altura":	"H",
+			"data_medicao":	"Data",
+			"comprimento_parcela":	"Compr",
+			"largura_parcela":	"Larg",
+			"declinacao_comprimento":	"Dec_Compr",
+			"declinacao_largura":	"Dec_Larg"
+		}
+	},
+	"cadastro":	{
+		"worksheet":	"Data",
+		"chave":	"Talhão",
+		"colunas":	{
+			"data_plantio":	"Data de Plantio",
+			"area_efetiva":	"Área efetiva (ha)"
+		}
+	},
+	"ajuste_altura":	{
+		"h_mode":	"FINETUNE_MODEL",
+		"ativo":	false,
+		"debug":	true,
+		"por_lote":	true,
+		"fallback_rna_geral":	true,
+		"modelo_geral":	{
+			"caminho":	"G:\\PycharmProjects\\DENDRO\\.build\\tests\\d6398b6822274dd59dcd7de0149cc005\\pacote diagnóstico.zip"
+		},
+		"features":	["SubRegião", "Regime", "DAP", "Código", "Mín. de DAP", "Média de DAP", "Máx. de DAP", "Mín. de H", "Média de H", "Máx. de H", "Idade_m", "AS", "DAP/ Média de DAP", "DAP/ Máx. de DAP"],
+		"finetune":	{
+			"min_amostras_bias":	1,
+			"min_amostras_linear":	2,
+			"min_amostras_finetune":	3,
+			"epochs":	300,
+			"learning_rate":	0.0001,
+			"patience":	15,
+			"batch_size":	32,
+			"ridge_alpha":	0
+		},
+		"rede_neural":	{
+			"epochs":	300,
+			"batch_size":	32,
+			"patience":	30,
+			"n_splits":	5,
+			"learning_rate":	0.0001,
+			"camadas":	[16],
+			"ativacao":	"linear",
+			"min_amostras_treino":	10
+		},
+		"variaveis_customizadas":	[{
+				"nome":	"SubRegião",
+				"formula":	"Talhão[4:6]"
+			}, {
+				"nome":	"Regime",
+				"formula":	"np.where(np.isin(Lote[11:12], ['R','J']), 'Talhadia', 'Alto Fuste')"
+			}, {
+				"nome":	"G",
+				"formula":	"soma(AS)"
+			}],
+		"estatisticas_parcela":	[{
+				"nome":	"Média de DAP",
+				"coluna":	"DAP",
+				"funcao":	"mean",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Máx. de DAP",
+				"coluna":	"DAP",
+				"funcao":	"max"
+			}, {
+				"nome":	"Mín. de DAP",
+				"coluna":	"DAP",
+				"funcao":	"min",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Máx. de H",
+				"coluna":	"H",
+				"funcao":	"max",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Média de H",
+				"coluna":	"H",
+				"funcao":	"mean",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Mín. de H",
+				"coluna":	"H",
+				"funcao":	"min",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Gini_DAP",
+				"coluna":	"DAP",
+				"funcao":	"gini",
+				"filtro":	"> 0"
+			}, {
+				"nome":	"Homog_DAP",
+				"formula":	"1 - Gini_DAP"
+			}, {
+				"nome":	"AS",
+				"formula":	"pi()*(DAP/10)^2/40000"
+			}]
+	},
+	"volume":	{
+		"idade_limite_equacao_geral":	15,
+		"equacoes":	[{
+				"codigo":	"AL1R",
+				"b0":	0,
+				"b1":	1,
+				"b2":	1
+			}]
+	},
+	"estatisticas":	{
+		"chave_temporal_ativa":	false,
+		"nivel_confianca":	0.95,
+		"min_parcelas_estatistica":	3,
+		"erro_maximo_alerta":	10
+	},
+	"comparativo_ifc":	{
+		"ativo":	true,
+		"limiares":	{
+			"verde":	5,
+			"amarelo":	15
+		},
+		"descricao":	{
+			"verde":	"Plantio dentro do esperado",
+			"amarelo":	"Atenção necessária",
+			"vermelho":	"Investigar causas"
+		}
+	},
+	"saida":	{
+		"sufixo_arquivo":	"_DENDRO",
+		"sheets":	{
+			"ajustado":	true,
+			"h_ajuste":	true,
+			"resumo_byplot":	true,
+			"resumo_bytalhao":	true,
+			"estatisticas_inv":	true,
+			"graficos":	true,
+			"modelos_aplicados":	true,
+			"informacoes":	true,
+			"calculos":	true
+		}
+	}
+}

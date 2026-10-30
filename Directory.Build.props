@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <Copyright>Copyright (c) 2026 leoipp. Todos os direitos reservados.</Copyright>
+  </PropertyGroup>
+  <PropertyGroup>
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath>$(MSBuildThisFileDirectory).build\dotnet</ArtifactsPath>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>
