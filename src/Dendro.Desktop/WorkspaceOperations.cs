@@ -128,8 +128,12 @@ internal static class WorkspaceOperations
             case "export":
                 var config = request["chart"]!.AsObject();
                 var source = Read(config);
+                bool compareAllPredictorCounts = request.S("op") == "fit" && request.N("model") == -2;
                 var chart = new RegressionEngine(
-                    project == null ? null : RegressionCatalog.Families(project)
+                    project == null ? null : RegressionCatalog.Families(
+                        project,
+                        compareAllPredictorCounts ? 0 : (int)config.N("predictor_count", 1)
+                    )
                 ).Generate(
                     source,
                     config,

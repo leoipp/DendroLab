@@ -22,14 +22,15 @@ internal sealed partial class ChartView
     }
 
     private readonly Dictionary<string,Action> dataCleanups=new();
+    private readonly Dictionary<string,Func<IEnumerable<int>,Task>> dataRowFilters=new();
     internal Task RegressionDataReady {get;private set;}=Task.CompletedTask;
-    private ContentControl AddRegressionTable(JsonObject saved,ScatterPlot plot)
+    private ContentControl AddRegressionTable(JsonObject saved,ScatterPlot plot,CheckBox showRemovedToggle)
     {
         string identity=Identity(saved);
         if(dataCleanups.Remove(identity,out var old))old();
         var host=new ContentControl {Content=Ui.Text("Carregando dados mantidos da regressão…")};
         var cancel=new CancellationTokenSource();TableBrowser? browser=null;bool disposed=false;
-        void Dispose(){if(disposed)return;disposed=true;cancel.Cancel();browser?.Dispose();}
+        void Dispose(){if(disposed)return;disposed=true;cancel.Cancel();browser?.Dispose();dataRowFilters.Remove(identity);}
         dataCleanups[identity]=Dispose;
         async Task Load()
         {
@@ -50,15 +51,41 @@ internal sealed partial class ChartView
                 browser=new TableBrowser(owner,new(path),saved.S("path"),true,()=>{if(System.IO.File.Exists(path))System.IO.File.Delete(path);},true);
                 await browser.Load();if(disposed)return;
                 var positions=ids.Select((id,i)=>(id,line:(long)i+2)).ToDictionary(p=>p.id,p=>p.line);
+                dataRowFilters[identity] = rows => browser == null || disposed ? Task.CompletedTask
+                    : browser.SetIncludedSourceRows(rows.Where(positions.ContainsKey).Select(row => positions[row]));
                 browser.RowsSelected+=rows=>plot.SelectRows(rows.Where(r=>r>=2&&r-2<ids.Length).Select(r=>ids[(int)r-2]));
                 plot.SelectionChanged+=rows=>{if(!disposed)browser.SelectSourceRows(rows.Where(positions.ContainsKey).Select(r=>positions[r]));};
-                var toolbar=new WrapPanel();
-                toolbar.Children.Add(Ui.AsyncButton("Selecionar filtradas",()=>owner.Execute(async()=>{
-                    var rows=await Task.Run(()=>browser.ViewSourceRows().ToArray());plot.SelectRows(rows.Select(r=>ids[(int)r-2]));
+                browser.AddToolbarAction(Ui.AsyncIconButton("Voltar ao gráfico de origem", CommandIconKind.ArrowLeft, () => owner.Execute(async () =>
+                {
+                    owner.SetTool(this);
+                    await owner.OpenChart(saved.S("path"), false, saved);
                 })));
-                toolbar.Children.Add(Ui.Button("Remover seleção",plot.ConfirmRemoval));toolbar.Children.Add(Ui.Button("Limpar",plot.ClearSelection));
-                toolbar.Children.Add(Ui.Help("Dados mantidos no ajuste. A seleção da tabela acompanha o gráfico. Selecionar filtradas marca todas as linhas do filtro, inclusive outras páginas; Remover seleção confirma a retirada apenas do ajuste."));
-                var panel=new DockPanel();DockPanel.SetDock(toolbar,Dock.Top);panel.Children.Add(toolbar);panel.Children.Add(browser);host.Content=panel;
+                browser.AddToolbarAction(Ui.AsyncIconButton("Desfazer última remoção", CommandIconKind.Undo, () => owner.Execute(async () =>
+                {
+                    await ActivateSavedGraph(saved, plot);
+                    await UndoRemoval();
+                })));
+                browser.AddToolbarAction(Ui.AsyncIconButton("Restaurar todos os pontos", CommandIconKind.Restore, () => owner.Execute(async () =>
+                {
+                    await ActivateSavedGraph(saved, plot);
+                    if (config.Arr("excluded").Count == 0) return;
+                    PushUndo();
+                    config["excluded"] = new JsonArray();
+                    ClearFits();
+                    await Generate();
+                })));
+                browser.AddToolbarAction(Ui.AsyncIconButton("Selecionar linhas filtradas no gráfico",CommandIconKind.SelectRows,async()=>{
+                    var rows=await Task.Run(()=>browser.ViewSourceRows().ToArray());plot.SelectRows(rows.Select(r=>ids[(int)r-2]));
+                }));
+                var remove = Ui.IconButton("Remover seleção do ajuste",CommandIconKind.Remove,plot.ConfirmRemoval);
+                var clear = Ui.IconButton("Limpar seleção no gráfico e na tabela",CommandIconKind.ClearSelection,plot.ClearSelection);
+                remove.IsEnabled = clear.IsEnabled = plot.SelectedRows.Length > 0;
+                plot.SelectionChanged += rows => remove.IsEnabled = clear.IsEnabled = rows.Length > 0;
+                browser.AddToolbarAction(remove);
+                browser.AddToolbarAction(clear);
+                browser.AddToolbarAction(showRemovedToggle);
+                browser.AddToolbarAction(Ui.Help("Dados mantidos no ajuste. A seleção da tabela acompanha o gráfico. Selecionar filtradas marca todas as linhas do filtro, inclusive outras páginas; remover exclui pontos apenas deste ajuste."));
+                host.Content=browser;
             }
             catch(OperationCanceledException) { }
             catch(Exception ex){if(!disposed){host.Content=Ui.Text("Não foi possível carregar os dados: "+ex.Message);owner.Log(ex.Message);}}

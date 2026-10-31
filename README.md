@@ -104,10 +104,11 @@ temporária: exporte ou salve a tabela limpa antes de fechar a janela.
 
 ## Projetos e armazenamento
 
-O arquivo `.dendro` guarda configurações e vínculos. O `.dlb` correspondente é
-o banco de dados do projeto, com tabelas, resultados e derivados. Mantenha os
-dois arquivos juntos ao transportar um projeto. **Salvar como** copia o banco
-para o novo projeto.
+O projeto é um único arquivo `.dlb`: configurações, histórico de processamento,
+tabelas copiadas para o projeto, resultados e derivados ficam no mesmo contêiner.
+Arquivos externos podem continuar como referências; use **Copiar para o projeto**
+para embutir uma tabela sem alterar sua origem. **Salvar como** copia o arquivo
+completo e remapeia os vínculos.
 
 O formato DLB usa blocos comprimidos, índice de linhas e verificação de
 integridade. As tabelas são visualizadas em páginas de 500 linhas. Junções,

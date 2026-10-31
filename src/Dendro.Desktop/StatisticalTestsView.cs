@@ -25,19 +25,19 @@ internal sealed class StatisticalTestsView : ScrollViewer
     private readonly TextBox alpha = Ui.Input("0,05");
     private readonly ListBox groupChoices = new() { MinHeight = 80, MaxHeight = 200 };
     private readonly StackPanel form;
-    private readonly Dictionary<UIElement, FrameworkElement> labels = new();
+    private readonly Dictionary<UIElement, FrameworkElement> fields = new();
     private readonly HelpIcon help = Ui.Help("");
     private readonly Button discover;
     private bool loading;
     private RegressionFamily[] families;
-    private static readonly string[] Tests =
+    private static readonly string[] GeneralTests =
     [
-        "Identidade de modelos (F / Graybill)",
-        "t de Welch — médias",
-        "t pareado — médias",
-        "F — variâncias",
-        "ANOVA de um fator",
-        "Brown–Forsythe — variâncias",
+        "Regressões · identidade de modelos (F / Graybill)",
+        "Médias · t de Welch",
+        "Médias · t pareado",
+        "Variâncias · F",
+        "Médias · ANOVA de um fator",
+        "Variâncias · Brown–Forsythe",
     ];
 
     public StatisticalTestsView(
@@ -54,7 +54,7 @@ internal sealed class StatisticalTestsView : ScrollViewer
         source = Ui.Combo(paths.Select(p => session.ContentName(p)));
         if (path != null)
             source.SelectedIndex = Array.FindIndex(paths, p => p == path);
-        test = Ui.Combo(Tests);
+        test = Ui.Combo(GeneralTests);
         test.SelectedIndex = identity ? 0 : 1;
         families = RegressionCatalog.Families(session.Data!);
         model = Ui.Combo(families.Select(m => m.Name));
@@ -69,8 +69,10 @@ internal sealed class StatisticalTestsView : ScrollViewer
         form = Ui.Form();
         Content = form;
         form.Children.Add(
-            owner.ToolHeader(identity ? "Identidade de modelos" : "Testes estatísticos")
+            owner.ToolHeader("Testes estatísticos")
         );
+        Ui.AddHelp(form, "Escolha o tipo de pergunta: identidade compara equações de regressão; os demais testes comparam médias ou variâncias entre amostras.");
+        Ui.Section(form,"Origem e tipo de teste");
         foreach (
             var pair in new (FrameworkElement Element, string Id)[]
             {
@@ -90,15 +92,17 @@ internal sealed class StatisticalTestsView : ScrollViewer
                 "Statistics." + pair.Id
             );
         Field("Tabela de origem", source);
-        Field("Teste", test);
+        Field("Teste estatístico", test);
         Ui.AddHelp(form, help);
         Field("Organização das amostras", layout);
+        Ui.Section(form,"Variáveis de análise");
         Field("Coluna de valores / Y", value);
         Field("Coluna B (pareada pela mesma linha no teste pareado)", second);
         Field("Coluna X", x);
         Field("Coluna dos grupos", group);
         discover = Ui.AsyncButton("Listar grupos", () => owner.Execute(LoadGroups));
         form.Children.Add(discover);
+        Ui.Section(form,"Amostras e significância");
         Field("Grupos incluídos", groupChoices);
         Field("Modelo 1P do projeto", model);
         Field("Significância α (0 a 1)", alpha);
@@ -120,16 +124,12 @@ internal sealed class StatisticalTestsView : ScrollViewer
 
     private void Field(string title, UIElement element)
     {
-        var label = Ui.Text(title);
-        form.Children.Add(label);
-        form.Children.Add(element);
-        labels[element] = label;
+        fields[element] = Ui.Field(form, title, element);
     }
 
     private void Visible(UIElement element, bool visible)
     {
-        element.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        labels[element].Visibility = element.Visibility;
+        fields[element].Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void UpdateFields()
@@ -151,7 +151,7 @@ internal sealed class StatisticalTestsView : ScrollViewer
         Visible(model, identity);
         help.Text =
             identity
-                ? "Compara uma equação comum com ajustes separados por grupo, usando a mesma família. Para modelos não lineares, o F é aproximado. Não use observações dependentes como se fossem réplicas independentes."
+                ? "Teste estatístico de regressão: compara uma equação comum com equações ajustadas por grupo, usando a mesma família de modelo. Para modelos não lineares, o F é aproximado. Não use observações dependentes como se fossem réplicas independentes."
             : paired
                 ? "Cada linha forma um par A/B. As duas colunas precisam representar as mesmas unidades nas duas condições. Linhas incompletas são omitidas em conjunto."
             : "Informe amostras independentes. Welch compara médias; F e Brown–Forsythe comparam variâncias; ANOVA compara médias de vários grupos. Confira os pressupostos apresentados no resultado.";

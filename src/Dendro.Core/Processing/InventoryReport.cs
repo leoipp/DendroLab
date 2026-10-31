@@ -145,6 +145,7 @@ public static class InventoryReport
             "CALIBRATE e reprodução visual integral do IFPC ainda pendentes. Taylor excluído do escopo."
         );
         info.Add("Árvores", (double)result.Trees);
+        info.Add("DAPd e Hd", $"Média das {cfg.At("processador").N("n_dominantes_parcela", 5):N0} árvores com maior DAP em cada parcela; Hd usa as mesmas árvores. Níveis superiores ponderam pela área das parcelas.");
         info.Add("Fator volumétrico", ProcessingHistory.Enabled(cfg) && cfg.At("processador.execucao").N("number") > 1
             ? "Por " + cfg.At("processador.execucao").S("factor_scope") + "; consulte FATORES APLICADOS e os resultados por árvore/parcela."
             : cfg["volume"].N("fator", 1));
@@ -248,6 +249,8 @@ public static class InventoryReport
                 "N_Parcelas",
                 "DAP",
                 "H",
+                "DAPd",
+                "Hd",
                 "VTCC_ha",
                 "Fustes_ha",
                 "VMI",
@@ -264,6 +267,8 @@ public static class InventoryReport
                 "Parcela",
                 "DAP",
                 "H",
+                "DAPd",
+                "Hd",
                 "VTCC",
                 "Fustes",
                 "area_corr",
@@ -281,7 +286,7 @@ public static class InventoryReport
         var columns = names
             .Where(
                 (name, i) =>
-                    (temporal || name != "Ano_Medicao") && (curves || i < (stand ? 10 : 15))
+                    (temporal || name != "Ano_Medicao") && (curves || i < (stand ? 12 : 17))
             )
             .ToList();
         if (debug && !stand)
@@ -482,6 +487,8 @@ public static class InventoryReport
             "Idade",
             "DAP Med",
             "H Med",
+            "DAPd Med",
+            "Hd Med",
             "Fustes/ha",
             "Vol/ha Med",
             "Vol/ha Esp",
@@ -503,6 +510,10 @@ public static class InventoryReport
         double totalArea = 0,
             totalVolume = 0,
             totalStems = 0,
+            totalDapd = 0,
+            totalDapdArea = 0,
+            totalHd = 0,
+            totalHdArea = 0,
             totalError = 0,
             errorArea = 0,
             totalIcv = 0,
@@ -533,6 +544,8 @@ public static class InventoryReport
             double[] means = fields
                 .Select(f => InventoryMath.Mean(group.Select(r => At(plots, r, f))))
                 .ToArray();
+            double dapd = DominantTreeMetrics.AreaWeightedMean(group.Select(r => (At(plots, r, "DAPd"), At(plots, r, "area_corr"))));
+            double hd = DominantTreeMetrics.AreaWeightedMean(group.Select(r => (At(plots, r, "Hd"), At(plots, r, "area_corr"))));
             double area = 0;
             var seenStands = new HashSet<string>(StringComparer.Ordinal);
             var gini = new List<double>();
@@ -581,6 +594,8 @@ public static class InventoryReport
                 means[3],
                 means[1],
                 means[2],
+                dapd,
+                hd,
                 means[4],
                 mean,
                 expected,
@@ -599,7 +614,7 @@ public static class InventoryReport
                 1 - g,
                 icv,
             ];
-            int[] decimals = [0, 2, 2, 2, 2, 1, 2, 2, 4, 2, 2, 2, 4, 3, 2, 2, 2, 2, 2, 4, 4, 3];
+            int[] decimals = [0, 2, 2, 2, 2, 2, 2, 1, 2, 2, 4, 2, 2, 2, 4, 3, 2, 2, 2, 2, 2, 2, 4, 4, 3];
             output.Add(
                 new object?[] { group.Key }
                     .Concat(values.Select((v, i) => (object?)Round(v, decimals[i])))
@@ -608,6 +623,12 @@ public static class InventoryReport
             totalN += n;
             totalArea += area;
             totalVolume += volume;
+            foreach (int r in group)
+            {
+                double plotArea = At(plots, r, "area_corr"), plotDapd = At(plots, r, "DAPd"), plotHd = At(plots, r, "Hd");
+                if (double.IsFinite(plotArea) && plotArea > 0 && double.IsFinite(plotDapd)) { totalDapd += plotDapd * plotArea; totalDapdArea += plotArea; }
+                if (double.IsFinite(plotArea) && plotArea > 0 && double.IsFinite(plotHd)) { totalHd += plotHd * plotArea; totalHdArea += plotArea; }
+            }
             if (double.IsFinite(means[4]))
                 totalStems += means[4] * area;
             if (n >= minimum)
@@ -626,12 +647,14 @@ public static class InventoryReport
             output.Add();
             int row = output.Count;
             output.Add("TOTAL", (double)totalN, Round(totalArea, 2));
-            output.Set(row, 6, Round(double.IsFinite(totalArea) ? totalArea > 0 ? totalStems / totalArea : 0 : double.NaN, 1));
-            output.Set(row, 7, Round(double.IsFinite(totalArea) ? totalArea > 0 ? totalVolume / totalArea : 0 : double.NaN, 2));
-            output.Set(row, 9, Round(double.IsFinite(totalStems) ? totalStems > 0 ? totalVolume / totalStems : 0 : double.NaN, 4));
-            output.Set(row, 16, Round(double.IsFinite(errorArea) ? errorArea > 0 ? totalError / errorArea : 0 : double.NaN, 2));
-            output.Set(row, 19, Round(totalVolume, 2));
-            output.Set(row, 22, Round(icvArea > 0 ? totalIcv / icvArea : double.NaN, 3));
+            output.Set(row, 6, Round(totalDapdArea > 0 ? totalDapd / totalDapdArea : double.NaN, 2));
+            output.Set(row, 7, Round(totalHdArea > 0 ? totalHd / totalHdArea : double.NaN, 2));
+            output.Set(row, 8, Round(double.IsFinite(totalArea) ? totalArea > 0 ? totalStems / totalArea : 0 : double.NaN, 1));
+            output.Set(row, 9, Round(double.IsFinite(totalArea) ? totalArea > 0 ? totalVolume / totalArea : 0 : double.NaN, 2));
+            output.Set(row, 11, Round(double.IsFinite(totalStems) ? totalStems > 0 ? totalVolume / totalStems : 0 : double.NaN, 4));
+            output.Set(row, 18, Round(double.IsFinite(errorArea) ? errorArea > 0 ? totalError / errorArea : 0 : double.NaN, 2));
+            output.Set(row, 21, Round(totalVolume, 2));
+            output.Set(row, 24, Round(icvArea > 0 ? totalIcv / icvArea : double.NaN, 3));
         }
         output.Add();
         output.Add();

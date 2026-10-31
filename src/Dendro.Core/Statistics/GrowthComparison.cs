@@ -17,15 +17,79 @@ public sealed record GrowthComparisonOptions(double MinAge = .5, double MaxAge =
 /// <summary>Compares fixed curves on a common age grid and, optionally, common observed rows.</summary>
 public static class GrowthComparison
 {
+    public static AnalysisReport Run(GrowthCurve baseline, IReadOnlyList<GrowthCurve> candidates, GrowthComparisonOptions options, DataTable? data = null)
+    {
+        if (candidates.Count == 0 || candidates.Any(c => c.Name == baseline.Name) || candidates.Select(c => c.Name).Distinct(StringComparer.Ordinal).Count() != candidates.Count)
+            throw new InvalidDataException("Selecione pelo menos uma curva distinta da base, sem repetir curvas.");
+        var reports = candidates.Select(candidate => Run(baseline, candidate, options, data)).ToArray();
+        var summary = new JsonObject
+        {
+            ["test"] = $"Comparação de crescimento e produção · {candidates.Count} curvas contra {baseline.Name}",
+            ["decision"] = string.Join(" ", reports.Select(r => $"{r.Summary["Curva nova"]?.Display()}: {r.Summary.S("decision")}")),
+            ["method"] = "Cada curva foi comparada individualmente com a mesma curva base, nas mesmas idades e, se informada, na mesma base de observações.",
+            ["Curva base"] = baseline.Name,
+            ["Curvas comparadas"] = string.Join("; ", candidates.Select(c => c.Name)),
+        };
+        foreach (var (report, candidate) in reports.Zip(candidates))
+        {
+            foreach (var pair in report.Summary)
+            {
+                if (pair.Key is "test" or "decision" or "method") continue;
+                summary[$"{candidate.Name} · {pair.Key}"] = pair.Value?.DeepClone();
+            }
+        }
+        var details = new DataTable(new[] { reports[0].Details.Rows[0][0]?.ToString() ?? "Tipo", "Curva comparada" }
+            .Concat(reports[0].Details.Rows[0].Skip(1).Select(c => c?.ToString() ?? "")));
+        foreach (var (report, candidate) in reports.Zip(candidates))
+            for (int row = 1; row < report.Details.Count; row++)
+            {
+                var cells = report.Details.Rows[row].ToArray();
+                details.Add([cells[0], candidate.Name, .. cells.Skip(1)]);
+            }
+        var first = reports[0].Plot!;
+        var fits = new JsonArray(new JsonObject { ["converged"] = true, ["model"] = baseline.Name, ["group"] = baseline.Name, ["curve_color"] = "#21669D" });
+        var lines = new List<double[][]> { first.Curves[0] };
+        var points = first.Points.ToList();
+        foreach (var (report, index) in reports.Select((r, i) => (r, i)))
+        {
+            var candidate = candidates[index];
+            var color = CandidateColor(index);
+            fits.Add(new JsonObject { ["converged"] = true, ["model"] = candidate.Name, ["group"] = candidate.Name, ["curve_color"] = color, ["line_dashed"] = index % 2 == 0 });
+            lines.Add(report.Plot!.Curves[1]);
+        }
+        var chart = first.Chart.DeepClone().AsObject();
+        chart["title"] = "Curvas de crescimento e produção · base e comparações";
+        chart["fits"] = fits;
+        chart["selected_fits"] = new JsonArray(Enumerable.Range(0, fits.Count).Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
+        return new(summary, details, new(chart, points.ToArray(), lines.ToArray(), first.Invalid));
+    }
+
+    private static string CandidateColor(int index)
+    {
+        // Golden-angle spacing keeps later candidates distinct instead of repeating a six-color cycle.
+        double hue = (24 + index * 137.507764) % 360 / 60;
+        double saturation = .72, lightness = index % 2 == 0 ? .47 : .40;
+        double chroma = (1 - Math.Abs(2 * lightness - 1)) * saturation;
+        double x = chroma * (1 - Math.Abs(hue % 2 - 1));
+        double m = lightness - chroma / 2;
+        (double r, double g, double b) = hue switch
+        {
+            < 1 => (chroma, x, 0d), < 2 => (x, chroma, 0d), < 3 => (0d, chroma, x),
+            < 4 => (0d, x, chroma), < 5 => (x, 0d, chroma), _ => (chroma, 0d, x),
+        };
+        return $"#{(byte)Math.Round((r + m) * 255):X2}{(byte)Math.Round((g + m) * 255):X2}{(byte)Math.Round((b + m) * 255):X2}";
+    }
+
     private static Func<double, double> Predictor(GrowthCurve curve)
     {
         if (curve.AgeUnit is not ("anos" or "meses") || curve.Coefficients.Length is < 1 or > 4 ||
             curve.Coefficients.Any(v => !double.IsFinite(v)) || !double.IsFinite(curve.AgeFactor) || curve.AgeFactor <= 0)
             throw new InvalidDataException("Confira unidades de idade, fator e coeficientes das curvas.");
-        var formula = new Formula(curve.Formula, new[] { "x", "x1", "t", curve.AgeSymbol }
+        var formula = new Formula(curve.Formula, new[] { "x", "x1", "t", curve.AgeSymbol }.Concat(curve.FixedInputs?.Keys ?? [])
             .Concat(Enumerable.Range(0, curve.Coefficients.Length).Select(i => "b" + i)));
         return years => formula.Evaluate(symbol => symbol is "x" or "x1" or "t" || symbol == curve.AgeSymbol
-            ? years * (curve.AgeUnit == "meses" ? 12 : 1) * curve.AgeFactor : curve.Coefficients[int.Parse(symbol[1..])]);
+            ? years * (curve.AgeUnit == "meses" ? 12 : 1) * curve.AgeFactor
+            : curve.FixedInputs?.TryGetValue(symbol, out double value) == true ? value : curve.Coefficients[int.Parse(symbol[1..])]);
     }
 
     private sealed class Metrics

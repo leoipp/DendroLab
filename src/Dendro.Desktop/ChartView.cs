@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 
 namespace Dendro.Desktop;
 
@@ -20,6 +21,8 @@ internal sealed partial class ChartView : DockPanel
     private readonly ComboBox source = new(),
         x = new(),
         y = new(),
+        x2 = new(),
+        x3 = new(),
         stratum = new(),
         group = new(),
         models = new(),
@@ -29,20 +32,24 @@ internal sealed partial class ChartView : DockPanel
         ylabel = Ui.Input(),
         size = Ui.Input("3"),
         pointAlpha = Ui.Input("1"),
-        formula = Ui.Input(),
-        parameters = Ui.Input("2"),
         width = Ui.Input("1600"),
         height = Ui.Input("1000"),
         xmin = Ui.Input(),
         xmax = Ui.Input(),
         ymin = Ui.Input(),
         ymax = Ui.Input();
+    private readonly TextBlock formula = new() { TextWrapping = TextWrapping.Wrap, Padding = new Thickness(6, 4, 6, 4) };
     private readonly TextBox xTickStep=Ui.Input(), yTickStep=Ui.Input();
     private readonly CheckBox grid = new() { Content = "Grade", IsChecked = true },
         logx = new() { Content = "X logarítmico" },
         logy = new() { Content = "Y logarítmico" };
     private readonly Stack<JsonArray> undo = new();
+    private readonly CheckBox compareModels = new() { Content = "Ajustar e comparar modelos", Margin = new Thickness(2, 5, 2, 7) };
+    private readonly Dictionary<string, ChartWorkspace> chartWorkspaces = new();
     private readonly TextBlock status = Ui.Text("");
+    private Button? fitCurrentGraph;
+    private readonly ComboBox predictorCount = Ui.Combo(["1 variável (1P)", "2 variáveis (2P)", "3 variáveis (3P)"]);
+    private FrameworkElement? predictorCountField, x2Field, x3Field;
     private JsonObject? lastData;
     private ScatterPlot? currentPlot;
 
@@ -51,14 +58,16 @@ internal sealed partial class ChartView : DockPanel
         this.owner = owner;
         this.session = session;
         this.fitting = fitting;
-        var header = owner.ToolHeader(fitting ? "Regressões 1P" : "Gráficos");
+        var header = owner.ToolHeader(fitting ? "Regressões" : "Gráficos");
         header.Margin = new Thickness(10);
         DockPanel.SetDock(header, Dock.Top);
         Children.Add(header);
         var tabs = new TabControl();
         Children.Add(tabs);
         var data = Ui.Form();
+        Ui.Section(data, fitting ? "Gráfico de origem" : "Dados do gráfico");
         Ui.Field(data, fitting ? "Gráfico de origem" : "Planilha de origem", source);
+        System.Windows.Automation.AutomationProperties.SetAutomationId(source, "Chart.Source");
         if (!fitting)
         {
             System.Windows.Automation.AutomationProperties.SetAutomationId(x, "Chart.X");
@@ -69,17 +78,58 @@ internal sealed partial class ChartView : DockPanel
         }
         Ui.Field(data, "Coluna de estrato", stratum);
         Ui.Field(data, "Grupo", group);
-        data.Children.Add(
-            Ui.AsyncButton("Gerar / atualizar gráfico", () => owner.Execute(() => Generate()))
+        var generateGraph = Ui.AsyncButton(
+            "Gerar / atualizar gráfico",
+            () => owner.Execute(() => Generate())
         );
         if (!fitting)
         {
-            data.Children.Add(Ui.AsyncButton("Gerar gráficos em lote…", () => owner.Execute(GenerateBatch)));
+            var primaryActions = new Grid { Margin = new Thickness(0, 3, 0, 3) };
+            primaryActions.ColumnDefinitions.Add(new ColumnDefinition());
+            primaryActions.ColumnDefinitions.Add(new ColumnDefinition());
+            primaryActions.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
+            primaryActions.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
+
+            StyleChartAction(generateGraph, "Gerar / atualizar gráfico");
+            Grid.SetColumn(generateGraph, 0);
+            primaryActions.Children.Add(generateGraph);
+
+            fitCurrentGraph = Ui.AsyncButton("Ajustar este gráfico", () => owner.Execute(() => owner.OpenChart(config.S("path"), true, config)));
+            StyleChartAction(fitCurrentGraph, "Ajustar este gráfico");
+            fitCurrentGraph.IsEnabled = false;
+            Grid.SetColumn(fitCurrentGraph, 1);
+            primaryActions.Children.Add(fitCurrentGraph);
+            data.Children.Add(primaryActions);
+
+            var batchButton = Ui.AsyncButton("Gerar gráficos em lote…", () => owner.Execute(GenerateBatch));
+            batchButton.HorizontalAlignment = HorizontalAlignment.Stretch;
+            batchButton.HorizontalContentAlignment = HorizontalAlignment.Center;
+            batchButton.MinWidth = 0;
+            batchButton.Margin = new Thickness(2, 2, 2, 5);
+            data.Children.Add(batchButton);
             Ui.AddHelp(data, "Aplica X, Y, estrato/grupo e aparência atuais a várias tabelas. Cada gráfico fica nos Conteúdos da sua tabela.");
         }
-        data.Children.Add(status);
-        tabs.Items.Add(new TabItem { Header = "Dados", Content = Ui.Scroll(data) });
+        else
+        {
+            data.Children.Add(generateGraph);
+        }
+
+        status.Margin = new Thickness(0);
+        status.TextWrapping = TextWrapping.Wrap;
+        var statusFooter = new Border
+        {
+            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(224, 232, 239)),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(16, 7, 16, 8),
+            Child = status,
+        };
+        DockPanel.SetDock(statusFooter, Dock.Bottom);
+        var dataPanel = new DockPanel();
+        dataPanel.Children.Add(statusFooter);
+        dataPanel.Children.Add(Ui.Scroll(data));
+        tabs.Items.Add(new TabItem { Header = "Dados", Content = dataPanel });
         var appearance = Ui.Form();
+        Ui.Section(appearance, "Rótulos e aparência");
         Ui.Field(appearance, "Rótulo X", xlabel);
         Ui.Field(appearance, "Rótulo Y", ylabel);
         Ui.Field(appearance, "Tamanho dos pontos (1 a 12)", size);
@@ -102,39 +152,22 @@ internal sealed partial class ChartView : DockPanel
         if (!fitting)
             tabs.Items.Add(new TabItem { Header = "Aparência", Content = Ui.Scroll(appearance) });
         var fit = Ui.Form();
+        Ui.Section(fit, "Modelo de regressão");
+        predictorCountField = Ui.Field(fit, "Número de variáveis", predictorCount);
+        x2Field = Ui.Field(fit, "Variável X2", x2);
+        x3Field = Ui.Field(fit, "Variável X3", x3);
         Ui.Field(fit, "Modelo", models);
-        Ui.Field(fit, "Fórmula do cadastro (X)", formula);
-        Ui.Field(fit, "Número de coeficientes", parameters);
-        formula.IsReadOnly = parameters.IsReadOnly = true;
-        Ui.AddHelp(fit, "Cadastre os modelos em Projeto > Configurações > Modelos de regressão. Esta ferramenta usa uma variável X.");
-        fit.Children.Add(
-            Ui.AsyncButton("Ajustar modelo selecionado", () => owner.Execute(() => Generate("fit")))
-        );
-        fit.Children.Add(
-            Ui.AsyncButton("Comparar modelos", () => owner.Execute(() => Generate("fit", true)))
-        );
-        fit.Children.Add(
-            Ui.AsyncButton(
-                "Desfazer última remoção / restauração",
-                () => owner.Execute(UndoRemoval)
-            )
-        );
-        fit.Children.Add(
-            Ui.AsyncButton(
-                "Restaurar todos os pontos",
-                () =>
-                    owner.Execute(async () =>
-                    {
-                        PushUndo();
-                        config["excluded"] = new JsonArray();
-                        ClearFits();
-                        await Generate();
-                    })
-            )
-        );
+        models.ToolTip = "Modelos cadastrados para o tipo de ajuste selecionado.";
+        Ui.Field(fit, "Fórmula cadastrada", formula);
+        formula.ToolTip = "Fórmula registrada no cadastro do modelo; exibida somente para consulta.";
+        Ui.AddHelp(fit, "Em modelos 2P e 3P, a curva é desenhada em função de X1; X2 e X3 ficam fixos na média das observações usadas no ajuste.");
+        compareModels.ToolTip = "Marcado: ajusta todos os modelos 1P, 2P e 3P cadastrados. X2 e X3 devem ser informados conforme o modelo.";
+        fit.Children.Add(compareModels);
+        fit.Children.Add(Ui.AsyncButton("Ajustar", () => owner.Execute(() => Generate("fit", compareModels.IsChecked == true))));
         if (fitting)
             tabs.Items.Add(new TabItem { Header = "Regressão", Content = Ui.Scroll(fit) });
         var export = Ui.Form();
+        Ui.Section(export, "Tamanho da exportação");
         Ui.Field(export, "Largura (pixels)", width);
         Ui.Field(export, "Altura (pixels)", height);
         export.Children.Add(
@@ -154,6 +187,20 @@ internal sealed partial class ChartView : DockPanel
                     await Generate();
             });
         };
+        predictorCount.SelectionChanged += (_, _) =>
+        {
+            if (loading) return;
+            UpdatePredictorFields();
+            RefreshModelOptions();
+            MarkChartModified();
+        };
+        compareModels.Checked += (_, _) => CompareModeChanged();
+        compareModels.Unchecked += (_, _) => CompareModeChanged();
+        foreach (var predictor in new[] { x2, x3 })
+            predictor.SelectionChanged += (_, _) =>
+            {
+                if (!loading) MarkChartModified();
+            };
         source.DropDownOpened += (_, _) =>
         {
             if (!fitting || loading)
@@ -187,17 +234,46 @@ internal sealed partial class ChartView : DockPanel
         {
             if (loading)
                 return;
-            int i = models.SelectedIndex;
-            var definitions = metadata["models"] as JsonArray;
-            if (definitions != null && i >= 0 && i < definitions.Count)
-            {
-                formula.Text = definitions[i]!.S("formula");
-                parameters.Text = definitions[i]!.N("parameters", 2).ToString();
-                formula.IsReadOnly = true;
-            }
-            else
-                formula.IsReadOnly = false;
+            UpdateSelectedModelDisplay();
         };
+        if (!fitting)
+        {
+            source.SelectionChanged += (_, _) => MarkChartModified();
+            foreach (var combo in new[] { x, y, stratum, group, color })
+                combo.SelectionChanged += (_, _) => MarkChartModified();
+            foreach (var input in new[] { title, xlabel, ylabel, size, pointAlpha, xmin, xmax, ymin, ymax, xTickStep, yTickStep })
+                input.TextChanged += (_, _) => MarkChartModified();
+            foreach (var check in new[] { grid, logx, logy })
+            {
+                check.Checked += (_, _) => MarkChartModified();
+                check.Unchecked += (_, _) => MarkChartModified();
+            }
+        }
+    }
+
+    private void MarkChartModified()
+    {
+        if (loading || fitting || fitCurrentGraph == null || string.IsNullOrEmpty(config.S("path"))) return;
+        fitCurrentGraph.IsEnabled = false;
+        fitCurrentGraph.ToolTip = "Atualize o gráfico antes de ajustar as alterações.";
+    }
+
+    private void UpdatePredictorFields()
+    {
+        int count = compareModels.IsChecked == true
+            ? metadata["models"]?.AsArray().OfType<JsonObject>().Select(m => (int)m.N("predictors", 1)).DefaultIfEmpty(1).Max() ?? 1
+            : predictorCount.SelectedIndex + 1;
+        if (predictorCountField != null)
+            predictorCountField.Visibility = compareModels.IsChecked == true ? Visibility.Collapsed : Visibility.Visible;
+        if (x2Field != null) x2Field.Visibility = count >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        if (x3Field != null) x3Field.Visibility = count >= 3 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void CompareModeChanged()
+    {
+        if (loading) return;
+        UpdatePredictorFields();
+        RefreshModelOptions();
     }
 
     public async Task Load(string? path, JsonObject? saved, bool regenerate = true)
@@ -217,16 +293,18 @@ internal sealed partial class ChartView : DockPanel
                 .ToArray();
             if (fitting && graphSources.Length == 0)
                 throw new InvalidOperationException(
-                    "Crie um gráfico antes de abrir Regressões 1P."
+                    "Crie um gráfico antes de abrir Regressões."
                 );
             paths = fitting
                 ? graphSources.Select(c => c.S("path")).ToArray()
                 : session.Files.Where(session.IsTabular).ToArray();
             config = saved?.DeepClone().AsObject() ?? new();
+            predictorCount.SelectedIndex = Math.Clamp((int)config.N("predictor_count", 1) - 1, 0, 2);
+            UpdatePredictorFields();
             source.ItemsSource = fitting
                 ? graphSources.Select(GraphLabel).ToArray()
                 : paths.Select(SourceLabel).ToArray();
-            models.ItemsSource = metadata["models"]!.AsArray().Select(m => m!.S("name")).ToArray();
+            RefreshModelOptions(config.S("model_id"));
             if (fitting && saved != null && !graphSources.Any(c => Identity(c) == Identity(saved)))
                 throw new InvalidOperationException("Selecione um gráfico já criado no projeto.");
             source.SelectedIndex = Math.Max(
@@ -250,6 +328,34 @@ internal sealed partial class ChartView : DockPanel
                 await Generate();
         }
     }
+
+    private void RefreshModelOptions(string? preferredId = null, int? preferredIndex = null)
+    {
+        var definitions = metadata["models"] as JsonArray ?? new JsonArray();
+        int count = predictorCount.SelectedIndex + 1;
+        var available = definitions.OfType<JsonObject>()
+            .Where(m => compareModels.IsChecked == true || (int)m.N("predictors", 1) == count)
+            .ToArray();
+        models.ItemsSource = available.Select(model => model.S("name")).ToArray();
+        int selected = preferredId is { Length: > 0 }
+            ? Array.FindIndex(available, model => model.S("id") == preferredId)
+            : -1;
+        if (selected < 0 && preferredIndex is int requested)
+            selected = requested;
+        models.SelectedIndex = selected >= 0 && selected < available.Length ? selected : available.Length > 0 ? 0 : -1;
+        UpdateSelectedModelDisplay();
+    }
+
+    private JsonObject[] AvailableModels() => (metadata["models"] as JsonArray ?? new JsonArray())
+        .OfType<JsonObject>()
+        .Where(m => compareModels.IsChecked == true || (int)m.N("predictors", 1) == predictorCount.SelectedIndex + 1)
+        .ToArray();
+
+    private JsonObject? SelectedModel() => models.SelectedIndex >= 0
+        ? AvailableModels().ElementAtOrDefault(models.SelectedIndex)
+        : null;
+
+    private void UpdateSelectedModelDisplay() => formula.Text = SelectedModel()?.S("formula") ?? "";
 
     private async Task LoadSource()
     {
@@ -293,18 +399,36 @@ internal sealed partial class ChartView : DockPanel
         loading = true;
         try
         {
-            source.ItemsSource = paths.Select(SourceLabel).ToArray();
+            source.ItemsSource = fitting
+                ? graphSources.Select(GraphLabel).ToArray()
+                : paths.Select(SourceLabel).ToArray();
             source.SelectedIndex = Array.FindIndex(
                 paths,
                 p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)
             );
+            if (fitting)
+                source.SelectedIndex = Array.FindIndex(
+                    graphSources,
+                    chart => Identity(chart) == Identity(config)
+                );
             string[] columns = r["columns"]!.AsArray().Select(v => v.Display()).ToArray();
             x.ItemsSource = columns;
             y.ItemsSource = columns;
+            x2.ItemsSource = columns;
+            x3.ItemsSource = columns;
             stratum.ItemsSource = new[] { "Global (sem estratificação)" }.Concat(columns).ToArray();
             x.SelectedItem = config.S("x");
             if (x.SelectedIndex < 0)
                 x.SelectedIndex = 0;
+            var configuredVariables = config["x_variables"] as JsonArray;
+            string secondX = configuredVariables is { Count: > 1 }
+                ? configuredVariables[1]?.GetValue<string>() ?? ""
+                : "";
+            x2.SelectedItem = secondX;
+            string thirdX = configuredVariables is { Count: > 2 }
+                ? configuredVariables[2]?.GetValue<string>() ?? ""
+                : "";
+            x3.SelectedItem = thirdX;
             y.SelectedItem = config.S("y");
             if (y.SelectedIndex < 0)
                 y.SelectedIndex = Math.Min(1, columns.Length - 1);
@@ -326,18 +450,11 @@ internal sealed partial class ChartView : DockPanel
             xTickStep.Text=config["x_tick_step"].Display();yTickStep.Text=config["y_tick_step"].Display();
             ymax.Text = config["ymax"].Display();
             var definitions = metadata["models"]!.AsArray();
-            int selectedModel =
-                config.S("model_id").Length > 0
-                    ? definitions.ToList().FindIndex(d => d.S("id") == config.S("model_id"))
-                    : (int)config.N("model", 0);
-            models.SelectedIndex =
-                definitions.Count > 0 ? Math.Clamp(selectedModel, 0, definitions.Count - 1) : -1;
-            var definition = metadata["models"]!.AsArray().ElementAtOrDefault(models.SelectedIndex);
-            formula.Text = definition?.S("formula") ?? config.S("formula", "b0+b1*x");
-            formula.IsReadOnly = true;
-            parameters.Text = (
-                definition?.N("parameters", 2) ?? config.N("parameters", 2)
-            ).ToString();
+            int selectedModel = config.S("model_id").Length > 0
+                ? definitions.ToList().FindIndex(d => d.S("id") == config.S("model_id"))
+                : (int)config.N("model", 0);
+            var selectedDefinition = definitions.ElementAtOrDefault(selectedModel);
+            RefreshModelOptions(selectedDefinition?.S("id"), selectedModel);
             width.Text = config.N("width", 1600).ToString();
             height.Text = config.N("height", 1000).ToString();
             lastData = r.AsObject();
@@ -391,6 +508,26 @@ internal sealed partial class ChartView : DockPanel
             throw new InvalidOperationException("O gráfico de origem não existe mais no projeto.");
         var c = config.DeepClone().AsObject();
         c["x"] = x.SelectedItem?.ToString();
+        int variableCount = compareModels.IsChecked == true
+            ? AvailableModels().Select(m => (int)m.N("predictors", 1)).DefaultIfEmpty(1).Max()
+            : predictorCount.SelectedIndex + 1;
+        c["predictor_count"] = variableCount;
+        var xVariables = new JsonArray(x.SelectedItem?.ToString());
+        if (variableCount >= 2)
+        {
+            if (x2.SelectedItem is not string selectedX2)
+                throw new InvalidOperationException("Selecione a variável X2.");
+            xVariables.Add(selectedX2);
+        }
+        if (variableCount >= 3)
+        {
+            if (x3.SelectedItem is not string selectedX3)
+                throw new InvalidOperationException("Selecione a variável X3.");
+            xVariables.Add(selectedX3);
+        }
+        if (xVariables.Select(n => n!.GetValue<string>()).Distinct(StringComparer.Ordinal).Count() != variableCount)
+            throw new InvalidOperationException("Selecione variáveis explicativas diferentes.");
+        c["x_variables"] = xVariables;
         c["y"] = y.SelectedItem?.ToString();
         c["title"] = string.IsNullOrWhiteSpace(title.Text)
             ? $"{c.S("y")} × {c.S("x")}"
@@ -412,11 +549,11 @@ internal sealed partial class ChartView : DockPanel
         c["grid"] = grid.IsChecked == true;
         c["log_x"] = logx.IsChecked == true;
         c["log_y"] = logy.IsChecked == true;
-        c["model"] = models.SelectedIndex;
-        c["model_id"] =
-            metadata["models"]!.AsArray().ElementAtOrDefault(models.SelectedIndex)?.S("id") ?? "";
+        int selectedModelIndex = models.SelectedIndex;
+        c["model"] = selectedModelIndex;
+        c["model_id"] = SelectedModel()?.S("id") ?? "";
         c["formula"] = formula.Text;
-        c["parameters"] = Ui.Number(parameters.Text);
+        c["parameters"] = SelectedModel()?.N("parameters", c.N("parameters", 2)) ?? c.N("parameters", 2);
         c["frontier"] = 0;
         c["width"] = Ui.Number(width.Text);
         c["height"] = Ui.Number(height.Text);
@@ -495,7 +632,7 @@ internal sealed partial class ChartView : DockPanel
     }
 
     private string GraphLabel(JsonObject chart) =>
-        $"{session.ContentName(chart.S("path"), chart)} · {session.ContentName(chart.S("path"))} / {chart.S("sheet")}";
+        $"{chart.S("title", "Gráfico sem título")} · {session.ContentName(chart.S("path"))} / {chart.S("sheet")}";
 
     private string SourceLabel(string path)
     {
@@ -542,6 +679,16 @@ internal sealed partial class ChartView : DockPanel
         target["point_alpha"] = origin.N("point_alpha", 1);
     }
 
+    private static DataGridRow? FindFitRow(DependencyObject? element)
+    {
+        while (element != null)
+        {
+            if (element is DataGridRow row) return row;
+            element = VisualTreeHelper.GetParent(element);
+        }
+        return null;
+    }
+
     internal static string Identity(JsonObject c) =>
         "chart:"
         + Convert.ToHexString(
@@ -561,13 +708,15 @@ internal sealed partial class ChartView : DockPanel
         var c = Collect();
         if (!fitting && operation == "fit")
             throw new InvalidOperationException(
-                "Ajustes de modelo ficam na ferramenta Regressões 1P."
+                "Ajustes de modelo ficam na ferramenta Regressões."
             );
         if (operation == "fit")
         {
-            if (models.SelectedIndex < 0)
+            if (compare && models.Items.Count == 0)
+                throw new InvalidOperationException("Não há modelos cadastrados para comparar.");
+            if (!compare && models.SelectedIndex < 0)
                 throw new InvalidOperationException(
-                    "Cadastre pelo menos um modelo 1P em Configurações > Modelos de regressão."
+                    "Selecione um modelo cadastrado."
                 );
             c.Remove("selected_fit");
             c.Remove("selected_fits");
@@ -583,7 +732,7 @@ internal sealed partial class ChartView : DockPanel
                     ["chart"] = request,
                     ["model"] =
                         compare ? -2
-                        : models.SelectedIndex >= metadata["models"]!.AsArray().Count ? -1
+                        : models.SelectedIndex < 0 ? -1
                         : models.SelectedIndex,
                 }
             )
@@ -592,13 +741,23 @@ internal sealed partial class ChartView : DockPanel
         config["path"] = c.S("path");
         session.StoreChart(config);
         Render(data);
+        if (!fitting && fitCurrentGraph != null)
+        {
+            fitCurrentGraph.IsEnabled = true;
+            fitCurrentGraph.ToolTip = "Abrir regressão usando este gráfico atualizado.";
+        }
+        var validPoints = data["points"]!.AsArray().Where(p => !p!.B("excluded")).ToArray();
+        var distinctX = validPoints.Select(p => Math.Round(p!.N("x"), 10)).Distinct().Take(2).Count();
         status.Text =
             $"{data["points"]!.AsArray().Count(p => !p.B("excluded")):N0} mantidos · {data["points"]!.AsArray().Count(p => p.B("excluded")):N0} removidos · {data.N("invalid"):N0} linhas inválidas."
             + (
                 config["frontier_points"] is JsonArray envelope && envelope.Count > 0
                     ? $"\nFronteira calculada: {envelope.Count} pontos."
                     : ""
-            );
+            )
+            + (!fitting && validPoints.Length > 1 && distinctX < 2
+                ? "\nAviso: X tem apenas um valor distinto; confira os eixos antes de ajustar uma regressão."
+                : "");
     }
 
     private void Render(JsonObject data)
@@ -615,7 +774,7 @@ internal sealed partial class ChartView : DockPanel
         plot.ToolTip = fitting
             ? "Clique ou desenhe um contorno para selecionar. Ctrl acrescenta pontos; Delete remove selecionados; Esc cancela."
             : null;
-        var regressionMenu = new MenuItem { Header = "Regressões 1P…" };
+        var regressionMenu = new MenuItem { Header = "Regressões…" };
         regressionMenu.Click += async (_, e) =>
         {
             e.Handled = true;
@@ -632,34 +791,19 @@ internal sealed partial class ChartView : DockPanel
         FrameworkElement? modelsPanel = null;
         System.Windows.Controls.Grid.SetRow(plot, 1);
         body.Children.Add(plot);
+        CheckBox? showRemovedToggle = null;
         if (fitting)
         {
-            var toolbar = new WrapPanel { Margin = new Thickness(7, 4, 7, 4) };
-            var confirm = Ui.Button("Remover selecionados", plot.ConfirmRemoval);
-            confirm.IsEnabled = false;
-            confirm.ToolTip = "Delete (com foco no gráfico)";
-            var clear = Ui.Button("Limpar seleção", plot.ClearSelection);
-            clear.IsEnabled = false;
-            var count = Ui.Text("Nenhum ponto selecionado");
-            count.VerticalAlignment = VerticalAlignment.Center;
-            count.Margin = new Thickness(8, 0, 12, 0);
-            plot.SelectionChanged += rows =>
+            showRemovedToggle = new CheckBox
             {
-                confirm.IsEnabled = clear.IsEnabled = rows.Length > 0;
-                count.Text =
-                    rows.Length == 0
-                        ? "Nenhum ponto selecionado"
-                        : $"{rows.Length:N0} selecionado(s)";
-            };
-            var showRemoved = new CheckBox
-            {
-                Content = "Mostrar removidos",
+                Content = "Mostrar pontos removidos no gráfico",
                 IsChecked = saved.B("show_removed"),
                 VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(5, 0, 8, 0),
             };
             void VisibilityChanged()
             {
-                saved["show_removed"] = showRemoved.IsChecked == true;
+                saved["show_removed"] = showRemovedToggle.IsChecked == true;
                 if (Identity(config) == Identity(saved))
                     config["show_removed"] = saved["show_removed"]!.DeepClone();
                 plot.Config = saved;
@@ -667,13 +811,8 @@ internal sealed partial class ChartView : DockPanel
                 plot.InvalidateVisual();
                 session.StoreChart(saved);
             }
-            showRemoved.Checked += (_, _) => VisibilityChanged();
-            showRemoved.Unchecked += (_, _) => VisibilityChanged();
-            toolbar.Children.Add(confirm);
-            toolbar.Children.Add(clear);
-            toolbar.Children.Add(count);
-            toolbar.Children.Add(showRemoved);
-            topPanel.Children.Add(toolbar);
+            showRemovedToggle.Checked += (_, _) => VisibilityChanged();
+            showRemovedToggle.Unchecked += (_, _) => VisibilityChanged();
         }
         if (config["fits"] is JsonArray fits && fits.Count > 0)
         {
@@ -753,6 +892,36 @@ internal sealed partial class ChartView : DockPanel
                     CellTemplate = (DataTemplate)owner.FindResource("FitLineSwatch"),
                 }
             );
+            var registerGrowth = new MenuItem
+            {
+                Header = "Cadastrar em Crescimento e produção…",
+                Icon = new CommandIcon { Kind = CommandIconKind.Growth, Width = 16, Height = 16 },
+            };
+            var fitMenu = new ContextMenu();
+            fitMenu.Items.Add(registerGrowth);
+            table.ContextMenu = fitMenu;
+            table.PreviewMouseRightButtonDown += (_, e) =>
+            {
+                var row = FindFitRow(e.OriginalSource as DependencyObject);
+                if (row == null)
+                {
+                    e.Handled = true;
+                    return;
+                }
+                table.SelectedItem = row.Item;
+            };
+            fitMenu.Opened += (_, _) =>
+            {
+                registerGrowth.IsEnabled = table.SelectedItem is System.Data.DataRowView selectedRow
+                    && GrowthFitRegistration.CanRegister(fits[(int)selectedRow["fit_index"]]!.AsObject());
+            };
+            registerGrowth.Click += async (_, e) =>
+            {
+                e.Handled = true;
+                if (table.SelectedItem is not System.Data.DataRowView selectedRow) return;
+                int index = (int)selectedRow["fit_index"];
+                await owner.Execute(() => GrowthFitRegistration.Open(owner, session, saved, fits[index]!.AsObject()));
+            };
             var restore =
                 saved["selected_fits"] is JsonArray selectedFits
                     ? selectedFits.Select(n => (int)JsonExtensions.Number(n)).ToHashSet()
@@ -790,6 +959,7 @@ internal sealed partial class ChartView : DockPanel
             tablePanel.Children.Add(table);
             modelsPanel = tablePanel;
         }
+        ChartWorkspace? workspace = null;
         plot.RemoveRequested += rows =>
         {
             _ = owner.Execute(async () =>
@@ -799,18 +969,26 @@ internal sealed partial class ChartView : DockPanel
                 {
                     await Load(saved.S("path"), saved);
                 }
+                currentPlot = plot;
                 await RemoveRows(rows);
+                saved["excluded"] = config["excluded"]?.DeepClone();
             });
         };
-        var dataPanel = fitting ? AddRegressionTable(saved,plot) : null;
-        FrameworkElement content = modelsPanel == null && dataPanel == null ? body : new ChartWorkspace(owner, body, modelsPanel, dataPanel);
+        var dataPanel = fitting ? AddRegressionTable(saved,plot,showRemovedToggle!) : null;
+        FrameworkElement content = modelsPanel == null && dataPanel == null ? body : workspace = new ChartWorkspace(owner, body, modelsPanel, dataPanel);
         var document=owner.Document(
             Identity(saved),
             session.ContentName(saved.S("path"), saved),
             content,
             () => ActivatePlot(saved, plot)
         );
-        if(fitting)document.Closing+=(_,_)=>{if(dataCleanups.Remove(Identity(saved),out var cleanup))cleanup();};
+        if (workspace != null) chartWorkspaces[Identity(saved)] = workspace;
+        if(fitting)document.Closing+=(_,_)=>
+        {
+            string key = Identity(saved);
+            if(dataCleanups.Remove(key,out var cleanup))cleanup();
+            chartWorkspaces.Remove(key);
+        };
     }
 
     private void ActivatePlot(JsonObject saved, ScatterPlot plot)
@@ -829,6 +1007,18 @@ internal sealed partial class ChartView : DockPanel
             currentPlot = plot;
             ToggleRemoval();
         });
+    }
+
+    private async Task ActivateSavedGraph(JsonObject saved, ScatterPlot plot)
+    {
+        owner.SetTool(this);
+        if (Identity(config) != Identity(saved))
+        {
+            undo.Clear();
+            await Load(saved.S("path"), saved, false);
+        }
+        currentPlot = plot;
+        ToggleRemoval();
     }
 
     private void ToggleRemoval()
@@ -876,7 +1066,8 @@ internal sealed partial class ChartView : DockPanel
             ids.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray()
         );
         ClearFits();
-        await Generate();
+        if (currentPlot != null) await RefreshExclusionState(currentPlot, chartWorkspaces.GetValueOrDefault(Identity(config)));
+        else await Generate();
     }
 
     internal async Task UndoRemoval()
@@ -885,8 +1076,30 @@ internal sealed partial class ChartView : DockPanel
         {
             config["excluded"] = rows;
             ClearFits();
-            await Generate();
+            if (currentPlot != null) await RefreshExclusionState(currentPlot, chartWorkspaces.GetValueOrDefault(Identity(config)));
+            else await Generate();
         }
+    }
+
+    private async Task RefreshExclusionState(ScatterPlot plot, ChartWorkspace? workspace)
+    {
+        var excluded = config.Arr("excluded").Select(n => (int)JsonExtensions.Number(n)).ToHashSet();
+        var points = plot.Data["points"] as JsonArray ?? [];
+        foreach (var point in points.OfType<JsonObject>())
+        {
+            int row = (int)point.N("row", -1);
+            point["excluded"] = excluded.Contains(row);
+        }
+        plot.Config = config.DeepClone().AsObject();
+        plot.Data = plot.Data.DeepClone().AsObject();
+        plot.ClearSelection();
+        session.StoreChart(config);
+        workspace?.RemoveModels();
+        int removed = points.Count(p => p.B("excluded"));
+        status.Text = $"{points.Count - removed:N0} mantidos · {removed:N0} removidos · {plot.Data.N("invalid"):N0} linhas inválidas.";
+        await RegressionDataReady;
+        if (dataRowFilters.TryGetValue(Identity(config), out var updateRows))
+            await updateRows(points.OfType<JsonObject>().Where(p => !p.B("excluded")).Select(p => (int)p.N("row")));
     }
 
     private void ClearFits()
@@ -896,6 +1109,22 @@ internal sealed partial class ChartView : DockPanel
         config.Remove("frontier_points");
         config.Remove("selected_fit");
         config.Remove("selected_fits");
+    }
+
+    private static void StyleChartAction(Button button, string label)
+    {
+        button.Content = new TextBlock
+        {
+            Text = label,
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        button.HorizontalAlignment = HorizontalAlignment.Stretch;
+        button.HorizontalContentAlignment = HorizontalAlignment.Center;
+        button.MinWidth = 0;
+        button.MinHeight = 42;
+        button.Margin = new Thickness(2);
     }
 
     private async Task Export()

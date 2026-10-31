@@ -316,53 +316,47 @@ internal static class AnalysisDocuments
 
     internal static DockPanel PlotBody(ChartResult plot)
     {
-            var chartBody = new DockPanel();
-            var legend = new WrapPanel { Margin = new Thickness(10) };
-            foreach (var pair in plot.Chart["group_colors"] as JsonObject ?? new JsonObject())
+        var chartBody = new DockPanel();
+        var legend = new WrapPanel { Margin = new Thickness(10) };
+        foreach (var pair in plot.Chart["group_colors"] as JsonObject ?? new JsonObject())
+        {
+            var item = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 15, 5) };
+            item.Children.Add(new System.Windows.Shapes.Ellipse { Width = 9, Height = 9, Margin = new Thickness(0, 0, 6, 0),
+                Fill = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(pair.Value!.GetValue<string>())! });
+            item.Children.Add(Ui.Text(pair.Key, 11)); legend.Children.Add(item);
+        }
+        var config = plot.Chart.DeepClone().AsObject();
+        var scatter = new ScatterPlot { Data = RegressionEngine.ToJson(plot), Config = config };
+        var fits = plot.Chart["fits"] as JsonArray ?? [];
+        int[] Visible() => FitDisplay.Visible(config);
+        foreach (var (fit, index) in fits.Select((fit, index) => (fit!, index)))
+        {
+            var item = new StackPanel { Orientation = Orientation.Horizontal };
+            item.Children.Add(new System.Windows.Shapes.Line
             {
-                var item = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 15, 5) };
-                item.Children.Add(new System.Windows.Shapes.Ellipse { Width = 9, Height = 9, Margin = new Thickness(0, 0, 6, 0),
-                    Fill = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(pair.Value!.GetValue<string>())! });
-                item.Children.Add(Ui.Text(pair.Key, 11)); legend.Children.Add(item);
-            }
-            foreach (var fit in plot.Chart["fits"] as JsonArray ?? [])
+                X1 = 0, X2 = 22, Y1 = 8, Y2 = 8, Width = 25, Height = 16,
+                Stroke = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(FitDisplay.Color(fit))!,
+                StrokeThickness = 2,
+                StrokeDashArray = fit.B("line_dashed") ? new System.Windows.Media.DoubleCollection([3d, 2d]) : null,
+            });
+            item.Children.Add(Ui.Text(fit.S("group") + " · " + fit.S("model"), 11));
+            var toggle = new CheckBox { Content = item, IsChecked = Visible().Contains(index), Margin = new Thickness(0, 0, 14, 3),
+                VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "Mostrar ou ocultar esta curva no gráfico" };
+            System.Windows.Automation.AutomationProperties.SetName(toggle, "Mostrar curva " + fit.S("group") + " · " + fit.S("model"));
+            void RefreshVisibility()
             {
-                var item = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Margin = new Thickness(0, 0, 15, 5),
-                };
-                item.Children.Add(
-                    new System.Windows.Shapes.Line
-                    {
-                        X1 = 0,
-                        X2 = 22,
-                        Y1 = 8,
-                        Y2 = 8,
-                        Width = 25,
-                        Height = 16,
-                        Stroke = (System.Windows.Media.Brush)
-                            new System.Windows.Media.BrushConverter().ConvertFromString(
-                                FitDisplay.Color(fit!)
-                            )!,
-                        StrokeThickness = 2,
-                        StrokeDashArray = fit!.B("line_dashed")
-                            ? new System.Windows.Media.DoubleCollection([3d, 2d])
-                            : null,
-                    }
-                );
-                item.Children.Add(Ui.Text(fit.S("group") + " · " + fit.S("model"), 11));
-                legend.Children.Add(item);
+                int[] visible = Visible().Where(i => i != index).ToArray();
+                if (toggle.IsChecked == true) visible = [.. visible, index];
+                config["selected_fits"] = new JsonArray(visible.Order().Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
+                scatter.Config = config;
             }
-            DockPanel.SetDock(legend, Dock.Top);
-            chartBody.Children.Add(legend);
-            chartBody.Children.Add(
-                new ScatterPlot
-                {
-                    Data = RegressionEngine.ToJson(plot),
-                    Config = plot.Chart,
-                }
-            );
+            toggle.Checked += (_, _) => RefreshVisibility();
+            toggle.Unchecked += (_, _) => RefreshVisibility();
+            legend.Children.Add(toggle);
+        }
+        DockPanel.SetDock(legend, Dock.Top);
+        chartBody.Children.Add(legend);
+        chartBody.Children.Add(scatter);
         return chartBody;
     }
     internal static Task<AnalysisReport> Compute(ProjectSession session, JsonObject definition)
@@ -390,11 +384,7 @@ internal static class AnalysisDocuments
                     copy["chart"]!.AsObject(),
                     JsonSerializer.Deserialize<FrontierOptions>(copy["options"]!.ToJsonString())!)
                 : copy.S("kind") == "growth_comparison"
-                ? GrowthComparison.Run(
-                    JsonSerializer.Deserialize<GrowthCurve>(copy["baseline"]!.ToJsonString())!,
-                    JsonSerializer.Deserialize<GrowthCurve>(copy["updated"]!.ToJsonString())!,
-                    JsonSerializer.Deserialize<GrowthComparisonOptions>(copy["options"]!.ToJsonString())!,
-                    path.Length == 0 ? null : Dendro.Core.Tabular.TableStore.Read(new(path, copy.S("sheet"), (int)copy.N("header_row", 1))))
+                ? RunGrowthComparison(copy, path)
                 : copy.S("kind") == "increments"
                 ? GrowthDiagnostics.Report(
                     JsonSerializer.Deserialize<GrowthCurve[]>(copy["curves"]!.ToJsonString())!,
@@ -407,6 +397,17 @@ internal static class AnalysisDocuments
                     JsonSerializer.Deserialize<StatisticalRequest>(copy["request"]!.ToJsonString())!
                 )
         );
+    }
+
+    private static AnalysisReport RunGrowthComparison(JsonObject definition, string path)
+    {
+        var baseline = JsonSerializer.Deserialize<GrowthCurve>(definition["baseline"]!.ToJsonString())!;
+        var candidates = definition["candidates"] is JsonArray list
+            ? list.Select(item => JsonSerializer.Deserialize<GrowthCurve>(item!.ToJsonString())!).ToArray()
+            : [JsonSerializer.Deserialize<GrowthCurve>(definition["updated"]!.ToJsonString())!];
+        return GrowthComparison.Run(baseline, candidates,
+            JsonSerializer.Deserialize<GrowthComparisonOptions>(definition["options"]!.ToJsonString())!,
+            path.Length == 0 ? null : Dendro.Core.Tabular.TableStore.Read(new(path, definition.S("sheet"), (int)definition.N("header_row", 1))));
     }
 
     internal static async Task OpenSaved(MainWindow owner, ProjectSession session, JsonObject entry)

@@ -16,9 +16,6 @@
         <Setter Property="Background" Value="#F4F6F9" />
         <Setter Property="Foreground" Value="#263D52" />
       </Style>
-      <Style TargetType="CheckBox">
-        <Setter Property="Margin" Value="0,5,0,7" />
-      </Style>
       <Style TargetType="DataGrid">
         <Setter Property="AutoGenerateColumns" Value="True" />
         <Setter Property="CanUserAddRows" Value="False" />

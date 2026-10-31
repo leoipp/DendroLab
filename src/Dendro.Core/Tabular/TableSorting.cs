@@ -11,7 +11,7 @@ internal static class TableSorting
     private readonly record struct Key(int Missing, double Number, string Text, long Row);
     private sealed record Entry(object?[] Values, Key Key);
     internal static long Create(TableSource source, IReadOnlyList<TableFilter> filters, TableSort sort, string output, string index,
-        CancellationToken cancellation, IProgress<TableProgress>? progress)
+        CancellationToken cancellation, IProgress<TableProgress>? progress, IReadOnlySet<long>? includedSourceRows = null)
     {
         string folder=Path.Combine(Path.GetDirectoryName(output)!,"DendroLab-sort-"+Guid.NewGuid().ToString("N"));
         var updates=new TableProgressReporter(progress);
@@ -74,7 +74,7 @@ internal static class TableSorting
             foreach(var row in cursor.Rows())
             {
                 cancellation.ThrowIfCancellationRequested();scanned++;
-                if(matches(row))
+                if((includedSourceRows==null||includedSourceRows.Contains(source.HeaderRow+scanned))&&matches(row))
                 {
                     object?[] values=[..row,(double)(source.HeaderRow+scanned)];buffer.Add(new(values,MakeKey(values)));matched++;
                     estimatedBytes+=64+row.Length*24L+row.OfType<string>().Sum(s=>(long)s.Length*2);
@@ -89,7 +89,7 @@ internal static class TableSorting
                 foreach(var batch in runs.Chunk(16)) {string path=NewRun();Merge(batch,path,false);next.Add(path);foreach(string old in batch)File.Delete(old);}
                 runs=next;
             }
-            Merge(runs.ToArray(),output,true);updates.Report(100,$"Ordenação concluída: {matched:N0} linhas.",matched,true);return scanned;
+            Merge(runs.ToArray(),output,true);updates.Report(100,$"Ordenação concluída: {matched:N0} linhas.",matched,true);return matched;
         }
         finally { foreach(string file in Directory.EnumerateFiles(folder))File.Delete(file);Directory.Delete(folder); }
     }

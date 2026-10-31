@@ -32,6 +32,10 @@ public sealed class DataTable
 
     public double Number(int row, int column)
     {
+        var cell = Value(row, column);
+        if (cell is double number) return number;
+        if (cell is int integer) return integer;
+        if (cell is long longInteger) return longInteger;
         var text = Text(row, column).Trim();
         return double.TryParse(
             text.Replace(',', '.'),

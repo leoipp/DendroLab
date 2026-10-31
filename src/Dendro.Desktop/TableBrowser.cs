@@ -19,18 +19,20 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         ("Igual a", FilterOperator.Equal), ("Diferente de", FilterOperator.NotEqual), ("Contém", FilterOperator.Contains),
         ("Começa com", FilterOperator.StartsWith), ("Maior que", FilterOperator.Greater), ("Maior ou igual a", FilterOperator.GreaterOrEqual),
         ("Menor que", FilterOperator.Less), ("Menor ou igual a", FilterOperator.LessOrEqual), ("Está vazio", FilterOperator.Empty), ("Não está vazio", FilterOperator.NotEmpty)];
-    private readonly ComboBox filterColumn = Ui.Combo([]), filterOperator = Ui.Combo(Operators.Select(o => o.Label));
-    private readonly TextBox filterValue = Ui.Input();
-    private readonly Expander filters = new() { Header = "Filtros de colunas", Margin = new Thickness(8) };
     private readonly ObservableCollection<Clause> clauses = new();
-    private readonly ListBox activeFilters = new() { MaxHeight = 100, DisplayMemberPath = "Label" };
     private readonly Button export;
     private FilteredTable? filtered;
     private TableSort? sort;
+    private IReadOnlySet<long>? includedSourceRows;
     internal event Action<long[]>? RowsSelected;
     private bool syncingSelection;
     private long[] linkedSelection=[];
     internal IEnumerable<long> ViewSourceRows()=>filtered?.SourceRowNumbers()??Enumerable.Range(0,checked((int)Total)).Select(i=>(long)source.HeaderRow+i+1);
+    internal Task SetIncludedSourceRows(IEnumerable<long> rows)
+    {
+        includedSourceRows = rows.ToHashSet();
+        return ApplyFilters(clauses.ToArray());
+    }
     internal void SelectSourceRows(IEnumerable<long> rows)
     {
         linkedSelection=rows.ToArray();if(grid.Content is not DataGrid table||displayedPage==null)return;
@@ -54,6 +56,7 @@ internal sealed class TableBrowser : DockPanel, IDisposable
     private readonly TextBlock caption = Ui.Text("");
     private readonly Button previous,
         next;
+    private readonly WrapPanel bar;
     internal long Offset { get; private set; }
     internal long Total { get; private set; }
 
@@ -64,62 +67,136 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         this.exportReference = exportReference;
         this.readOnly = readOnly; this.releaseSource = releaseSource;
         Background = Brushes.White;
-        System.Windows.Automation.AutomationProperties.SetAutomationId(filterColumn, "TableFilter.Column");
-        System.Windows.Automation.AutomationProperties.SetAutomationId(filterOperator, "TableFilter.Operator");
-        System.Windows.Automation.AutomationProperties.SetAutomationId(filterValue, "TableFilter.Value");
-        var filterPanel = new StackPanel();
-        var fields = new WrapPanel();
-        void Field(string label, FrameworkElement control, double width)
-        {
-            var cell = new StackPanel { Width = width, Margin = new Thickness(0, 0, 10, 4) };
-            Ui.Field(cell, label, control); fields.Children.Add(cell);
-        }
-        Field("Coluna", filterColumn, 220); Field("Condição", filterOperator, 180); Field("Valor", filterValue, 200);
-        filterPanel.Children.Add(fields);
-        Ui.AddHelp(filterPanel, "Clique na seta do cabeçalho para filtrar. Clique no nome para ordenar, ou use o botão direito para escolher A → Z, Z → A, menor → maior ou maior → menor. Opera em toda a tabela, inclusive outras páginas, e respeita os filtros. Vazios ficam no fim. Filtros de várias colunas são combinados por E. Os números à esquerda continuam indicando a linha original. A exportação usa o resultado filtrado e ordenado; a origem permanece intacta.");
-        var actions = new WrapPanel();
-        actions.Children.Add(Ui.AsyncButton("Aplicar filtro", () => owner.Execute(AddFilter)));
-        actions.Children.Add(Ui.AsyncButton("Remover filtro selecionado", () => owner.Execute(() => ApplyFilters(clauses.Where(c => !ReferenceEquals(c, activeFilters.SelectedItem)).ToArray()))));
-        actions.Children.Add(Ui.AsyncButton("Limpar filtros", () => owner.Execute(() => ApplyFilters([]))));
-        actions.Children.Add(Ui.AsyncButton("Limpar ordenação", () => owner.Execute(() => ApplyFilters(clauses.ToArray(), null, true))));
-        filterPanel.Children.Add(actions);
-        activeFilters.ItemsSource = clauses; filterPanel.Children.Add(activeFilters);
-        filterOperator.SelectionChanged += (_, _) => filterValue.IsEnabled = Operators[filterOperator.SelectedIndex].Operator is not (FilterOperator.Empty or FilterOperator.NotEmpty);
-        filters.Content = filterPanel; SetDock(filters, Dock.Top); Children.Add(filters);
-        var bar = new WrapPanel
+        ToolTip = "Use o ícone de filtro no cabeçalho da coluna. Clique no nome da coluna para ordenar; clique com o botão direito para mais opções de ordenação e formato.";
+        bar = new WrapPanel
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(8),
+            VerticalAlignment = VerticalAlignment.Center,
         };
-        previous = Ui.AsyncButton(
-            "Anterior",
-            () => owner.Execute(() => Load(Math.Max(0, Offset - 500)))
+        previous = Ui.IconButton(
+            "Página anterior",
+            CommandIconKind.ArrowLeft,
+            () => { _ = owner.Execute(() => Load(Math.Max(0, Offset - 500))); }
         );
-        next = Ui.AsyncButton("Próxima", () => owner.Execute(() => Load(Offset + 500)));
-        bar.Children.Add(previous);
-        bar.Children.Add(next);
-        caption.Margin = new Thickness(10, 3, 10, 6);
-        bar.Children.Add(caption);
-        export = Ui.AsyncButton("Exportar tabela…", () => owner.Execute(Export));
+        next = Ui.IconButton(
+            "Próxima página",
+            CommandIconKind.ArrowRight,
+            () => { _ = owner.Execute(() => Load(Offset + 500)); }
+        );
+        foreach (var button in new[] { previous, next })
+        {
+            button.Width = button.MinWidth = 32;
+            button.Height = button.MinHeight = 30;
+            button.Padding = new Thickness(5);
+            button.Margin = new Thickness(1);
+        }
+        caption.Margin = new Thickness(6, 3, 6, 3);
+        caption.VerticalAlignment = VerticalAlignment.Center;
+        var navigation = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        navigation.Children.Add(previous);
+        navigation.Children.Add(caption);
+        navigation.Children.Add(next);
+        export = Ui.IconButton("Exportar tabela…", CommandIconKind.Export, () => { _ = owner.Execute(Export); });
         bar.Children.Add(export);
-        deleteSelected = new Button { Content = "Excluir selecionadas…" };
-        deleteFiltered = new Button { Content = "Excluir filtradas…" };
-        deleteSelected.Click += async (_, _) => { await owner.Execute(() => DeleteRows(false)); UpdateDeleteButtons(); };
-        deleteFiltered.Click += async (_, _) => { await owner.Execute(() => DeleteRows(true)); UpdateDeleteButtons(); };
+        deleteSelected = Ui.IconButton("Excluir selecionadas…", CommandIconKind.Remove, () => { _ = owner.Execute(async () => { await DeleteRows(false); UpdateDeleteButtons(); }); });
+        deleteFiltered = Ui.IconButton("Excluir filtradas…", CommandIconKind.Remove, () => { _ = owner.Execute(async () => { await DeleteRows(true); UpdateDeleteButtons(); }); });
         bar.Children.Add(deleteSelected); bar.Children.Add(deleteFiltered);
         if(selectionOnly)deleteSelected.Visibility=deleteFiltered.Visibility=Visibility.Collapsed;
-        SetDock(bar, Dock.Bottom);
-        Children.Add(bar);
+        var toolbar = new DockPanel { Margin = new Thickness(4, 1, 4, 3), LastChildFill = true };
+        DockPanel.SetDock(navigation, Dock.Right);
+        toolbar.Children.Add(navigation);
+        toolbar.Children.Add(bar);
+        SetDock(toolbar, Dock.Top);
+        Children.Add(toolbar);
         Children.Add(grid);
     }
 
-    private Task AddFilter()
+    internal void AddToolbarAction(UIElement action)
     {
-        if (filterColumn.SelectedItem is not string column) throw new InvalidOperationException("Selecione uma coluna para filtrar.");
+        int index = bar.Children.IndexOf(export);
+        bar.Children.Insert(index < 0 ? bar.Children.Count : index, action);
+    }
+
+    private Task AddFilter(string column, ComboBox filterOperator, TextBox filterValue)
+    {
         var operation = Operators[filterOperator.SelectedIndex];
         var filter = new TableFilter(column, operation.Operator, filterValue.Text);
         string label = column + " · " + operation.Label + (operation.Operator is not (FilterOperator.Empty or FilterOperator.NotEmpty) ? " · " + filterValue.Text : "");
         return ApplyFilters(clauses.Append(new Clause(filter, label)).ToArray());
+    }
+
+    private FrameworkElement CreateFilterHeader(string name)
+    {
+        var popup = new System.Windows.Controls.Primitives.Popup();
+        var header = new DockPanel { LastChildFill = true, MinHeight = 26 };
+        bool hasFilter = clauses.Any(c => c.Filter.Column == name);
+        var filterButton = new Button
+        {
+            Content = new CommandIcon { Kind = CommandIconKind.Filter, Width = 15, Height = 15, Tint = hasFilter ? Brushes.DodgerBlue : null },
+            Width = 25, Height = 24, MinWidth = 0, MinHeight = 0,
+            Padding = new Thickness(3), Margin = new Thickness(3, 0, 0, 0),
+            Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            ToolTip = "Filtrar a coluna " + name,
+        };
+        System.Windows.Automation.AutomationProperties.SetName(filterButton, "Filtrar " + name);
+        System.Windows.Controls.DockPanel.SetDock(filterButton, Dock.Right);
+        header.Children.Add(filterButton);
+        header.Children.Add(new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
+
+        var operation = Ui.Combo(Operators.Select(o => o.Label)); operation.SelectedIndex = 0;
+        var value = Ui.Input();
+        System.Windows.Automation.AutomationProperties.SetAutomationId(operation, "TableFilter.Operator." + name);
+        System.Windows.Automation.AutomationProperties.SetAutomationId(value, "TableFilter.Value." + name);
+        var active = new ListBox { ItemsSource = clauses, MaxHeight = 100, DisplayMemberPath = "Label", MinWidth = 280 };
+        var removeSelected = Ui.AsyncButton("Remover filtro selecionado", () => owner.Execute(() =>
+            ApplyFilters(clauses.Where(c => !ReferenceEquals(c, active.SelectedItem)).ToArray())));
+        removeSelected.IsEnabled = false;
+        active.SelectionChanged += (_, _) => removeSelected.IsEnabled = active.SelectedItem is Clause;
+
+        var body = new StackPanel { Width = 320 };
+        body.Children.Add(Ui.Text("Filtrar coluna: " + name, 14));
+        Ui.Field(body, "Condição", operation);
+        Ui.Field(body, "Valor", value);
+        body.Children.Add(Ui.AsyncButton("Aplicar filtro", () => owner.Execute(async () =>
+        {
+            await AddFilter(name, operation, value);
+            popup.IsOpen = false;
+        })));
+        body.Children.Add(Ui.Text("Filtros ativos · condições combinadas por E", 11));
+        body.Children.Add(active);
+        var actions = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
+        actions.Children.Add(removeSelected);
+        actions.Children.Add(Ui.AsyncButton("Limpar todos os filtros", () => owner.Execute(async () =>
+        {
+            await ApplyFilters([]);
+            popup.IsOpen = false;
+        })));
+        var clearSort = Ui.AsyncButton("Limpar ordenação", () => owner.Execute(async () =>
+        {
+            await ApplyFilters(clauses.ToArray(), null, true);
+            popup.IsOpen = false;
+        }));
+        clearSort.IsEnabled = sort != null;
+        actions.Children.Add(clearSort);
+        body.Children.Add(actions);
+        Ui.AddHelp(body, "Os filtros atuam na tabela inteira, inclusive nas outras páginas. Clique no nome da coluna para ordenar; o menu do botão direito oferece outros sentidos de ordenação e formatos.");
+
+        popup.PlacementTarget = filterButton;
+        popup.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        popup.StaysOpen = false;
+        popup.AllowsTransparency = true;
+        popup.Child = new Border
+        {
+            Background = Brushes.White,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(190, 202, 217)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(5),
+            Padding = new Thickness(10),
+            Child = body,
+        };
+        operation.SelectionChanged += (_, _) => value.IsEnabled = Operators[operation.SelectedIndex].Operator is not (FilterOperator.Empty or FilterOperator.NotEmpty);
+        filterButton.Click += (_, e) => { e.Handled = true; popup.IsOpen = !popup.IsOpen; };
+        return header;
     }
 
     private async Task ApplyFilters(Clause[] nextFilters, TableSort? nextSort = null, bool updateSort = false)
@@ -132,8 +209,8 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         {
             bool editable = CanEdit;
             var nextVersion = editable ? await Task.Run(() => TableRowEditor.Version(source), cancellation) : null;
-            if (nextFilters.Length > 0 || order != null)
-                replacement = await Task.Run(() => FilteredTable.Create(source, nextFilters.Select(c => c.Filter).ToArray(), cancellation, progress, sort: order), cancellation);
+            if (nextFilters.Length > 0 || order != null || includedSourceRows != null)
+                replacement = await Task.Run(() => FilteredTable.Create(source, nextFilters.Select(c => c.Filter).ToArray(), cancellation, progress, sort: order, includedSourceRows: includedSourceRows), cancellation);
             var nextPage = await Task.Run(() => replacement?.Page() ?? new FilteredPage(TableStore.Page(source), []), cancellation);
             cancellation.ThrowIfCancellationRequested();
             var previousFilter = filtered; filtered = replacement; replacement = null;
@@ -185,11 +262,6 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         displayedPage = result;
         Offset = page.Offset;
         Total = page.Total;
-        if (filterColumn.ItemsSource is not string[] { Length: > 0 })
-        {
-            filterColumn.ItemsSource = page.Data.Rows[0].Select(c => c?.ToString() ?? "").ToArray();
-            filterColumn.SelectedIndex = 0;
-        }
         var table = Ui.Grid(page.Data.ToJson());
         table.SelectionMode = DataGridSelectionMode.Extended;
         table.SelectionUnit = DataGridSelectionUnit.FullRow;
@@ -216,7 +288,7 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         table.Sorting += async (_, e) =>
         {
             e.Handled = true;
-            string column = e.Column.Header?.ToString() ?? "";
+            string column = e.Column.SortMemberPath;
             int c = page.Data.Column(column);
             var format = ColumnFormatting(column);
             var kind = format is ColumnFormat.Number or ColumnFormat.Date or ColumnFormat.Time or ColumnFormat.DateTime
@@ -256,36 +328,34 @@ internal sealed class TableBrowser : DockPanel, IDisposable
             }
             var headerStyle = new Style(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader), table.TryFindResource(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader)) as Style);
             headerStyle.Setters.Add(new Setter(ContextMenuProperty, formats)); e.Column.HeaderStyle = headerStyle;
-            var template = new DataTemplate();
-            var stack = new FrameworkElementFactory(typeof(StackPanel)); stack.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
-            var text = new FrameworkElementFactory(typeof(TextBlock)); text.SetBinding(TextBlock.TextProperty, new Binding());
-            text.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center); stack.AppendChild(text);
-            var button = new FrameworkElementFactory(typeof(Button)); button.SetValue(ContentControl.ContentProperty, "⌄");
-            button.SetValue(WidthProperty, 22d); button.SetValue(HeightProperty, 22d); button.SetValue(MinWidthProperty, 0d); button.SetValue(MinHeightProperty, 0d);
-            button.SetValue(Control.PaddingProperty, new Thickness(0)); button.SetValue(MarginProperty, new Thickness(6, 0, 0, 0));
-            button.SetValue(ToolTipProperty, "Filtrar " + name);
-            if (clauses.Any(c => c.Filter.Column == name)) button.SetValue(Control.ForegroundProperty, Brushes.DodgerBlue);
-            button.AddHandler(Button.ClickEvent, new RoutedEventHandler((_, _) => { filterColumn.SelectedItem = name; filters.IsExpanded = true; filterValue.Focus(); }));
-            stack.AppendChild(button); template.VisualTree = stack; e.Column.HeaderTemplate = template;
+            e.Column.SortMemberPath = e.PropertyName;
+            e.Column.Header = CreateFilterHeader(name);
         };
         grid.Content = table;
         caption.Text =
             $"{(Total == 0 ? 0 : Offset + 1):N0}–{Math.Min(Offset + 500, Total):N0} de {Total:N0} linhas"
             + (clauses.Count > 0 && filtered != null ? $" filtradas (base: {filtered.SourceCount:N0})" : "")
             + (sort != null ? $" · {sort.Column} {(sort.Descending ? "↓" : "↑")}" : "");
-        export.Content = clauses.Count == 0 ? "Exportar tabela…" : "Exportar resultado filtrado…";
-        activeFilters.Visibility = clauses.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        UpdateExportButton();
         previous.IsEnabled = Offset > 0;
         next.IsEnabled = Offset + 500 < Total;
         UpdateDeleteButtons();
         SelectSourceRows(linkedSelection);
     }
 
+    private void UpdateExportButton()
+    {
+        string label = clauses.Count == 0 ? "Exportar tabela…" : "Exportar resultado filtrado…";
+        export.ToolTip = label;
+        System.Windows.Automation.AutomationProperties.SetName(export, label);
+        ToolTipService.SetShowOnDisabled(export, true);
+    }
+
     private void UpdateDeleteButtons()
     {
         deleteSelected.IsEnabled = CanEdit && grid.Content is DataGrid table && table.SelectedItems.Count > 0;
         deleteFiltered.IsEnabled = CanEdit && filtered != null && clauses.Count > 0 && Total > 0;
-        string help = CanEdit ? "Selecione linhas pelo número à esquerda; Ctrl e Shift permitem selecionar várias. A exclusão pede confirmação e modifica a tabela no banco."
+        string help = CanEdit ? "Selecione linhas pelo número à esquerda; Ctrl e Shift permitem selecionar várias. A exclusão pede confirmação e modifica a tabela no arquivo DLB do projeto."
             : readOnly ? "Este relatório é somente para consulta. Corrija o cadastro ou os dados da tabela de origem."
             : owner.Session.IsHistoricalTable(exportReference ?? owner.Session.ProjectReference(source.Path))
                 ? "As versões do processamento são preservadas. Copie esta tabela para o banco para editar os dados fora do histórico."
@@ -322,7 +392,7 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         var content = Ui.Form();
         content.Children.Add(Ui.Text($"Excluir {count:N0} linha(s) da tabela?", 20));
         content.Children.Add(Ui.Text(allFiltered ? "Serão excluídas todas as linhas do filtro, inclusive as de outras páginas." : "Serão excluídas as linhas selecionadas na página atual."));
-        content.Children.Add(Ui.Text("A exclusão será gravada no banco e não pode ser desfeita por esta tela."));
+        content.Children.Add(Ui.Text("A exclusão será gravada no arquivo DLB do projeto e não pode ser desfeita por esta tela."));
         var accept = new Button { Content = $"Excluir {count:N0} linha(s)" }; var cancel = new Button { Content = "Cancelar" };
         var window = Ui.Dialog("Confirmar exclusão de linhas", Ui.WithToolbar(content, accept, cancel), 580, 340);
         accept.Click += (_, _) => window.DialogResult = true; cancel.Click += (_, _) => window.DialogResult = false;
@@ -336,7 +406,7 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         if (selected == null || selected.Length == 0) return;
         var cancellation = owner.OperationCancellation; var progress = owner.StartTableOperation($"Removendo {selected.Length} coluna(s)…");
         long rows = await Task.Run(() => TableRowEditor.RemoveColumns(source, version, selected, cancellation, progress), cancellation);
-        filtered?.Dispose(); filtered = null; clauses.Clear(); sort = null; filterColumn.ItemsSource = Array.Empty<string>();
+        filtered?.Dispose(); filtered = null; clauses.Clear(); sort = null;
         owner.Session.Touch(); await Load();
         owner.Log($"{selected.Length} coluna(s) removida(s): {string.Join(", ", selected)}. {rows:N0} linhas preservadas.");
     }

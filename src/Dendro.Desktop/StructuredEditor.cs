@@ -28,6 +28,7 @@ internal sealed class StructuredEditor : ScrollViewer
         ["modo"] = "Tipo de processamento",
         ["inventory_type"] = "Tipo de inventário",
         ["factor_scope"] = "Aplicar fatores por",
+        ["n_dominantes_parcela"] = "Árvores dominantes por parcela (N)",
         ["remover_duplicadas"] = "Remover árvores duplicadas (manter a primeira ocorrência)",
         ["talhao"] = "Talhão",
         ["dap"] = "DAP",
@@ -309,6 +310,8 @@ internal sealed class StructuredEditor : ScrollViewer
             );
             fields[key] = field;
             Ui.Field(form, Label(key), field);
+            if (fieldName == "processador" && key == "n_dominantes_parcela")
+                Ui.AddHelp(form, "Define N árvores usadas no cálculo em cada parcela. DAPd é a média dos maiores DAP; Hd é a média das alturas dessas mesmas árvores. Talhão, lote e projeto ponderam os resultados das parcelas pela área.");
             if (key == "caminho")
             {
                 if (fieldName == "cadastro" && spreadsheetPicker != null)
@@ -343,12 +346,22 @@ internal sealed class StructuredEditor : ScrollViewer
                         )
                     );
             }
-            bool numeric = v is JsonValue n && n.TryGetValue<double>(out _);
+            bool integer = v is JsonValue integerValue && integerValue.TryGetValue<int>(out _);
+            bool numeric = v is JsonValue numberValue && numberValue.TryGetValue<double>(out _);
             commit.Add(() =>
-                obj[key] = numeric
-                    ? JsonValue.Create(Ui.Number(field.Text))
-                    : JsonValue.Create(field.Text)
-            );
+            {
+                if (integer)
+                {
+                    double parsed = Ui.Number(field.Text);
+                    if (parsed != Math.Truncate(parsed) || parsed < int.MinValue || parsed > int.MaxValue)
+                        throw new InvalidOperationException($"{Label(key)} deve ser um número inteiro.");
+                    obj[key] = JsonValue.Create((int)parsed);
+                }
+                else
+                    obj[key] = numeric
+                        ? JsonValue.Create(Ui.Number(field.Text))
+                        : JsonValue.Create(field.Text);
+            });
         }
     }
 

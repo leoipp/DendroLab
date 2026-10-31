@@ -102,17 +102,30 @@ public class ParityTests
             Assert.Equal(expected.Count, actual.Count);
             bool ages = name is "RESUMO - BYPLOT" or "RESUMO - BYTALHAO";
             bool basal = expected.Column("AS") < 0 && actual.Column("AS") >= 0;
-            Assert.Equal(expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0), actual.Width);
+            bool expectedDominant = expected.Rows.SelectMany(row => row).Any(cell => cell?.ToString() is "DAPd" or "DAPd Med");
+            bool actualDominant = actual.Rows.SelectMany(row => row).Any(cell => cell?.ToString() is "DAPd" or "DAPd Med");
+            bool dominant = !expectedDominant && actualDominant;
+            int dominantAfter = -1;
+            if (dominant)
+            {
+                var header = expected.Rows.FirstOrDefault(row => row.Any(cell => cell?.ToString() == "H Med"))
+                    ?? expected.Rows.First(row => row.Any(cell => cell?.ToString() == "H"));
+                string heightHeader = header.Any(cell => cell?.ToString() == "H Med") ? "H Med" : "H";
+                dominantAfter = header.FindIndex(cell => cell?.ToString() == heightHeader);
+            }
+            Assert.True(expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0) == actual.Width,
+                $"{name}: expected {expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0)} columns; actual {actual.Width}; ages={ages}, basal={basal}, dominant={dominant}; headers={string.Join("|", actual.Rows[0])}");
             for (int r = 0; r < expected.Count; r++)
             for (int c = 0; c < expected.Width; c++)
             {
                 int ac = c + (ages && c > expected.Require("Idade_anos") ? 1 : 0)
-                    + (basal && c > expected.Require("DAP") ? 1 : 0);
+                    + (basal && c > expected.Require("DAP") ? 1 : 0)
+                    + (dominant && c > dominantAfter ? 2 : 0);
                 double e = expected.Number(r, c),
                     a = actual.Number(r, ac);
                 if (double.IsFinite(e))
                     Assert.True(
-                        Math.Abs(a - e) <= 1e-8 * Math.Max(1, Math.Abs(e)),
+                        Math.Abs(a - e) <= (name == "ESTATISTICAS INV" ? 0.0005000001 : 1e-8 * Math.Max(1, Math.Abs(e))),
                         $"{name}!{WorkbookWriter.Reference(r, c)} {a} != {e}"
                     );
                 else

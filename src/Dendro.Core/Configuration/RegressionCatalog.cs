@@ -93,12 +93,13 @@ public static class RegressionCatalog
             .Obj("regressoes")
             .Arr("modelos")
             .OfType<JsonObject>()
-            .Where(m => m.N("preditores") == predictors)
+            .Where(m => predictors <= 0 || m.N("preditores") == predictors)
             .Select(m => new RegressionFamily(
-                m.S("nome"),
+                $"{m.S("nome")} · {(int)m.N("preditores")}P",
                 m.S("formula"),
                 (int)m.N("coeficientes"),
-                m.S("id")
+                m.S("id"),
+                (int)m.N("preditores")
             ))
             .ToArray();
     }

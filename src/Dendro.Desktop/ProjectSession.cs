@@ -25,6 +25,7 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
         Dendro.Core.Configuration.RegressionCatalog.Ensure(data);
         Dendro.Core.Configuration.ProjectStore.EnsureInputUnits(data);
         Dendro.Core.Configuration.ProjectStore.EnsureRegistryFallback(data);
+        Dendro.Core.Processing.DirectInventorySummary.MigrateConfiguration(data);
         Dendro.Core.Configuration.ProjectStore.MergeDefaults(data.Obj("processador"), Dendro.Core.Processing.DirectInventorySummary.Defaults());
         foreach (string key in new[] { "resultado_arvore", "resumo_bylote" })
             if (data.At("saida.sheets." + key) is null)
@@ -66,17 +67,18 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
     public async Task New(string name)
     {
         var r = await WorkspaceOperations.Run(new() { ["op"] = "new", ["name"] = name });
+        pendingBankRemovals.Clear();
         FilePath = "";
         historyRevision = -1;
         Replace(r["project"]!.AsObject(), true);
     }
 
-    public async Task Open(string path, bool migrateBank = true)
+    public async Task Open(string path)
     {
         var r = await WorkspaceOperations.Run(new() { ["op"] = "open", ["path"] = path });
+        pendingBankRemovals.Clear();
         FilePath = Path.GetFullPath(path);
         Replace(r["project"]!.AsObject(), false);
-        if (migrateBank) await MigrateBank();
         historyRevision = -1;
         await RefreshHistory(true);
     }
@@ -146,6 +148,40 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
     {
         if (!Files.Contains(path, StringComparer.OrdinalIgnoreCase))
             Meta.Arr("files").Add(path);
+        Touch();
+    }
+
+    public void RelinkFile(string oldPath, string newPath)
+    {
+        if (!File.Exists(newPath))
+            throw new FileNotFoundException("O arquivo selecionado não existe.", newPath);
+        if (IsSpreadsheet(oldPath) != IsSpreadsheet(newPath))
+            throw new InvalidOperationException("Selecione uma planilha Excel para substituir esta referência.");
+        static string Key(string path) => path.Replace('/', '\\');
+        string oldKey = Key(oldPath);
+        bool Matches(string value) => string.Equals(Key(value), oldKey, StringComparison.OrdinalIgnoreCase);
+        if (!Files.Any(Matches))
+            throw new InvalidOperationException("A referência ausente não pertence mais a este projeto.");
+        void ReplaceReferences(JsonNode? node)
+        {
+            if (node is JsonObject obj)
+            {
+                foreach (var pair in obj.ToArray())
+                    if (pair.Value is JsonValue value && value.TryGetValue<string>(out string? text) && Matches(text))
+                        obj[pair.Key] = newPath;
+                    else
+                        ReplaceReferences(pair.Value);
+            }
+            else if (node is JsonArray array)
+            {
+                for (int index = 0; index < array.Count; index++)
+                    if (array[index] is JsonValue value && value.TryGetValue<string>(out string? text) && Matches(text))
+                        array[index] = newPath;
+                    else
+                        ReplaceReferences(array[index]);
+            }
+        }
+        ReplaceReferences(Data);
         Touch();
     }
 

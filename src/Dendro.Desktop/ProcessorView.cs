@@ -2,6 +2,7 @@
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using Dendro.Core.Configuration;
 using Dendro.Core.Processing;
 using Dendro.Core.Tabular;
 
@@ -24,7 +25,6 @@ internal sealed class ProcessorView : ScrollViewer
     private readonly ComboBox mode = Ui.Combo(["Inventário com revisão e aprovação", "Resumo direto por nível"]);
     private readonly ComboBox inventoryType = Ui.Combo(["IFC", "IFPC", "MISTO"]), factorScope = Ui.Combo(["Talhão", "Lote"]);
     private readonly Dictionary<string, CheckBox> summaryLevels = new();
-    private readonly CheckBox removeDuplicates = new() { Content = "Remover árvores duplicadas (manter a primeira ocorrência)" };
     private readonly List<(string Path, CheckBox Box)> choices = new();
 
     public ProcessorView(MainWindow owner, ProjectSession session)
@@ -33,6 +33,7 @@ internal sealed class ProcessorView : ScrollViewer
         this.session = session;
         var form = Ui.Form();
         form.Children.Add(owner.ToolHeader("Processador"));
+        Ui.Section(form,"Configuração do processamento");
         mode.SelectedIndex = session.Data!["processador"].S("modo") == "resumo_direto" ? 1 : 0;
         System.Windows.Automation.AutomationProperties.SetAutomationId(mode, "Processor.Mode");
         Ui.Field(form, "Tipo de processamento", mode);
@@ -43,12 +44,9 @@ internal sealed class ProcessorView : ScrollViewer
         Ui.Field(versionSettings, "Tipo de inventário", inventoryType);
         Ui.AddHelp(versionSettings, "As chaves de árvore e parcela são escolhidas em Configurações > Identificação. MISTO permite processar IFC e IFPC juntos, preservando a separação por tipo e base. A coluna de tipo tem prioridade sobre o nome da Fonte e sobre esta escolha.");
         Ui.Field(versionSettings, "Aplicação dos fatores nas revisões", factorScope);
-        removeDuplicates.IsChecked = session.Data.At("processador").B("remover_duplicadas");
-        System.Windows.Automation.AutomationProperties.SetAutomationId(removeDuplicates, "Processor.RemoveDuplicates");
         versionSettings.Visibility = mode.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         form.Children.Add(versionSettings);
-        form.Children.Add(removeDuplicates);
-        Ui.AddHelp(form, "Usa as chaves de árvore, base e tipo de inventário definidas em Configurações > Identificação. A remoção ocorre antes do ajuste de altura e das somas, nos dois tipos de processamento; o arquivo de entrada permanece intacto.");
+        Ui.AddHelp(form, "Usa as chaves de árvore, base e tipo de inventário definidas em Configurações > Identificação. A opção de remover árvores duplicadas também fica em Projeto > Configurações > Processador; a remoção ocorre antes do ajuste de altura e das somas, nos dois modos, sem alterar o arquivo de entrada.");
         var summaries = new StackPanel();
         summaries.Children.Add(Ui.Text("Saídas do resumo direto"));
         summaries.Children.Add(Ui.Button("Configurar colunas por nível…",()=>DirectColumnsView.Show(owner,session)));
@@ -63,7 +61,7 @@ internal sealed class ProcessorView : ScrollViewer
         Ui.AddHelp(summaries, "Por árvore: DAP, H e AS. Por parcela: DAP médio, diâmetro quadrático, H médio e AB (soma de AS), sem volume/fustes amostrados. Os níveis superiores mantêm os indicadores por hectare e totais estimados.");
         summaries.Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         form.Children.Add(summaries);
-        form.Children.Add(Ui.Text("Inventários de entrada"));
+        Ui.Section(form,"Inventários de entrada");
         inventory = new Button { HorizontalContentAlignment = HorizontalAlignment.Left };
         var menu = new ContextMenu { StaysOpen = true };
         inventory.Click += (_, _) =>
@@ -100,7 +98,8 @@ internal sealed class ProcessorView : ScrollViewer
         };
         form.Children.Add(inventory);
         UpdateSummary();
-        Ui.AddHelp(form, "Resultados no banco compacto do projeto (.dlb). Excel e CSV ficam disponíveis na exportação das tabelas.");
+        Ui.AddHelp(form, "Resultados ficam no mesmo arquivo DLB do projeto. Excel e CSV ficam disponíveis na exportação das tabelas.");
+        Ui.Section(form,"Saídas e execução");
         prefix = Ui.Input(session.Meta.S("output_prefix"));
         Ui.Field(form, "Prefixo dos resultados", prefix);
         factor = Ui.Input(session.Data!.Obj("volume")["fator"].Display());
@@ -111,7 +110,6 @@ internal sealed class ProcessorView : ScrollViewer
         prefix.LostKeyboardFocus += (_, _) => TryCapture();
         factor.LostKeyboardFocus += (_, _) => TryCapture();
         inventoryType.SelectionChanged += (_, _) => TryCapture(); factorScope.SelectionChanged += (_, _) => TryCapture();
-        removeDuplicates.Click += (_, _) => TryCapture();
         mode.SelectionChanged += (_, _) => { summaries.Visibility = factorSettings.Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
             versionSettings.Visibility = mode.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed; TryCapture(); };
         form.Children.Add(Ui.AsyncButton("Executar selecionados", () => owner.Execute(Process)));
@@ -161,11 +159,12 @@ internal sealed class ProcessorView : ScrollViewer
     public void Capture()
     {
         double? value = Ui.Factor(factor.Text);
-        var processing = DirectInventorySummary.Defaults();
+        var processing = session.Data!["processador"]?.DeepClone().AsObject() ?? DirectInventorySummary.Defaults();
+        processing.Remove("execucao");
+        ProjectStore.MergeDefaults(processing, DirectInventorySummary.Defaults());
         processing["modo"] = mode.SelectedIndex == 1 ? "resumo_direto" : "completo";
         processing["inventory_type"] = inventoryType.SelectedItem?.ToString() ?? "";
         processing["factor_scope"] = factorScope.SelectedIndex == 1 ? "lote" : "talhao";
-        processing["remover_duplicadas"] = removeDuplicates.IsChecked == true;
         foreach (var pair in summaryLevels) processing.Obj("saidas")[pair.Key] = pair.Value.IsChecked == true;
         DirectInventorySummary.Validate(processing);
         bool changed =
@@ -201,7 +200,7 @@ internal sealed class ProcessorView : ScrollViewer
             throw new InvalidOperationException(
                 "Configure o cadastro florestal em Projeto > Configurações."
             );
-        string snapshot = Path.Combine(Path.GetTempPath(), $"DENDRO-{Guid.NewGuid():N}.dendro");
+        string snapshot = Path.Combine(Path.GetTempPath(), $"DENDRO-{Guid.NewGuid():N}.dlb");
         var config = session.ProcessingSnapshot();
         try
         {
@@ -235,7 +234,7 @@ internal sealed class ProcessorView : ScrollViewer
                 {
                     if (run != null)
                     {
-                        runConfig = Path.Combine(Path.GetTempPath(), "DENDRO-" + run.S("id") + ".dendro");
+                    runConfig = Path.Combine(Path.GetTempPath(), "DENDRO-" + run.S("id") + ".dlb");
                         var execution = config.DeepClone().AsObject(); execution.Obj("processador")["execucao"] = run.DeepClone(); execution.Obj("volume")["fator"] = 1;
                         await WorkspaceOperations.Run(new() { ["op"] = "save", ["project"] = execution, ["path"] = runConfig });
                     }
@@ -272,7 +271,7 @@ internal sealed class ProcessorView : ScrollViewer
                         run["removed_duplicates"] = r["result"]!.N("removed_duplicates");
                         run["duplicate_policy"] = config["processador"].B("remover_duplicadas") ? "keep_first" : "reject";
                         run["export_sheets"] = ProcessingHistory.DefaultExportSheets(config, run["sheets"]!.AsArray().Select(s => s.Display()));
-                        owner.StatusText.Text = "Publicando resultados no banco compartilhado…";
+                        owner.StatusText.Text = "Publicando resultados no arquivo DLB do projeto…";
                         await session.PublishProcessing(output, run, owner.OperationCancellation, (copied, total) =>
                             owner.Dispatcher.BeginInvoke(() =>
                             {
@@ -311,7 +310,7 @@ internal sealed class ProcessorView : ScrollViewer
                     });
                     session.Touch();
                     owner.Log(
-                        $"{session.ContentName(path)} → tabelas no banco do projeto · {r["result"]!.N("trees"):N0} árvores · volume {r["result"]!.N("volume"):N3}"
+                        $"{session.ContentName(path)} → tabelas no arquivo do projeto · {r["result"]!.N("trees"):N0} árvores · volume {r["result"]!.N("volume"):N3}"
                     );
                     }
                     if (r["result"]!.N("removed_duplicates") > 0)

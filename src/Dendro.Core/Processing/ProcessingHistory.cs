@@ -193,12 +193,12 @@ public static class ProcessingHistory
         foreach (var pair in snapshot.Where(p => p.Value is JsonValue)) info.Add(pair.Key, pair.Value.Display());
         tables.Add(new("PROCESSAMENTO", info));
         output = Path.GetFullPath(output);
-        string temporary = Path.Combine(Path.GetDirectoryName(output)!, ".dendro-export-" + Guid.NewGuid().ToString("N") + ".tmp");
+        string temporary = Path.Combine(Path.GetDirectoryName(output)!, ".dendrolab-export-" + Guid.NewGuid().ToString("N") + ".tmp");
         try
         {
             WorkbookWriter.Write(temporary, tables, true);
             cancellation.ThrowIfCancellationRequested();
-            using var lease = Configuration.SharedFileLock.Acquire(ProcessingCatalog.FilePath(project) + ".lock", cancellation);
+            using var lease = Configuration.SharedFileLock.Acquire(ProcessingCatalog.FilePath(project) + ".write.lock", cancellation);
             var current = Current();
             if (current.N("revision") != snapshot.N("revision")) throw new InvalidOperationException("A aprovação mudou durante a exportação. Atualize a versão selecionada.");
             File.Move(temporary, output, true);

@@ -86,17 +86,17 @@ public class RegressionCatalogTests
     }
 
     [Fact]
-    public void CatalogSurvivesSavingAndLegacyMigrationWithoutChangingOriginal()
+    public void CatalogSurvivesSavingAndSchemaMigrationWithoutChangingOriginal()
     {
         string path = Path.Combine(
             Path.GetTempPath(),
-            "DENDRO-catalog-" + Guid.NewGuid().ToString("N") + ".dendro"
+            "DENDRO-catalog-" + Guid.NewGuid().ToString("N") + ".dlb"
         );
         try
         {
             var p = ProjectStore.Create("Legado");
             p.Remove("regressoes");
-            File.WriteAllText(path, p.ToJsonString());
+            ProjectStore.Save(path, p);
             byte[] original = File.ReadAllBytes(path);
             var loaded = ProjectStore.Read(path);
             Assert.Equal(12, RegressionCatalog.Families(loaded).Length);

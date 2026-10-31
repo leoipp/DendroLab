@@ -11,7 +11,7 @@ public static class ParcelAreaValidation
         string SlopeLength, string SlopeWidth, string Source);
 
     public static double[] Compute(DataTable input, System.Text.Json.Nodes.JsonObject cfg, CancellationToken cancellation = default,
-        Action<int, string>? progress = null)
+        Action<int, string>? progress = null, bool retainAreas = true)
     {
         cancellation.ThrowIfCancellationRequested();
         var columns = cfg.At("arquivo_entrada.colunas");
@@ -19,7 +19,7 @@ public static class ParcelAreaValidation
             slopeLength = input.Require(columns.S("declinacao_comprimento", "Dec_Compr")), slopeWidth = input.Require(columns.S("declinacao_largura", "Dec_Larg")),
             stand = input.Require(columns.S("talhao", "Talhão")), plot = input.Require(columns.S("parcela", "Parcela")),
             lot = input.Require(columns.S("lote", "Lote")), date = input.Require(columns.S("data_medicao", "Data")), source = input.Column("Fonte");
-        var areas = new double[input.Count];
+        var areas = retainAreas ? new double[input.Count] : Array.Empty<double>();
         bool blankLengthZero = cfg.At("arquivo_entrada.declinacoes").B("comprimento_vazio_zero"), blankWidthZero = cfg.At("arquivo_entrada.declinacoes").B("largura_vazio_zero");
         var issues = new Dictionary<IssueKey, (int First, long Count, double Area, string Reason)>();
         for (int row = 1; row < input.Count; row++)
@@ -32,7 +32,8 @@ public static class ParcelAreaValidation
             if (blankLengthZero && string.IsNullOrWhiteSpace(input.Text(row, slopeLength))) input.Set(row, slopeLength, 0d);
             if (blankWidthZero && string.IsNullOrWhiteSpace(input.Text(row, slopeWidth))) input.Set(row, slopeWidth, 0d);
             double l = input.Number(row, length), w = input.Number(row, width), sl = input.Number(row, slopeLength), sw = input.Number(row, slopeWidth);
-            double area = areas[row] = InventoryMath.Area(l, w, sl, sw);
+            double area = InventoryMath.Area(l, w, sl, sw);
+            if (retainAreas) areas[row] = area;
             if (area > 0 && double.IsFinite(area)) continue;
             var reasons = new List<string>();
             void Check(double value, string name, bool positive)

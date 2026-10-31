@@ -485,7 +485,7 @@ public static class TableTools
             this.folder = System.IO.Path.GetFullPath(folder);
             if (!Directory.Exists(this.folder))
                 throw new DirectoryNotFoundException("Selecione uma pasta de saída existente.");
-            temp = System.IO.Path.Combine(this.folder, ".dendro-" + Guid.NewGuid().ToString("N"));
+            temp = System.IO.Path.Combine(this.folder, ".dendrolab-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(temp);
         }
 

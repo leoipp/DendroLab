@@ -162,7 +162,7 @@ public class ProcessingHistoryTests : IDisposable
     [Fact]
     public async Task ParallelPublicationsPreserveBothRunsAndApprovalDetectsStaleRevision()
     {
-        string project = Path.Combine(folder, "project.dendro"), bank = Path.Combine(folder, "project.dlb");
+        string project = Path.Combine(folder, "project.dlb"), bank = project;
         ProjectStore.Save(project, ProjectStore.Create("Rede"));
         string Stage(string name)
         {
@@ -195,7 +195,7 @@ public class ProcessingHistoryTests : IDisposable
     [Fact]
     public async Task ConflictingCorrectionsCannotOverwriteEachOtherAndApprovalPreservesAudit()
     {
-        string project = Path.Combine(folder, "conflict.dendro"), bank = Path.Combine(folder, "conflict.dlb");
+        string project = Path.Combine(folder, "conflict.dlb"), bank = project;
         ProjectStore.Save(project, ProjectStore.Create("Conflito"));
         string Stage(string name)
         {
@@ -218,7 +218,8 @@ public class ProcessingHistoryTests : IDisposable
         bool[] results = await Task.WhenAll(Task.Run(() => Publish(sa, a)), Task.Run(() => Publish(sb, b)));
         Assert.Single(results, r => r);
         var catalog = ProcessingCatalog.Read(project); Assert.Equal(2, catalog.Arr("records").Count);
-        using (var reader = new CompactBankReader(bank)) Assert.Equal(2, reader.Catalog.Tables.Length);
+        using (var reader = new CompactBankReader(bank))
+            Assert.Equal(2, reader.Catalog.Tables.Count(table => table.Dataset is "original.dlb" or "a.dlb" or "b.dlb"));
         ProcessingCatalog.ChangeStatus(project, [], original.S("id"), 0, "aprovado");
         ProcessingHistory.ExportApproved(project, [], original.S("id"), ["Dados"], Path.Combine(folder, "original-aprovado.xlsx"));
         var second = catalog.Arr("records").Single(r => r.N("number") == 2);

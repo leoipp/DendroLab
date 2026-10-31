@@ -11,6 +11,9 @@ internal sealed class ModelsView : DockPanel
     private readonly ProjectSession session;
     private readonly bool growth;
     private readonly DataGrid grid = new();
+    private readonly Button editButton;
+    private readonly Button removeButton;
+    private readonly Button? activateButton;
     private JsonArray Rows =>
         growth
             ? session.Data!.Obj("curvas_crescimento").Arr("equacoes")
@@ -21,47 +24,67 @@ internal sealed class ModelsView : DockPanel
         this.owner = owner;
         this.session = session;
         this.growth = growth;
-        var bar = new WrapPanel { Margin = new Thickness(10) };
-        bar.Children.Add(Ui.AsyncButton("Novo modelo", () => Edit(-1)));
-        bar.Children.Add(Ui.AsyncButton("Editar selecionado", () => Edit(grid.SelectedIndex)));
-        bar.Children.Add(
-            Ui.AsyncButton(
-                "Excluir selecionado",
-                async () =>
+        var bar = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        bar.Children.Add(Ui.IconButton("Novo modelo", CommandIconKind.New, () =>
+        {
+            _ = owner.Execute(() => Edit(-1));
+        }));
+        editButton = Ui.IconButton("Editar modelo selecionado", CommandIconKind.Rename, () =>
+        {
+            _ = owner.Execute(() => Edit(grid.SelectedIndex));
+        });
+        removeButton = Ui.IconButton("Excluir modelo selecionado", CommandIconKind.Remove, () =>
+        {
+            _ = owner.Execute(async () =>
+            {
+                if (grid.SelectedIndex < 0) return;
+                await session.Mutate(new()
                 {
-                    if (grid.SelectedIndex < 0)
-                        return;
-                    await session.Mutate(
-                        new()
-                        {
-                            ["op"] = growth ? "curve_remove" : "model_remove",
-                            ["index"] = grid.SelectedIndex,
-                        }
-                    );
-                    Refresh();
-                }
-            )
-        );
+                    ["op"] = growth ? "curve_remove" : "model_remove",
+                    ["index"] = grid.SelectedIndex,
+                });
+                Refresh();
+            });
+        });
+        bar.Children.Add(editButton);
+        bar.Children.Add(removeButton);
         if (growth)
-            bar.Children.Add(
-                Ui.AsyncButton(
-                    "Tornar vigente para este ID",
-                    async () =>
-                    {
-                        if (grid.SelectedIndex < 0)
-                            return;
-                        await session.Mutate(
-                            new() { ["op"] = "curve_activate", ["index"] = grid.SelectedIndex }
-                        );
-                        Refresh();
-                    }
-                )
-            );
-        DockPanel.SetDock(bar, Dock.Top);
-        Children.Add(bar);
+        {
+            activateButton = Ui.IconButton("Tornar vigente para este ID", CommandIconKind.Activate, () =>
+            {
+                _ = owner.Execute(async () =>
+                {
+                    if (grid.SelectedIndex < 0) return;
+                    await session.Mutate(new() { ["op"] = "curve_activate", ["index"] = grid.SelectedIndex });
+                    Refresh();
+                });
+            });
+            bar.Children.Add(activateButton);
+        }
+        var toolbar = new DockPanel { Margin = new Thickness(4, 1, 4, 3), LastChildFill = true };
+        toolbar.Children.Add(bar);
+        DockPanel.SetDock(toolbar, Dock.Top);
+        Children.Add(toolbar);
         Children.Add(grid);
-        grid.MouseDoubleClick += async (_, _) => await Edit(grid.SelectedIndex);
+        grid.SelectionChanged += (_, _) => UpdateActionStates();
+        grid.MouseDoubleClick += async (_, _) =>
+        {
+            if (grid.SelectedIndex >= 0) await Edit(grid.SelectedIndex);
+        };
         Refresh();
+    }
+
+    private void UpdateActionStates()
+    {
+        bool hasSelection = grid.SelectedIndex >= 0 && grid.SelectedIndex < Rows.Count;
+        editButton.IsEnabled = hasSelection;
+        removeButton.IsEnabled = hasSelection;
+        if (activateButton != null)
+            activateButton.IsEnabled = hasSelection && !Rows[grid.SelectedIndex]!.B("vigente", true);
     }
 
     private void Refresh()
@@ -106,6 +129,7 @@ internal sealed class ModelsView : DockPanel
         }
         if (!growth) t.Columns["Tipo de volume"]!.SetOrdinal(1);
         grid.ItemsSource = t.DefaultView;
+        UpdateActionStates();
     }
 
     internal static JsonArray DefaultInputs(bool growth) =>

@@ -32,4 +32,13 @@ public static class ShellVisuals
 
     public static void SetIcon(DependencyObject element, CommandIconKind value) =>
         element.SetValue(IconProperty, value);
+
+    public static readonly DependencyProperty MissingProperty = DependencyProperty.RegisterAttached(
+        "Missing", typeof(bool), typeof(ShellVisuals), new PropertyMetadata(false));
+
+    public static bool GetMissing(DependencyObject element) =>
+        (bool)element.GetValue(MissingProperty);
+
+    public static void SetMissing(DependencyObject element, bool value) =>
+        element.SetValue(MissingProperty, value);
 }

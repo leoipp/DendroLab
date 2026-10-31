@@ -11,7 +11,8 @@ public sealed record GrowthCurve(
     double[] Coefficients,
     string AgeUnit = "anos",
     string AgeSymbol = "t",
-    double AgeFactor = 1
+    double AgeFactor = 1,
+    IReadOnlyDictionary<string, double>? FixedInputs = null
 );
 
 public sealed record IncrementPoint(double Age, double Volume, double Ima, double Ica);
@@ -61,7 +62,7 @@ public static class GrowthDiagnostics
             );
         var formula = new Formula(
             curve.Formula,
-            new[] { "x", "x1", "t", curve.AgeSymbol }.Concat(
+            new[] { "x", "x1", "t", curve.AgeSymbol }.Concat(curve.FixedInputs?.Keys ?? []).Concat(
                 Enumerable.Range(0, curve.Coefficients.Length).Select(i => "b" + i)
             )
         );
@@ -73,7 +74,9 @@ public static class GrowthDiagnostics
             return formula.Evaluate(s =>
                 s is "x" or "x1" or "t" || s == curve.AgeSymbol
                     ? x
-                    : curve.Coefficients[int.Parse(s[1..])]
+                    : curve.FixedInputs?.TryGetValue(s, out double value) == true
+                        ? value
+                        : curve.Coefficients[int.Parse(s[1..])]
             );
         }
         double Ica(double age)

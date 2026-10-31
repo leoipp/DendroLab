@@ -22,13 +22,116 @@
         Margin="0,0,7,0"
         DockPanel.Dock="Left"
       />
+      <Border x:Name="MissingBadge" DockPanel.Dock="Right" Width="14" Height="14" CornerRadius="7"
+              Background="#C93642" Margin="5,0,1,0" VerticalAlignment="Center" Visibility="Collapsed"
+              ToolTip="Arquivo de origem ausente. Use o menu do botão direito para referenciá-lo novamente.">
+        <TextBlock Text="!" Foreground="White" FontSize="10" FontWeight="Bold"
+                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+      </Border>
       <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
     </DockPanel>
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Path=(local:ShellVisuals.Missing), RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
+        <Setter TargetName="MissingBadge" Property="Visibility" Value="Visible" />
+      </DataTrigger>
+    </DataTemplate.Triggers>
   </DataTemplate>
   <Style TargetType="TreeViewItem">
     <Setter Property="Padding" Value="4,2" />
     <Setter Property="Foreground" Value="#304A60" />
     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+  </Style>
+  <Style TargetType="ContextMenu">
+    <Setter Property="Background" Value="White" />
+    <Setter Property="Foreground" Value="#263D52" />
+    <Setter Property="BorderBrush" Value="#D5DFE9" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="Padding" Value="4" />
+    <Setter Property="HasDropShadow" Value="True" />
+    <Setter Property="SnapsToDevicePixels" Value="True" />
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ContextMenu">
+          <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+            <ScrollViewer CanContentScroll="True" MaxHeight="650" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" />
+            </ScrollViewer>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style TargetType="MenuItem">
+    <Setter Property="Foreground" Value="#263D52" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Padding" Value="8,5" />
+    <Setter Property="Margin" Value="1" />
+    <Setter Property="MinHeight" Value="30" />
+    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="MenuItem">
+          <Grid SnapsToDevicePixels="True">
+            <Border x:Name="Highlight" Background="{TemplateBinding Background}" BorderBrush="Transparent"
+                    BorderThickness="1" CornerRadius="5" />
+            <Grid Margin="2,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="26" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="14" />
+              </Grid.ColumnDefinitions>
+              <ContentPresenter x:Name="IconPresenter" Grid.Column="0" ContentSource="Icon"
+                                HorizontalAlignment="Center" VerticalAlignment="Center" />
+              <TextBlock x:Name="CheckMark" Grid.Column="0" Text="✓" Foreground="#21669D" FontWeight="Bold"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" />
+              <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True"
+                                VerticalAlignment="Center" Margin="3,0,18,0" />
+              <TextBlock Grid.Column="2" Text="{TemplateBinding InputGestureText}" Foreground="#788B9A"
+                         VerticalAlignment="Center" Margin="12,0,8,0" />
+              <Path x:Name="SubmenuArrow" Grid.Column="3" Data="M0,0 L4,4 L0,8" Stroke="#71879A"
+                    StrokeThickness="1.4" Width="5" Height="8" HorizontalAlignment="Center"
+                    VerticalAlignment="Center" Visibility="Collapsed" />
+            </Grid>
+            <Popup x:Name="PART_Popup" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"
+                   Placement="Right" IsOpen="{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}">
+              <Border Background="White" BorderBrush="#D5DFE9" BorderThickness="1" CornerRadius="8" Padding="4">
+                <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+              </Border>
+            </Popup>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+              <Setter TargetName="Highlight" Property="Background" Value="#EAF3FB" />
+              <Setter TargetName="Highlight" Property="BorderBrush" Value="#BDD4E7" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Opacity" Value="0.48" />
+            </Trigger>
+            <Trigger Property="HasItems" Value="True">
+              <Setter TargetName="SubmenuArrow" Property="Visibility" Value="Visible" />
+            </Trigger>
+            <Trigger Property="IsChecked" Value="True">
+              <Setter TargetName="CheckMark" Property="Visibility" Value="Visible" />
+              <Setter TargetName="IconPresenter" Property="Visibility" Value="Collapsed" />
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style TargetType="Separator">
+    <Setter Property="Height" Value="1" />
+    <Setter Property="Margin" Value="29,4,5,4" />
+    <Setter Property="Background" Value="#E6EBF1" />
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Separator">
+          <Border Height="1" Background="{TemplateBinding Background}" />
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
   </Style>
   <DataTemplate x:Key="PaneTitle">
     <DockPanel LastChildFill="True">
@@ -153,7 +256,7 @@
         />
       </Border>
       <DockPanel Grid.Column="1" Margin="4,1,5,0" VerticalAlignment="Center">
-        <local:HelpIcon x:Name="Description" DockPanel.Dock="Right" />
+        <local:HelpIcon x:Name="Description" DockPanel.Dock="Left" />
         <TextBlock Text="{Binding}" FontWeight="SemiBold" Foreground="#26465F" FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap" />
       </DockPanel>
       <Path
@@ -184,7 +287,7 @@
           Value="Explorar dados em gráficos de dispersão"
         />
       </DataTrigger>
-      <DataTrigger Binding="{Binding}" Value="Regressões 1P">
+      <DataTrigger Binding="{Binding}" Value="Regressões">
         <Setter
           TargetName="Description"
           Property="Text"

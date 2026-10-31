@@ -1,19 +1,51 @@
 using System.IO;
 using System.Text.Json.Nodes;
 using Dendro.Core.Configuration;
+using Dendro.Core.Processing;
 using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
 internal sealed partial class ProjectSession
 {
+    private sealed class PendingBankRemoval
+    {
+        public HashSet<string> Tables { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> Datasets { get; } = new(StringComparer.Ordinal);
+    }
+
     private string? workFolder;
+    private readonly Dictionary<string, PendingBankRemoval> pendingBankRemovals = new(StringComparer.OrdinalIgnoreCase);
+
+    private void DeferBankRemoval(string path, IEnumerable<string>? tableIds = null, IEnumerable<string>? datasets = null)
+    {
+        path = Path.GetFullPath(path);
+        if (!pendingBankRemovals.TryGetValue(path, out var pending))
+            pendingBankRemovals[path] = pending = new PendingBankRemoval();
+        if (tableIds != null) pending.Tables.UnionWith(tableIds);
+        if (datasets != null) pending.Datasets.UnionWith(datasets);
+    }
+
+    private async Task ApplyPendingBankRemovals(string originalProject, string savedProject)
+    {
+        foreach (var pair in pendingBankRemovals.ToArray())
+        {
+            // Save As copies the project's bank to the new path; keep the source project intact.
+            string bank = string.Equals(pair.Key, originalProject, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(originalProject, savedProject, StringComparison.OrdinalIgnoreCase)
+                ? savedProject
+                : pair.Key;
+            await Task.Run(() => CompactBankFile.RemoveTables(bank, pair.Value.Tables, pair.Value.Datasets));
+            pendingBankRemovals.Remove(pair.Key);
+        }
+    }
+
     public bool IsManagedTable(string path) => Meta.S("database_path").Length > 0
         && Resolve(path).StartsWith(Resolve(Meta.S("database_path")) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     // Work files live outside the project and are removed after being committed to its single bank.
     public string ProjectWorkFolder()
     {
-        if (FilePath.Length == 0) throw new InvalidOperationException("Salve o projeto antes de gerar tabelas no banco do projeto.");
+        if (FilePath.Length == 0) throw new InvalidOperationException("Salve o projeto antes de gerar tabelas no arquivo DLB.");
         string relative = Meta.S("database_path", Path.GetFileNameWithoutExtension(FilePath) + ".dlb");
         if (Meta.S("database_path") != relative) { Meta["database_path"] = relative; Touch(); }
         workFolder ??= Path.Combine(Path.GetTempPath(), "DendroLab-work", Guid.NewGuid().ToString("N"));
@@ -36,7 +68,9 @@ internal sealed partial class ProjectSession
         return reference;
     }
 
-    public async Task RemoveFile(int index)
+    internal string[] PreviewRemoveFile(int index) => PrepareFileRemoval(index).Removed;
+
+    private (JsonObject Updated, string[] Removed) PrepareFileRemoval(int index)
     {
         string selected = Files.ElementAt(index);
         if (Meta.Arr("processing_results").Any(r => r.S("id").Length > 0 && (r.S("path") == selected || r.S("source_path") == selected)))
@@ -45,6 +79,12 @@ internal sealed partial class ProjectSession
         string[] removed = ProjectModels.RemoveFile(updated, index);
         if (Meta.Arr("processing_results").Any(r => r.S("id").Length > 0 && removed.Any(p => string.Equals(p.Replace('/', '\\'), r.S("path").Replace('/', '\\'), StringComparison.OrdinalIgnoreCase))))
             throw new InvalidOperationException("A remoção atingiria versões históricas de processamento. O histórico precisa ser preservado.");
+        return (updated, removed);
+    }
+
+    public Task RemoveFile(int index)
+    {
+        var (updated, removed) = PrepareFileRemoval(index);
         string database = Meta.S("database_path");
         if (database.Length > 0)
         {
@@ -57,12 +97,13 @@ internal sealed partial class ProjectSession
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
             if (datasets.Length > 0)
-                await Task.Run(() => CompactBankFile.RemoveDatasets(bank, datasets));
+                DeferBankRemoval(bank, datasets: datasets);
         }
         Replace(updated);
+        return Task.CompletedTask;
     }
 
-    public async Task RemoveResultTable(string path, string sheet)
+    internal string[] PreviewRemoveResultTable(string path, string sheet)
     {
         if (IsHistoricalTable(path)) throw new InvalidOperationException("As tabelas de uma versão histórica são preservadas. Crie uma revisão para aplicar fatores.");
         string resolved = Resolve(path);
@@ -73,22 +114,30 @@ internal sealed partial class ProjectSession
             remaining = reader.Catalog.Tables.Where(t => t.Id != selected.Id).Select(t => t.Name).ToArray();
         }
         var updated = Data!.DeepClone().AsObject();
+        string firstSheet = updated.Obj("_dendro").Arr("processing_results").OfType<JsonObject>().Reverse()
+            .Where(r => r.S("path") == path).SelectMany(r => r.Arr("sheets")).FirstOrDefault().Display();
+        string[] descendants = DescendantPathsToRemove(updated, path, sheet, remaining, firstSheet);
+        if (Meta.Arr("processing_results").Any(r => r.S("id").Length > 0 && descendants.Contains(r.S("path"), StringComparer.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("A remoção atingiria versões históricas de processamento.");
+        return descendants;
+    }
+
+    public Task RemoveResultTable(string path, string sheet)
+    {
+        if (IsHistoricalTable(path)) throw new InvalidOperationException("As tabelas de uma versão histórica são preservadas. Crie uma revisão para aplicar fatores.");
+        string resolved = Resolve(path);
+        string[] remaining;
+        CompactTable selected;
+        using (var reader = new CompactBankReader(resolved))
+        {
+            selected = reader.Table(sheet);
+            remaining = reader.Catalog.Tables.Where(t => t.Id != selected.Id).Select(t => t.Name).ToArray();
+        }
+        var updated = Data!.DeepClone().AsObject();
         var meta = updated.Obj("_dendro");
         string firstSheet = meta.Arr("processing_results").OfType<JsonObject>().Reverse()
             .Where(r => r.S("path") == path).SelectMany(r => r.Arr("sheets")).FirstOrDefault().Display();
-        string[] childPaths = new[] { "derived_tables", "processing_results" }
-            .SelectMany(section => meta.Arr(section).OfType<JsonObject>())
-            .Where(e => e.S("source_path") == path && (remaining.Length == 0 ||
-                (string.IsNullOrWhiteSpace(e.S("source_sheet")) ? firstSheet : e.S("source_sheet")) == sheet))
-            .Select(e => e.S("path")).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var removedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string childPath in childPaths)
-        {
-            int index = meta.Arr("files").ToList().FindIndex(value =>
-                string.Equals(value.Display(), childPath, StringComparison.OrdinalIgnoreCase));
-            if (index >= 0)
-                foreach (string removed in ProjectModels.RemoveFile(updated, index)) removedPaths.Add(removed);
-        }
+        var removedPaths = DescendantPathsToRemove(updated, path, sheet, remaining, firstSheet).ToHashSet(StringComparer.OrdinalIgnoreCase);
         string bank = CompactBankFile.Location(resolved).File;
         if (Meta.Arr("processing_results").Any(r => r.S("id").Length > 0 && removedPaths.Contains(r.S("path"))))
             throw new InvalidOperationException("A remoção atingiria versões históricas de processamento.");
@@ -116,86 +165,108 @@ internal sealed partial class ProjectSession
             foreach (var entry in meta.Arr("derived_tables").OfType<JsonObject>().Where(e => e.S("path") == path).ToArray())
                 meta.Arr("derived_tables").Remove(entry);
         }
-        await Task.Run(() => CompactBankFile.RemoveTable(new(resolved, sheet), descendantDatasets));
+        DeferBankRemoval(bank, [selected.Id], descendantDatasets);
         Replace(updated);
+        return Task.CompletedTask;
     }
 
-    private async Task MigrateBank()
+    private static string[] DescendantPathsToRemove(JsonObject updated, string path, string sheet, string[] remaining, string firstSheet)
     {
-        string relative = Meta.S("database_path");
-        if (relative.Length == 0 || !Directory.Exists(Resolve(relative))) return;
-        string original = Resolve(relative);
-        string marker = Path.Combine(original, "bank.json");
-        if (!File.Exists(marker) || JsonNode.Parse(File.ReadAllText(marker)).S("format") != "DENDROLAB_GEODATABASE")
-            throw new InvalidDataException("A pasta não contém um banco de projeto DendroLab válido.");
-        if (Directory.EnumerateDirectories(original).Any()) throw new InvalidDataException("Estrutura inesperada no banco do projeto.");
-        var inputs = Directory.GetFiles(original, "*.dlb").Select(p => (Source: p, Dataset: Path.GetFileName(p))).ToArray();
-        string temp = original + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        string backup = original + ".legacy-backup-" + Guid.NewGuid().ToString("N");
-        try {
-            if (inputs.Length > 0) await Task.Run(() => CompactBankFile.Import(temp, inputs));
-            if (!Path.GetFullPath(original).StartsWith(Path.GetDirectoryName(FilePath)! + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Banco antigo fora da pasta do projeto; copie-o para junto do projeto antes de converter.");
-            Directory.Move(original, backup);
-            try { if (inputs.Length > 0) File.Move(temp, original); }
-            catch { Directory.Move(backup, original); throw; }
-        } finally { if (File.Exists(temp)) File.Delete(temp); }
+        var meta = updated.Obj("_dendro");
+        string[] childPaths = new[] { "derived_tables", "processing_results" }
+            .SelectMany(section => meta.Arr(section).OfType<JsonObject>())
+            .Where(entry => entry.S("source_path") == path && (remaining.Length == 0 ||
+                (string.IsNullOrWhiteSpace(entry.S("source_sheet")) ? firstSheet : entry.S("source_sheet")) == sheet))
+            .Select(entry => entry.S("path")).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var removedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string childPath in childPaths)
+        {
+            int index = meta.Arr("files").ToList().FindIndex(value =>
+                string.Equals(value.Display(), childPath, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0)
+                foreach (string removed in ProjectModels.RemoveFile(updated, index)) removedPaths.Add(removed);
+        }
+        return removedPaths.ToArray();
     }
 
     public async Task Save(string path)
     {
         await RefreshHistory(true);
-        path = Path.GetFullPath(path);
+        path = Path.ChangeExtension(Path.GetFullPath(path), ".dlb");
         var copy = Data!.DeepClone().AsObject();
-        string oldBank = Meta.S("database_path"), original = oldBank.Length > 0 ? Resolve(oldBank) : "";
-        string? copiedBank = null;
-        if (!File.Exists(original) && !Directory.Exists(original) && oldBank.Length > 0) copy.Obj("_dendro")["database_path"] = Path.GetFileNameWithoutExtension(path) + ".dlb";
-        if (File.Exists(original) || Directory.Exists(original)) {
-            string target = Path.ChangeExtension(path, ".dlb");
-            if (!string.Equals(target, original, StringComparison.OrdinalIgnoreCase)) {
-                if (File.Exists(target) || Directory.Exists(target)) throw new IOException("O banco do projeto de destino já existe. Escolha outro nome para Salvar como.");
-                await Task.Run(() => {
-                    if (File.Exists(original)) {
-                        string temporary = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
-                        try { File.Copy(original, temporary); File.Move(temporary, target); }
-                        finally { if (File.Exists(temporary)) File.Delete(temporary); }
-                    }
-                    else {
-                        string marker = Path.Combine(original, "bank.json");
-                        if (!File.Exists(marker) || JsonNode.Parse(File.ReadAllText(marker)).S("format") != "DENDROLAB_GEODATABASE")
-                            throw new InvalidDataException("Banco antigo inválido.");
-                        CompactBankFile.Import(target, Directory.GetFiles(original, "*.dlb").Select(p => (p, Path.GetFileName(p))).ToArray());
-                    }
-                });
-                copiedBank = target;
-                string replacement = Path.GetFileName(target);
-                string RemapText(string text) {
-                    foreach (string prefix in new[] { oldBank, original }) {
-                        if (string.Equals(text, prefix, StringComparison.OrdinalIgnoreCase)) return replacement;
-                        if (text.StartsWith(prefix + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                            || text.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase)) return replacement + text[prefix.Length..];
+        string original = FilePath;
+        if (File.Exists(path) && !string.Equals(path, original, StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Já existe um arquivo DLB no destino. Escolha outro nome para salvar o projeto.");
+        string oldBank = Meta.S("database_path");
+        string replacement = Path.GetFileName(path);
+        if (original.Length > 0 && !string.Equals(path, original, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!File.Exists(original)) throw new FileNotFoundException("O arquivo do projeto atual não foi encontrado.", original);
+            string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (SharedFileLock.Acquire(original + ".write.lock")) File.Copy(original, temporary);
+                File.Move(temporary, path);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            void Remap(JsonNode? node)
+            {
+                string RemapText(string text)
+                {
+                    string[] roots = [oldBank, Path.GetFileName(original)];
+                    string? root = roots.FirstOrDefault(candidate => candidate.Length > 0 && string.Equals(text, candidate, StringComparison.OrdinalIgnoreCase));
+                    if (root != null) return replacement;
+                    root = roots.FirstOrDefault(candidate => candidate.Length > 0 && (
+                        text.StartsWith(candidate + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                        || text.StartsWith(candidate + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    ));
+                    if (root != null) return replacement + text[root.Length..];
+                    if (!Path.IsPathRooted(text))
+                    {
+                        // DLB table references are stored as "container.dlb\\dataset.dlb".
+                        // Projects saved through several locations can retain an older
+                        // container name, so rebase any relative embedded DLB reference.
+                        int separator = text.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
+                        if (separator > 0 && text[..separator].EndsWith(".dlb", StringComparison.OrdinalIgnoreCase))
+                            return replacement + text[separator..];
                     }
                     return text;
                 }
-                void Remap(JsonNode? node) {
-                    if (node is JsonObject obj)
-                        foreach (var pair in obj.ToArray()) {
-                            if (pair.Value is JsonValue v && v.TryGetValue<string>(out var text)) obj[pair.Key] = RemapText(text);
-                            else Remap(pair.Value);
-                        }
-                    else if (node is JsonArray a)
-                        for (int i = 0; i < a.Count; i++) {
-                            if (a[i] is JsonValue v && v.TryGetValue<string>(out var text)) a[i] = RemapText(text);
-                            else Remap(a[i]);
-                        }
-                }
-                Remap(copy);
+                if (node is JsonObject obj)
+                    foreach (var pair in obj.ToArray())
+                    {
+                        if (pair.Value is JsonValue v && v.TryGetValue<string>(out string? text))
+                            obj[pair.Key] = RemapText(text);
+                        else Remap(pair.Value);
+                    }
+                else if (node is JsonArray array)
+                    for (int i = 0; i < array.Count; i++)
+                        if (array[i] is JsonValue v && v.TryGetValue<string>(out string? text))
+                            array[i] = RemapText(text);
+                        else Remap(array[i]);
+            }
+            Remap(copy);
+            string? history = CompactBankFile.ReadTextDataset(path, ProcessingCatalog.HistoryDataset);
+            if (history != null)
+            {
+                try { CompactBankFile.UpdateTextDataset(path, ProcessingCatalog.HistoryDataset, current =>
+                {
+                    var catalog = JsonNode.Parse(current ?? history)!.AsObject();
+                    Remap(catalog);
+                    catalog["database_path"] = replacement;
+                    return catalog.ToJsonString();
+                }); }
+                catch { File.Delete(path); throw; }
             }
         }
-        try {
+        copy.Obj("_dendro")["database_path"] = replacement;
+        try
+        {
             var r = await WorkspaceOperations.Run(new() { ["op"] = "save", ["path"] = path, ["project"] = copy });
             FilePath = path; Replace(r["project"]!.AsObject(), false);
-        } catch { if (copiedBank != null) File.Delete(copiedBank); throw; }
+        }
+        catch { if (original.Length > 0 && path != original && File.Exists(path)) File.Delete(path); throw; }
+        await ApplyPendingBankRemovals(original, path);
     }
 
     public string ProjectReference(string path)

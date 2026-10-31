@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Collections.Concurrent;
 using Dendro.Core.Spreadsheets;
 using ExcelDataReader;
 using LiteDB;
@@ -133,22 +134,51 @@ public sealed class TableCursor : IDisposable
         {
             long skipped = 0;
             int emitted = 0;
-            while (excel!.Read())
+            while (!limit.HasValue || emitted < limit.Value)
             {
-                var row = Enumerable
-                    .Range(0, Columns.Length)
-                    .Select(c => ConvertCell(excel.GetValue(c)))
-                    .ToArray();
-                if (row.All(v => v is null || v is string s && s.Length == 0))
+                if (!excel!.Read()) yield break;
+                bool capture = skipped >= offset;
+                var row = capture ? new object?[Columns.Length] : null;
+                bool blank = true;
+                for (int c = 0; c < Columns.Length; c++)
+                {
+                    object? value = ConvertCell(excel.GetValue(c));
+                    if (value is not null && value is not string { Length: 0 }) blank = false;
+                    if (row != null) row[c] = value;
+                }
+                if (blank)
                     continue;
                 if (skipped++ < offset)
                     continue;
-                if (limit.HasValue && emitted >= limit.Value)
-                    yield break;
                 emitted++;
-                yield return row;
+                yield return row!;
             }
         }
+    }
+
+    /// <summary>Reads one Excel page while counting nonblank rows in the same forward scan.</summary>
+    internal TablePage PageAndCountExcel(long offset, int limit)
+    {
+        if (excel == null) throw new InvalidOperationException("A contagem em uma passagem só se aplica a planilhas.");
+        if (offset < 0 || limit < 1) throw new ArgumentOutOfRangeException(nameof(offset));
+        var page = new DataTable(Columns);
+        long total = 0;
+        while (excel.Read())
+        {
+            bool capture = total >= offset && total - offset < limit;
+            var row = capture ? new object?[Columns.Length] : null;
+            bool blank = true;
+            for (int c = 0; c < Columns.Length; c++)
+            {
+                object? value = ConvertCell(excel.GetValue(c));
+                if (value is not null && value is not string { Length: 0 }) blank = false;
+                if (row != null) row[c] = value;
+            }
+            if (blank) continue;
+            if (row != null) page.Add(row);
+            total++;
+        }
+        return new(page, total, offset);
     }
 
     public static string Text(object? value) =>
@@ -184,6 +214,7 @@ public sealed class TableCursor : IDisposable
 public static class TableStore
 {
     public const string Extension = ".dendrodb";
+    private static readonly ConcurrentDictionary<string, long> ExcelRowCounts = new(StringComparer.OrdinalIgnoreCase);
 
     public static bool IsBank(string path) =>
         new[] { Extension, ".db", CompactBankReader.Extension }.Contains(
@@ -239,16 +270,30 @@ public static class TableStore
         if (limit is < 1 or > 10000)
             throw new ArgumentOutOfRangeException(nameof(limit));
         using var cursor = new TableCursor(source);
+        long total = cursor.TotalRows ?? -1;
+        string? key = null;
+        if (total < 0)
+        {
+            key = ExcelCountKey(source);
+            if (!ExcelRowCounts.TryGetValue(key, out total))
+            {
+                var countedPage = cursor.PageAndCountExcel(offset, limit);
+                if (ExcelRowCounts.Count > 256) ExcelRowCounts.Clear();
+                ExcelRowCounts[key] = countedPage.Total;
+                return countedPage;
+            }
+        }
         var data = new DataTable(cursor.Columns);
         foreach (var row in cursor.Rows(offset, limit))
             data.Add(row);
-        long total = cursor.TotalRows ?? -1;
-        if (total < 0)
-        {
-            using var counter = new TableCursor(source);
-            total = counter.Rows().LongCount();
-        }
         return new(data, total, offset);
+    }
+
+    private static string ExcelCountKey(TableSource source)
+    {
+        var info = new FileInfo(source.Path);
+        return string.Join("|", Path.GetFullPath(source.Path), info.Length, info.LastWriteTimeUtc.Ticks,
+            source.Table, source.HeaderRow.ToString(CultureInfo.InvariantCulture));
     }
 
     public static DataTable Read(TableSource source)

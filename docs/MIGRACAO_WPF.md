@@ -8,8 +8,8 @@
   tipados para planilhas, fórmulas, processamento de inventário, RNA, regressões
   e exportação. Nenhum P/Invoke, subprocesso Python ou biblioteca nativa do motor.
 - **ProjectSession**: estado do editor, referências, alterações pendentes e
-  identidade dos gráficos. O projeto usa JsonObject porque o contrato `.dendro`
-  permite preservar seções desconhecidas sem perda de informação.
+  identidade dos gráficos. A configuração em JSON fica em uma tabela interna do
+  contêiner DLB e preserva seções desconhecidas.
 - **WorkspaceOperations**: comandos locais da aplicação sobre cópias do projeto.
   Chama diretamente os serviços C#; não serializa mensagens para uma DLL ou
   processo externo. O trabalho numérico roda fora do dispatcher WPF.
@@ -64,9 +64,8 @@ integral com IFPC.
 A solução ativa contém apenas projetos .NET. Fontes C, vendor, scripts antigos,
 executáveis e licenças anteriores foram preservados no ZIP oculto
 `.archive/DENDRO-C-reference-20261023.zip`, com manifesto SHA256.
-A ferramenta C/Zig/HDF5 não faz parte da compilação nova. O projeto antes em
-`build/teste.dendro` foi preservado em `projects/teste.dendro`.
-O projeto externo `D:\Downloads\teste.dendro` permanece no local original.
+A ferramenta C/Zig/HDF5 não faz parte da compilação nova. O projeto de teste
+migrado está em `projects/teste.dlb`.
 
 Intermediários ficam em `.build`, sem diretórios bin/obj espalhados nos fontes.
 Abra `DENDRO.slnx` ou use o ponto de entrada `build.ps1`.

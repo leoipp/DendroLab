@@ -58,6 +58,14 @@ internal sealed partial class ProjectSession
         MergeHistory(catalog);
     }
 
+    internal async Task RemoveProcessingRevision(JsonObject record, CancellationToken cancellation)
+    {
+        string bank = Resolve(Meta.S("database_path"));
+        var seed = Meta.Arr("processing_results").DeepClone().AsArray();
+        var catalog = await Task.Run(() => ProcessingCatalog.RemoveRevision(FilePath, seed, bank, record.S("id"), cancellation));
+        MergeHistory(catalog);
+    }
+
     internal void RequireApprovedExport(string path)
     {
         var run = Meta.Arr("processing_results").FirstOrDefault(r => r.S("id").Length > 0 &&

@@ -13,6 +13,21 @@ public sealed record IsolationForestModel(int Version, string Name, string[] Fea
 /// <summary>Axis-aligned isolation trees; s(x) = 2^(-mean path length / c(sample size)).</summary>
 public static class IsolationForest
 {
+    public const long TrainingPoolMemoryBudgetBytes = 512L * 1024 * 1024;
+    public static long EstimateTrainingPoolBytes(int rows, int dimensions)
+    {
+        if (rows < 0 || dimensions < 0) throw new ArgumentOutOfRangeException();
+        return checked((long)rows * (32L + dimensions * sizeof(double)));
+    }
+
+    public static void ValidateTrainingFootprint(int rows, int dimensions)
+    {
+        if (dimensions is < 1 or > 256)
+            throw new InvalidDataException("Selecione de 1 a 256 variáveis numéricas para treinar o modelo.");
+        if (EstimateTrainingPoolBytes(rows, dimensions) > TrainingPoolMemoryBudgetBytes)
+            throw new InvalidDataException($"A amostra de treinamento excede o limite estimado de memória de {TrainingPoolMemoryBudgetBytes / (1024 * 1024)} MB. Reduza o máximo de linhas ou o número de variáveis.");
+    }
+
     private static readonly double[] Corrections = BuildCorrections();
     private static double[] BuildCorrections()
     {
@@ -43,6 +58,7 @@ public static class IsolationForest
             features.Distinct(StringComparer.Ordinal).Count() != features.Length)
             throw new InvalidDataException("Informe o nome e de 1 a 256 variáveis numéricas distintas.");
         ValidateOptions(options, features.Length);
+        ValidateTrainingFootprint(options.TrainingLimit, features.Length);
         int[] columns = features.Select(data.Require).ToArray();
         var random = new Random(options.Seed);
         var pool = new List<double[]>(); int valid = 0;

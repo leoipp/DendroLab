@@ -16,13 +16,15 @@ internal sealed class BiologicalAssetView : ScrollViewer
     {
         this.owner=owner;this.session=session;var form=Ui.Form();Content=form;VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
         form.Children.Add(owner.ToolHeader("Ativo biológico"));
+        Ui.Section(form,"Tabelas de origem");
         Ui.Field(form,"Tabela base que receberá os resultados",basis);Ui.Field(baseTables,"Tabela ou aba no arquivo base",baseSheet);form.Children.Add(baseTables);
         Ui.Field(form,"Resultado do processamento",processed);Ui.Field(processedTables,"Nível / tabela processada",processedSheet);form.Children.Add(processedTables);
         Ui.Field(form,"Chave na tabela base",baseKey);Ui.Field(form,"Chave no processamento",processingKey);Ui.Field(form,"Data de medição no processamento",date);
         Ui.Field(form,"Tipo de inventário para buscar",inventory);inventory.SelectedIndex=0;
         Ui.Field(form,"Colunas do processamento a trazer (selecione várias)",columns);
+        Ui.Section(form,"Nome e gravação do resultado");
         Ui.Field(form,"Prefixo para as colunas trazidas",prefix);Ui.Field(form,"Nome da tabela de ativo biológico",name);
-        Ui.AddHelp(form,"Mantém todas as linhas da base e busca a maior data de medição de cada chave no resultado selecionado. Use o mesmo nível da chave: talhão com resultado por talhão, por exemplo. Não soma parcelas. Empates na data mais recente com valores diferentes ficam sem valores vinculados e são sinalizados em AB_Vinculo. AB_Data_Medicao informa a data escolhida. A saída é uma nova tabela no banco do projeto; as origens permanecem intactas.");
+        Ui.AddHelp(form,"Mantém todas as linhas da base e busca a maior data de medição de cada chave no resultado selecionado. Use o mesmo nível da chave: talhão com resultado por talhão, por exemplo. Não soma parcelas. Empates na data mais recente com valores diferentes ficam sem valores vinculados e são sinalizados em AB_Vinculo. AB_Data_Medicao informa a data escolhida. A saída é uma nova tabela no arquivo do projeto; as origens permanecem intactas.");
         form.Children.Add(Ui.AsyncButton("Gerar ativo biológico",()=>owner.Execute(Run)));
         basis.SelectionChanged+=async(_,_)=>{if(!loading)await owner.Execute(()=>LoadTables(false));};
         processed.SelectionChanged+=async(_,_)=>{if(!loading)await owner.Execute(()=>LoadTables(true));};
@@ -69,7 +71,7 @@ internal sealed class BiologicalAssetView : ScrollViewer
         if(baseKey.SelectedItem is not string b||processingKey.SelectedItem is not string p||date.SelectedItem is not string d)throw new InvalidOperationException("Escolha as chaves e a coluna de data de medição. Resultados antigos sem Data_Medicao precisam ser reprocessados.");
         string outputName=TableTools.SuggestedName(name.Text);if(string.IsNullOrWhiteSpace(outputName))throw new InvalidOperationException("Informe o nome do resultado.");
         string path=Path.Combine(session.ProjectWorkFolder(),outputName+".dlb");
-        if(CompactBankFile.Exists(session.Resolve(Path.Combine(session.Meta.S("database_path"),outputName+".dlb"))))throw new InvalidOperationException("Já existe uma tabela com esse nome no banco. Escolha outro nome.");
+        if(CompactBankFile.Exists(session.Resolve(Path.Combine(session.Meta.S("database_path"),outputName+".dlb"))))throw new InvalidOperationException("Já existe uma tabela com esse nome no arquivo do projeto. Escolha outro nome.");
         var options=new BiologicalAssetOptions(b,p,d,columns.SelectedItems.Cast<string>().ToArray(),prefix.Text,inventory.SelectedIndex==1?"IFC":inventory.SelectedIndex==2?"IFPC":"");
         var progress=owner.StartTableOperation("Buscando as medições mais recentes para o ativo biológico…");var cancellation=owner.OperationCancellation;
         try

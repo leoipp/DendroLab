@@ -5,7 +5,7 @@ using Dendro.Core.Spreadsheets;
 
 namespace Dendro.Core.Regression;
 
-public sealed record RegressionFamily(string Name, string Formula, int Parameters, string Id = "");
+public sealed record RegressionFamily(string Name, string Formula, int Parameters, string Id = "", int Predictors = 1);
 
 public sealed record ChartPoint(
     double X,
@@ -13,7 +13,8 @@ public sealed record ChartPoint(
     int Row,
     string Group,
     bool Excluded = false,
-    int Side = 0
+    int Side = 0,
+    double[]? Inputs = null
 );
 
 public sealed record ChartResult(
@@ -49,7 +50,13 @@ public sealed class RegressionEngine
     public ChartResult Generate(DataTable table, JsonObject source, int? model = null)
     {
         var chart = source.DeepClone().AsObject();
-        int xc = table.Require(chart.S("x")),
+        string[] predictors = chart["x_variables"] is JsonArray configuredPredictors
+            ? configuredPredictors.Select(n => n?.GetValue<string>() ?? "").Take(3).ToArray()
+            : [chart.S("x")];
+        if (predictors.Length is < 1 or > 3 || predictors.Any(string.IsNullOrWhiteSpace))
+            throw new InvalidDataException("Selecione de 1 a 3 variáveis explicativas.");
+        int[] xcs = predictors.Select(table.Require).ToArray();
+        int xc = xcs[0],
             yc = table.Require(chart.S("y")),
             gc = chart.S("stratum").Length > 0 ? table.Require(chart.S("stratum")) : -1,
             invalid = 0;
@@ -65,10 +72,11 @@ public sealed class RegressionEngine
                 && chart.S("group") != group
             )
                 continue;
-            double x = table.Number(row, xc),
+            double[] inputs = xcs.Select(c => table.Number(row, c)).ToArray();
+            double x = inputs[0],
                 y = table.Number(row, yc);
             if (
-                !double.IsFinite(x)
+                inputs.Any(v => !double.IsFinite(v))
                 || !double.IsFinite(y)
                 || (chart.B("log_x") && x <= 0)
                 || (chart.B("log_y") && y <= 0)
@@ -77,7 +85,7 @@ public sealed class RegressionEngine
                 invalid++;
                 continue;
             }
-            points.Add(new(x, y, row, group, excluded.Contains(row)));
+            points.Add(new(x, y, row, group, excluded.Contains(row), Inputs: inputs));
         }
         if (points.Count == 0)
             throw new InvalidDataException(
@@ -120,7 +128,7 @@ public sealed class RegressionEngine
             if (custom)
                 _ = new Formula(
                     chart.S("formula"),
-                    Enumerable.Range(0, k).Select(i => "b" + i).Concat(["x", "x1", "t"])
+                    Enumerable.Range(0, k).Select(i => "b" + i).Concat(["x", "x1", "x2", "x3", "t"])
                 );
             var fits = new List<JsonObject>();
             var envelope = new JsonArray();
@@ -228,16 +236,20 @@ public sealed class RegressionEngine
             {
                 if (!f.B("converged"))
                     return Array.Empty<double[]>();
-                var formula = new Formula(f.S("formula"), ["b0", "b1", "b2", "b3", "x", "x1", "t"]);
+                var formula = new Formula(f.S("formula"), ["b0", "b1", "b2", "b3", "x", "x1", "x2", "x3", "t"]);
                 var b = Enumerable.Range(0, 4).Select(i => f.N("b" + i)).ToArray();
                 return Enumerable
                     .Range(0, 201)
                     .Select(i =>
                     {
                         double x = f.N("xmin") + (f.N("xmax") - f.N("xmin")) * i / 200;
-                        double y = formula.Evaluate(s =>
-                            s is "x" or "x1" or "t" ? x : b[s[1] - '0']
-                        );
+                        double y = formula.Evaluate(s => s switch
+                        {
+                            "x" or "x1" or "t" => x,
+                            "x2" => f.N("x2_mean"),
+                            "x3" => f.N("x3_mean"),
+                            _ => b[s[1] - '0'],
+                        });
                         return new[] { x, y };
                     })
                     .Where(p => double.IsFinite(p[1]))
@@ -261,6 +273,8 @@ public sealed class RegressionEngine
         foreach (var p in points)
         {
             Bytes(BitConverter.GetBytes(p.X));
+            foreach (double input in p.Inputs ?? [p.X])
+                Bytes(BitConverter.GetBytes(input));
             Bytes(BitConverter.GetBytes(p.Y));
             Bytes(BitConverter.GetBytes((ulong)p.Row));
             Bytes(Encoding.UTF8.GetBytes(p.Group + "\0"));
@@ -313,20 +327,30 @@ public sealed class RegressionEngine
         }
         result["xmin"] = xmin;
         result["xmax"] = xmax;
+        int predictorCount = definition.Predictors;
+        result["predictor_count"] = predictorCount;
+        for (int i = 1; i < predictorCount; i++)
+            result[$"x{i + 1}_mean"] = points.Average(p => p.Inputs?[i] ?? 0);
         if (!(xmax > xmin))
         {
             result["status"] = "X sem variação";
             return result;
         }
-        var formula = new Formula(text, ["b0", "b1", "b2", "b3", "x", "x1", "t"]);
-        double Predict(double[] b, double x) =>
-            formula.Evaluate(s => s is "x" or "x1" or "t" ? x : b[s[1] - '0']);
+        var formula = new Formula(text, ["b0", "b1", "b2", "b3", "x", "x1", "x2", "x3", "t"]);
+        double Predict(double[] b, ChartPoint point) =>
+            formula.Evaluate(s => s switch
+            {
+                "x" or "x1" or "t" => point.Inputs?[0] ?? point.X,
+                "x2" => point.Inputs?.ElementAtOrDefault(1) ?? 0,
+                "x3" => point.Inputs?.ElementAtOrDefault(2) ?? 0,
+                _ => b[s[1] - '0'],
+            });
         double Score(double[] b)
         {
             double sum = 0;
             foreach (var p in points)
             {
-                double y = Predict(b, p.X),
+                double y = Predict(b, p),
                     r = p.Y - y;
                 if (!double.IsFinite(y) || !double.IsFinite(r) || Math.Abs(r) > 1e150)
                     return double.PositiveInfinity;
@@ -462,7 +486,7 @@ public sealed class RegressionEngine
                     bool valid = true;
                     foreach (var p in points)
                     {
-                        double baseline = Predict(b, p.X),
+                        double baseline = Predict(b, p),
                             res = p.Y - baseline;
                         var jac = new double[k];
                         for (int j = 0; j < k; j++)
@@ -470,9 +494,9 @@ public sealed class RegressionEngine
                             double original = b[j],
                                 delta = 1e-5 * Math.Max(1, Math.Abs(original));
                             b[j] = original + delta;
-                            double up = Predict(b, p.X);
+                            double up = Predict(b, p);
                             b[j] = original - delta;
-                            double down = Predict(b, p.X);
+                            double down = Predict(b, p);
                             b[j] = original;
                             jac[j] = (up - down) / (2 * delta);
                             if (!double.IsFinite(jac[j]))

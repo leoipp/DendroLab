@@ -28,19 +28,19 @@ public sealed class HelpIcon : Border
 
     public HelpIcon(string text)
     {
-        Width = Height = 20;
-        CornerRadius = new CornerRadius(10);
+        Width = Height = 16;
+        CornerRadius = new CornerRadius(8);
         BorderThickness = new Thickness(1);
         BorderBrush = new SolidColorBrush(Color.FromRgb(151, 174, 194));
         Background = new SolidColorBrush(Color.FromRgb(243, 247, 251));
-        Margin = new Thickness(8, 3, 2, 5);
+        Margin = new Thickness(0, 0, 5, 0);
         HorizontalAlignment = HorizontalAlignment.Left;
         VerticalAlignment = VerticalAlignment.Center;
         Cursor = Cursors.Help;
         Focusable = true;
         Child = new TextBlock
         {
-            Text = "?", FontSize = 12, FontWeight = FontWeights.SemiBold,
+            Text = "?", FontSize = 10, FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Color.FromRgb(54, 94, 127)),
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
         };

@@ -19,7 +19,10 @@ public partial class MainWindow : Window
     private long operationVersion;
     private readonly System.Windows.Threading.DispatcherTimer progressHideTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private readonly System.Windows.Threading.DispatcherTimer historyRefreshTimer = new() { Interval = TimeSpan.FromSeconds(5) };
+    private readonly System.Windows.Threading.DispatcherTimer sourceAvailabilityTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private bool historyRefreshing;
+    private bool sourceAvailabilityRefreshing;
+    private readonly Dictionary<string, bool> sourceAvailability = new(StringComparer.OrdinalIgnoreCase);
     internal CancellationToken OperationCancellation => operationCancellation?.Token ?? CancellationToken.None;
     private bool busy,
         closing,
@@ -33,10 +36,12 @@ public partial class MainWindow : Window
             "workspace-wpf.xml"
         );
     private ProcessorView? processor;
+    private GisView? gisView;
     private readonly Dictionary<string, LayoutDocument> documents = new();
     private readonly Dictionary<string, Action> documentSelection = new();
     private readonly Dictionary<string, bool> contentsExpansion = new(StringComparer.Ordinal);
     private bool resetContentsExpansion;
+    private Point contentDragOrigin;
     private readonly string layoutPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "DENDRO",
@@ -48,6 +53,11 @@ public partial class MainWindow : Window
     {
         ShellVisuals.Initialize();
         InitializeComponent();
+        ContentsTree.AllowDrop = true;
+        ContentsTree.PreviewMouseLeftButtonDown += (_, e) => contentDragOrigin = e.GetPosition(ContentsTree);
+        ContentsTree.PreviewMouseMove += ContentsTreeMouseMove;
+        ContentsTree.DragOver += ContentsTreeDragOver;
+        ContentsTree.Drop += ContentsTreeDrop;
         progressHideTimer.Tick += (_, _) => {
             progressHideTimer.Stop();
             if (!busy) ProgressDisplay.Visibility = Visibility.Collapsed;
@@ -64,7 +74,9 @@ public partial class MainWindow : Window
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Log("Atualização do histórico indisponível: " + ex.Message); }
             finally { historyRefreshing = false; }
         };
-        Loaded += (_, _) => historyRefreshTimer.Start(); Closed += (_, _) => historyRefreshTimer.Stop();
+        sourceAvailabilityTimer.Tick += async (_, _) => await RefreshSourceAvailability();
+        Loaded += (_, _) => { if (!App.IsSelfTest) { historyRefreshTimer.Start(); sourceAvailabilityTimer.Start(); } };
+        Closed += (_, _) => { historyRefreshTimer.Stop(); sourceAvailabilityTimer.Stop(); };
         using (var initial = new StringWriter())
         {
             new AvalonDock.Layout.Serialization.XmlLayoutSerializer(DockManager).Serialize(initial);
@@ -134,7 +146,7 @@ public partial class MainWindow : Window
                 {
                     active.Capture();
                     processor = new ProcessorView(this, Session);
-                    ToolContent.Content = processor;
+                    SetTool(processor);
                 }
                 catch (Exception ex)
                 {
@@ -186,7 +198,7 @@ public partial class MainWindow : Window
     {
         DockManager.IsEnabled = !busy;
         foreach (
-            var b in new[] { SaveButton, SaveAsButton, SettingsButton, VolumeButton, GrowthButton }
+            var b in new[] { SaveButton, SaveAsButton, SettingsButton, VolumeButton, GrowthButton, GISButton }
         )
             b.IsEnabled = Session.IsOpen && !busy;
         ToolContent.IsEnabled = Session.IsOpen && !busy;
@@ -239,6 +251,49 @@ public partial class MainWindow : Window
         Restore(ContentsTree, true);
     }
 
+    private bool ContentReferenceExists(string path)
+    {
+        try
+        {
+            string resolved = Session.Resolve(path);
+            // A DLB table may be a dataset reference inside the project bank.
+            // Checking the physical container catches a moved/deleted source without
+            // opening the bank or scanning its table catalog during tree rendering.
+            return File.Exists(CompactBankFile.Location(resolved).File);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private bool ContentAvailable(string path)
+    {
+        if (sourceAvailability.TryGetValue(path, out bool available)) return available;
+        available = ContentReferenceExists(path);
+        sourceAvailability[path] = available;
+        return available;
+    }
+
+    private async Task RefreshSourceAvailability()
+    {
+        if (sourceAvailabilityRefreshing || busy || closing || !Session.IsOpen) return;
+        sourceAvailabilityRefreshing = true;
+        string project = Session.FilePath;
+        string[] paths = Session.Files.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        try
+        {
+            var current = await Task.Run(() => paths.ToDictionary(path => path, ContentReferenceExists, StringComparer.OrdinalIgnoreCase));
+            if (closing || !Session.IsOpen || !string.Equals(project, Session.FilePath, StringComparison.OrdinalIgnoreCase)) return;
+            bool changed = current.Any(pair => !sourceAvailability.TryGetValue(pair.Key, out bool previous) || previous != pair.Value)
+                || sourceAvailability.Keys.Any(key => !current.ContainsKey(key));
+            sourceAvailability.Clear();
+            foreach (var pair in current) sourceAvailability[pair.Key] = pair.Value;
+            if (changed) RefreshTree();
+        }
+        finally { sourceAvailabilityRefreshing = false; }
+    }
+
     private static string ContentsNodeKey(TreeViewItem node)
     {
         static string PathKey(string path) => path.Replace('\\', '/').ToUpperInvariant();
@@ -246,6 +301,9 @@ public partial class MainWindow : Window
         {
             string path => "table:" + PathKey(path),
             ResultSheetReference result => "result:" + PathKey(result.Path) + "\0" + result.Sheet,
+            ContentGroupReference group => "content-group:" + group.Type + ":" + group.Id,
+            ContentGroupRootReference root => "content-group-root:" + root.Type,
+            BasemapReference basemap => "basemap:" + basemap.Id,
             JsonObject chart => ChartView.Identity(chart),
             AnalysisReference analysis => "analysis:" + analysis.Entry.S("id"),
             AnalysisPlotReference plot => "analysis-plot:" + plot.Entry.S("id"),
@@ -255,21 +313,190 @@ public partial class MainWindow : Window
         };
     }
 
+    private static string? ContentGroupType(ProjectSession session, string path)
+    {
+        if (session.IsSpreadsheet(path)) return "spreadsheet";
+        if (Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase)) return "vector";
+        return null;
+    }
+
+    private static bool IsRasterPath(string path) => Path.GetExtension(path) is string extension
+        && (extension.Equals(".tif", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".tiff", StringComparison.OrdinalIgnoreCase));
+
+    private IEnumerable<JsonObject> ContentGroups(string type) =>
+        Session.Meta.Arr("content_groups").OfType<JsonObject>()
+            .Where(group => group.S("type") == type);
+
+    private string? GroupForContent(string path, string type) => ContentGroups(type)
+        .FirstOrDefault(group => group.Arr("paths").Any(item =>
+            string.Equals(item.Display(), path, StringComparison.OrdinalIgnoreCase)))?.S("id");
+
+    private TreeViewItem CreateContentGroupNode(JsonObject group)
+    {
+        string id = group.S("id"), type = group.S("type");
+        var node = ContentItem(group.S("name"), CommandIconKind.Folder);
+        node.Tag = new ContentGroupReference(id, type);
+        node.ToolTip = "Arraste arquivos deste tipo para o grupo, ou use o menu de contexto para movê-los.";
+        node.ContextMenu = new ContextMenu();
+        Menu(node, "Renomear grupo…", CommandIconKind.Rename, () => RenameContentGroup(id));
+        Menu(node, "Excluir grupo…", CommandIconKind.Remove, () =>
+        {
+            if (!Ui.Confirm("Excluir grupo", $"O grupo ‘{group.S("name")}’ será removido. Os conteúdos voltarão para a lista de { (type == "spreadsheet" ? "planilhas" : "dados vetoriais")}.", "Excluir grupo", destructive: true))
+                return Task.CompletedTask;
+            Session.Meta.Arr("content_groups").Remove(group);
+            Session.Touch(); RefreshTree();
+            return Task.CompletedTask;
+        });
+        return node;
+    }
+
+    private void AddCreateGroupCommand(TreeViewItem root, string type)
+    {
+        root.Tag = new ContentGroupRootReference(type);
+        root.ContextMenu ??= new ContextMenu();
+        root.ContextMenu.Items.Add(new Separator());
+        var create = new MenuItem
+        {
+            Header = type == "spreadsheet" ? "Criar grupo de planilhas…" : "Criar grupo de dados vetoriais…",
+            Icon = ContentMenuIcon(CommandIconKind.Folder),
+        };
+        create.Click += async (_, e) => { e.Handled = true; await Execute(() => CreateContentGroup(type)); };
+        root.ContextMenu.Items.Add(create);
+    }
+
+    private Task CreateContentGroup(string type)
+    {
+        var form = Ui.Form();
+        form.Children.Add(Ui.Text(type == "spreadsheet" ? "Crie um grupo para organizar planilhas." : "Crie um grupo para organizar camadas vetoriais."));
+        var name = Ui.Input();
+        Ui.Field(form, "Nome do grupo", name);
+        var dialog = Ui.Dialog("Novo grupo", form, 480, 250);
+        var create = Ui.Button("Criar grupo", () =>
+        {
+            string label = name.Text.Trim();
+            if (label.Length == 0) throw new InvalidOperationException("Informe um nome para o grupo.");
+            if (ContentGroups(type).Any(group => string.Equals(group.S("name"), label, StringComparison.CurrentCultureIgnoreCase)))
+                throw new InvalidOperationException("Já existe um grupo com esse nome nesta categoria.");
+            Session.Meta.Arr("content_groups").Add(new JsonObject
+            {
+                ["id"] = Guid.NewGuid().ToString("N"), ["type"] = type, ["name"] = label, ["paths"] = new JsonArray(),
+            });
+            Session.Touch(); RefreshTree(); dialog.DialogResult = true;
+        });
+        var cancel = Ui.Button("Cancelar", () => dialog.DialogResult = false);
+        dialog.Content = Ui.WithToolbar(form, create, cancel);
+        dialog.ShowDialog();
+        return Task.CompletedTask;
+    }
+
+    private Task RenameContentGroup(string id)
+    {
+        var group = ContentGroups("spreadsheet").Concat(ContentGroups("vector")).FirstOrDefault(candidate => candidate.S("id") == id);
+        if (group == null) return Task.CompletedTask;
+        var form = Ui.Form();
+        var name = Ui.Input(group.S("name"));
+        Ui.Field(form, "Nome do grupo", name);
+        var dialog = Ui.Dialog("Renomear grupo", form, 480, 240);
+        var save = Ui.Button("Salvar nome", () =>
+        {
+            string label = name.Text.Trim();
+            if (label.Length == 0) throw new InvalidOperationException("Informe um nome para o grupo.");
+            if (ContentGroups(group.S("type")).Any(candidate => candidate.S("id") != id && string.Equals(candidate.S("name"), label, StringComparison.CurrentCultureIgnoreCase)))
+                throw new InvalidOperationException("Já existe um grupo com esse nome nesta categoria.");
+            group["name"] = label; Session.Touch(); RefreshTree(); dialog.DialogResult = true;
+        });
+        var cancel = Ui.Button("Cancelar", () => dialog.DialogResult = false);
+        dialog.Content = Ui.WithToolbar(form, save, cancel);
+        dialog.ShowDialog();
+        return Task.CompletedTask;
+    }
+
+    private void MoveContentToGroup(string path, string? groupId, bool refresh = true)
+    {
+        string? type = ContentGroupType(Session, path);
+        if (type == null) return;
+        var groups = ContentGroups("spreadsheet").Concat(ContentGroups("vector")).ToArray();
+        foreach (var group in groups)
+        {
+            var paths = group.Arr("paths");
+            for (int i = paths.Count - 1; i >= 0; i--)
+                if (string.Equals(paths[i].Display(), path, StringComparison.OrdinalIgnoreCase)) paths.RemoveAt(i);
+        }
+        var target = groups.FirstOrDefault(group => group.S("id") == groupId && group.S("type") == type);
+        if (target != null && !target.Arr("paths").Any(item => string.Equals(item.Display(), path, StringComparison.OrdinalIgnoreCase)))
+            target.Arr("paths").Add(path);
+        Session.Touch();
+        if (refresh) RefreshTree();
+    }
+
+    private void AddMoveToGroupMenu(TreeViewItem item, string path, string type)
+    {
+        var move = new MenuItem { Header = "Mover para grupo", Icon = ContentMenuIcon(CommandIconKind.Folder) };
+        var ungroup = new MenuItem { Header = "Sem grupo", Icon = ContentMenuIcon(CommandIconKind.Ungroup) };
+        ungroup.Click += async (_, e) => { e.Handled = true; await Execute(() => { MoveContentToGroup(path, null); return Task.CompletedTask; }); };
+        move.Items.Add(ungroup);
+        var groups = ContentGroups(type).ToArray();
+        if (groups.Length > 0) move.Items.Add(new Separator());
+        foreach (var group in groups)
+        {
+            var choice = new MenuItem { Header = group.S("name"), Icon = ContentMenuIcon(CommandIconKind.Folder), IsCheckable = true, IsChecked = GroupForContent(path, type) == group.S("id") };
+            string id = group.S("id");
+            choice.Click += async (_, e) => { e.Handled = true; await Execute(() => { MoveContentToGroup(path, id); return Task.CompletedTask; }); };
+            move.Items.Add(choice);
+        }
+        item.ContextMenu!.Items.Add(move);
+    }
+
+    private static TreeViewItem? TreeItemFromSource(object? source)
+    {
+        var current = source as DependencyObject;
+        while (current != null)
+        {
+            if (current is TreeViewItem item) return item;
+            current = System.Windows.Media.VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
+    private void ContentsTreeMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+        Point current = e.GetPosition(ContentsTree);
+        if (Math.Abs(current.X - contentDragOrigin.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(current.Y - contentDragOrigin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        if (TreeItemFromSource(e.OriginalSource) is not { Tag: string path }
+            || ContentGroupType(Session, path) == null) return;
+        var data = new DataObject("Dendro.ContentPath", path);
+        DragDrop.DoDragDrop(ContentsTree, data, DragDropEffects.Move);
+    }
+
+    private void ContentsTreeDragOver(object sender, DragEventArgs e)
+    {
+        object? target = TreeItemFromSource(e.OriginalSource)?.Tag;
+        if (!e.Data.GetDataPresent("Dendro.ContentPath") || (target is not ContentGroupReference && target is not ContentGroupRootReference))
+        { e.Effects = DragDropEffects.None; return; }
+        string? pathType = ContentGroupType(Session, e.Data.GetData("Dendro.ContentPath") as string ?? "");
+        string targetType = target switch { ContentGroupReference group => group.Type, ContentGroupRootReference root => root.Type, _ => "" };
+        e.Effects = pathType == targetType ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void ContentsTreeDrop(object sender, DragEventArgs e)
+    {
+        object? target = TreeItemFromSource(e.OriginalSource)?.Tag;
+        if (e.Data.GetData("Dendro.ContentPath") is not string path || (target is not ContentGroupReference && target is not ContentGroupRootReference)) return;
+        string? groupId = target is ContentGroupReference group ? group.Id : null;
+        MoveContentToGroup(path, groupId);
+        e.Handled = true;
+    }
+
     private void BuildContentsTree()
     {
         ContentsTree.Items.Clear();
         var sheets = ContentItem("Planilhas", CommandIconKind.Table);
         ContentsTree.Items.Add(sheets);
-        var add = new MenuItem
-        {
-            Header = "Adicionar planilha…",
-            Icon = new CommandIcon
-            {
-                Kind = CommandIconKind.Add,
-                Width = 17,
-                Height = 17,
-            },
-        };
+        var add = new MenuItem { Header = "Adicionar planilha…", Icon = ContentMenuIcon(CommandIconKind.Add) };
         add.SetBinding(UIElement.IsEnabledProperty, new System.Windows.Data.Binding(nameof(IsEnabled))
         {
             Source = ContentsTree,
@@ -277,21 +504,45 @@ public partial class MainWindow : Window
         add.Click += async (_, _) => await AddData();
         sheets.ContextMenu = new ContextMenu();
         sheets.ContextMenu.Items.Add(add);
-        Menu(sheets, "Juntar tabelas…", () => OpenTableTool(false));
+        Menu(sheets, "Juntar tabelas…", CommandIconKind.Merge, () => OpenTableTool(false));
+        Menu(sheets, "Parear medições…", CommandIconKind.Merge, () => OpenPairedMeasurementsTool());
+        AddCreateGroupCommand(sheets, "spreadsheet");
         var db = ContentItem("Bancos de dados", CommandIconKind.Database);
         db.ContextMenu = new ContextMenu();
-        Menu(db, "Adicionar banco DendroLab…", AddBank);
+        Menu(db, "Adicionar banco DendroLab…", CommandIconKind.Database, AddBank);
         var shapes = ContentItem("Dados vetoriais", CommandIconKind.Shape);
+        shapes.ContextMenu = new ContextMenu();
+        AddCreateGroupCommand(shapes, "vector");
+        var basemaps = ContentItem("Mapas base", CommandIconKind.Map);
+        basemaps.ContextMenu = new ContextMenu();
+        AddGISLayerMenu(basemaps);
         ContentsTree.Items.Add(db);
         ContentsTree.Items.Add(shapes);
+        ContentsTree.Items.Add(basemaps);
         if (!Session.IsOpen)
             return;
+        if (Session.Meta.S("gis_basemap") == "openstreetmap")
+        {
+            var basemap = ContentItem("OpenStreetMap", CommandIconKind.Map);
+            basemap.Tag = new BasemapReference("openstreetmap");
+            basemap.ToolTip = "Mapa base exibido sob os dados vetoriais no GIS.";
+            basemap.ContextMenu = new ContextMenu();
+            AddGISLayerMenu(basemap);
+            basemaps.Items.Add(basemap);
+        }
+        var groupNodes = new Dictionary<string, TreeViewItem>(StringComparer.Ordinal);
+        foreach (var group in ContentGroups("spreadsheet").Concat(ContentGroups("vector")))
+        {
+            var groupNode = CreateContentGroupNode(group);
+            groupNodes[group.S("id")] = groupNode;
+            (group.S("type") == "spreadsheet" ? sheets : shapes).Items.Add(groupNode);
+        }
         TreeViewItem managedBank = db;
         string managedPath = Session.Meta.S("database_path");
         if (managedPath.Length > 0)
         {
-            managedBank = ContentItem(Path.GetFileName(managedPath), CommandIconKind.Database);
-            managedBank.ToolTip = Session.Resolve(managedPath);
+            managedBank = ContentItem("Dados do projeto", CommandIconKind.Database);
+            managedBank.ToolTip = "Tabelas e histórico salvos em " + Session.FilePath;
             db.Items.Add(managedBank);
         }
         var nodes = new Dictionary<string, TreeViewItem>(StringComparer.OrdinalIgnoreCase);
@@ -319,26 +570,39 @@ public partial class MainWindow : Window
                 continue;
             var item = ContentItem(
                 Session.ContentName(path),
-                Session.IsSpreadsheet(path) ? CommandIconKind.Table
+                IsRasterPath(path) ? CommandIconKind.Map
+                    : Session.IsSpreadsheet(path) ? CommandIconKind.Table
                     : Session.IsManagedTable(path) ? CommandIconKind.Table
                     : TableStore.IsBank(path) ? CommandIconKind.Database
                     : CommandIconKind.Shape
             );
             item.Tag = path;
-            item.ToolTip = path;
+            bool missingSource = !ContentAvailable(path);
+            ShellVisuals.SetMissing(item, missingSource);
+            item.ToolTip = missingSource
+                ? "Arquivo de origem não encontrado: " + Session.Resolve(path) + "\nUse o menu do botão direito para referenciá-lo novamente."
+                : path;
             nodes[path] = item;
-            if (!Session.Meta.Arr("processing_results").Any(r => r.S("path") == path)) (
-                Session.IsSpreadsheet(path) ? sheets
-                : Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase)
-                    ? shapes
-                : managedPath.Length > 0 && Session.Resolve(path).StartsWith(Session.Resolve(managedPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                    ? managedBank : db
-            ).Items.Add(item);
-            item.ContextMenu = new ContextMenu();
-            if (Session.IsTabular(path))
+            bool processingOutput = Session.Meta.Arr("processing_results").Any(r => r.S("path") == path);
+            if (!processingOutput)
             {
-                Menu(item, "Abrir tabela", () => OpenTable(path));
-                Menu(item, "Copiar para o banco do projeto…", async () => {
+                string? groupType = ContentGroupType(Session, path);
+                TreeViewItem parent = groupType == "spreadsheet" ? sheets
+                    : groupType == "vector" ? shapes
+                    : IsRasterPath(path) ? basemaps
+                    : managedPath.Length > 0 && Session.Resolve(path).StartsWith(Session.Resolve(managedPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                        ? managedBank : db;
+                string? groupId = groupType == null ? null : GroupForContent(path, groupType);
+                if (groupId != null && groupNodes.TryGetValue(groupId, out var groupNode)) parent = groupNode;
+                parent.Items.Add(item);
+            }
+            item.ContextMenu = new ContextMenu();
+            if (missingSource)
+                AddRelinkMenu(item, path);
+            if (Session.IsTabular(path) && !missingSource)
+            {
+                Menu(item, "Abrir tabela", CommandIconKind.Table, () => OpenTable(path));
+                Menu(item, "Copiar para o projeto…", CommandIconKind.Copy, async () => {
                     string bank = Session.ProjectWorkFolder();
                     var options = Session.ExcelOptions(path);
                     string name = TableTools.SuggestedName(Path.GetFileNameWithoutExtension(path));
@@ -347,26 +611,45 @@ public partial class MainWindow : Window
                         name = TableTools.SuggestedName(Path.GetFileNameWithoutExtension(path)) + "_" + n;
                     var result = await Task.Run(() => TableTools.Import(new(Session.Resolve(path), options.S("sheet"), (int)options.N("header_row", 1)), bank, name));
                     await Session.AddTableResult(result, path);
-                    Log($"{result.Rows:N0} linhas copiadas para o banco do projeto.");
+                    Log($"{result.Rows:N0} linhas copiadas para o arquivo do projeto.");
                 });
                 if (Session.IsTabular(path))
-                    Menu(item, "Worksheet e cabeçalho…", () => ConfigureExcel(path));
-                Menu(item, "Gráfico de dispersão…", () => OpenChart(path, false));
-                Menu(item, "Estratificar…", () => OpenTableTool(true, path));
-                Menu(item, "Gerar coluna…", () => OpenTableTool(false, path, true));
-                Menu(item, "Isolation Forest…", () => OpenAnomalyTool(path));
-                Menu(item, "Limpeza integrada…", () => OpenIntegratedCleaning(path));
-                Menu(item, "Testes estatísticos…", () => OpenStatistics(false, path));
-                Menu(item, "Identidade de modelos…", () => OpenStatistics(true, path));
+                    Menu(item, "Worksheet e cabeçalho…", CommandIconKind.Settings, () => ConfigureExcel(path));
+                Menu(item, "Gráfico de dispersão…", CommandIconKind.Chart, () => OpenChart(path, false));
+                Menu(item, "Estratificar…", CommandIconKind.Stratify, () => OpenTableTool(true, path));
+                Menu(item, "Parear medições…", CommandIconKind.Merge, () => OpenPairedMeasurementsTool(path));
+                Menu(item, "Gerar coluna…", CommandIconKind.CalculateColumn, () => OpenTableTool(false, path, true));
+                Menu(item, "Isolation Forest…", CommandIconKind.Anomaly, () => OpenAnomalyTool(path));
+                Menu(item, "Limpeza integrada…", CommandIconKind.IntegratedCleaning, () => OpenIntegratedCleaning(path));
+                Menu(item, "Testes estatísticos…", CommandIconKind.Statistics, () => OpenStatistics(false, path));
             }
+            string? itemGroupType = ContentGroupType(Session, path);
+            if (itemGroupType == "vector" && !missingSource)
+                Menu(item, "Abrir no GIS", CommandIconKind.Map, () => OpenGIS(path));
+            if (IsRasterPath(path) && !missingSource)
+                Menu(item, "Abrir no GIS", CommandIconKind.Map, () => OpenGIS(path));
+            if ((itemGroupType is "spreadsheet" or "vector") && !processingOutput) AddMoveToGroupMenu(item, path, itemGroupType);
             item.ContextMenu.Items.Add(new Separator());
-            Menu(item, "Renomear…", () => RenameContent(path));
+            Menu(item, "Renomear…", CommandIconKind.Rename, () => RenameContent(path));
             Menu(
                 item,
                 "Remover",
+                CommandIconKind.Remove,
                 async () =>
                 {
-                    await Session.RemoveFile(Session.Files.ToList().IndexOf(path));
+                    int index = Session.Files.ToList().IndexOf(path);
+                    string[] affected = Session.PreviewRemoveFile(index);
+                    string[] descendants = affected.Where(removed => !SameProjectPath(removed, path)).ToArray();
+                    bool deletesBankData = affected.Any(Session.IsManagedTable);
+                    string message = deletesBankData
+                        ? $"Remover {Session.ContentName(path)} do projeto também apagará seus dados do arquivo .dlb do projeto."
+                        : $"Remover {Session.ContentName(path)} apenas retira este conteúdo do projeto. O arquivo de origem continuará no local original.";
+                    if (descendants.Length > 0)
+                        message += "\n\nTambém serão removidos os resultados dependentes:\n" +
+                            string.Join("\n", descendants.Select(removed => "• " + Session.ContentName(removed)));
+                    message += "\n\nDeseja continuar?";
+                    if (!ConfirmRemoval(message)) return;
+                    await Session.RemoveFile(index);
                     CloseDocuments();
                     processor = null;
                     ShowTools();
@@ -383,15 +666,20 @@ public partial class MainWindow : Window
             {
                 var node = ContentItem(Session.ContentName(path, chart), CommandIconKind.Chart);
                 node.Tag = chart.DeepClone();
+                bool missingChartSource = !ContentAvailable(path);
+                ShellVisuals.SetMissing(node, missingChartSource);
+                if (missingChartSource) node.ToolTip = "Arquivo de origem não encontrado: " + Session.Resolve(path);
                 node.ContextMenu = new ContextMenu();
-                Menu(node, "Abrir gráfico", () => OpenChart(path, chart.B("fitting"), chart, false));
-                Menu(node, "Regressões 1P…", () => OpenChart(path, true, chart));
-                Menu(node, "Fronteira de eficiência…", () => {
+                if (missingChartSource) AddRelinkMenu(node, path);
+                Menu(node, "Abrir gráfico", CommandIconKind.Chart, () => OpenChart(path, chart.B("fitting"), chart, false));
+                Menu(node, "Regressões…", CommandIconKind.Regression, () => OpenChart(path, true, chart));
+                Menu(node, "Fronteira de eficiência…", CommandIconKind.Frontier, () => {
                     SetTool(new FrontierView(this, Session, chart)); return Task.CompletedTask;
                 });
                 Menu(
                     node,
                     "ICA e IMA…",
+                    CommandIconKind.Increments,
                     () =>
                     {
                         SetTool(new GrowthValidationView(this, Session, chart));
@@ -399,12 +687,16 @@ public partial class MainWindow : Window
                     }
                 );
                 node.ContextMenu.Items.Add(new Separator());
-                Menu(node, "Renomear…", () => RenameContent(path, chart));
+                Menu(node, "Renomear…", CommandIconKind.Rename, () => RenameContent(path, chart));
                 Menu(
                     node,
                     "Remover gráfico",
+                    CommandIconKind.Remove,
                     () =>
                     {
+                        string title = chart.S("title", "gráfico sem título");
+                        if (!Ui.Confirm("Remover gráfico", $"O gráfico ‘{title}’ será removido do projeto e sua janela será fechada. Deseja continuar?", "Remover", destructive: true))
+                            return Task.CompletedTask;
                         var charts = Session.Meta.Arr("charts");
                         var match = charts.FirstOrDefault(c => JsonNode.DeepEquals(c, chart));
                         if (match != null)
@@ -437,7 +729,25 @@ public partial class MainWindow : Window
                     var versionNode = ContentItem($"{result.S("inventory_type")} · V{result.N("number")} {(result.N("number") == 1 ? "original" : "corrigida")} · {ProcessingReviewView.Status(result)}", CommandIconKind.ProcessingReview);
                     versionNode.Tag = new ProcessingVersionReference(result.S("id"));
                     versionNode.ContextMenu = new ContextMenu();
-                    Menu(versionNode, "Revisar / aprovar / exportar…", () => OpenProcessingReview(result.S("id")));
+                    Menu(versionNode, "Revisar / aprovar / exportar…", CommandIconKind.ProcessingReview, () => OpenProcessingReview(result.S("id")));
+                    bool hasLaterRevision = Session.Meta.Arr("processing_results").Any(r => r.S("parent_id") == result.S("id"));
+                    bool preserved = result.S("status") == "aprovado" || result.B("current_approved");
+                    var removeRevision = new MenuItem
+                    {
+                        Header = "Remover revisão…",
+                        IsEnabled = !preserved && !hasLaterRevision,
+                        ToolTip = preserved ? "Versões aprovadas são preservadas."
+                            : hasLaterRevision ? "Remova primeiro as revisões posteriores."
+                            : "Apaga os dados desta revisão do arquivo DLB do projeto.",
+                        Icon = ContentMenuIcon(CommandIconKind.Remove),
+                    };
+                    removeRevision.Click += async (_, e) =>
+                    {
+                        e.Handled = true;
+                        await Execute(() => RemoveProcessingRevision(result.S("id")));
+                    };
+                    versionNode.ContextMenu.Items.Add(new Separator());
+                    versionNode.ContextMenu.Items.Add(removeRevision);
                     versionNode.ToolTip = result.S("created") + " · " + result.S("user");
                     item.Items.Add(versionNode); resultParent = versionNode;
                 }
@@ -451,18 +761,36 @@ public partial class MainWindow : Window
                     node.Tag = reference;
                     node.ToolTip = output + " · " + name;
                     node.ContextMenu = new ContextMenu();
-                    Menu(node, ProcessingReportView.Handles(name) ? "Abrir informações e gráficos" : "Abrir tabela", () => OpenTable(output, name));
-                    Menu(node, "Gráfico de dispersão…", () => OpenResultTool(reference, () => OpenChart(output, false,
+                    bool missingOutput = !ContentAvailable(output);
+                    ShellVisuals.SetMissing(node, missingOutput);
+                    if (missingOutput)
+                    {
+                        node.ToolTip = "Arquivo de origem não encontrado: " + Session.Resolve(output) + "\nUse o menu do botão direito para referenciá-lo novamente.";
+                        AddRelinkMenu(node, output);
+                    }
+                    Menu(node, ProcessingReportView.Handles(name) ? "Abrir informações e gráficos" : "Abrir tabela",
+                        ProcessingReportView.Handles(name) ? CommandIconKind.Chart : CommandIconKind.Table, () => OpenTable(output, name));
+                    Menu(node, "Gráfico de dispersão…", CommandIconKind.Chart, () => OpenResultTool(reference, () => OpenChart(output, false,
                         new JsonObject { ["path"] = output, ["sheet"] = name, ["header_row"] = 1 })));
-                    Menu(node, "Estratificar…", () => OpenResultTool(reference, () => OpenTableTool(true, output)));
-                    Menu(node, "Gerar coluna…", () => OpenResultTool(reference, () => OpenTableTool(false, output, true)));
-                    Menu(node, "Isolation Forest…", () => OpenAnomalyTool(output, name));
-                    Menu(node, "Limpeza integrada…", () => OpenIntegratedCleaning(output, name));
+                    Menu(node, "Estratificar…", CommandIconKind.Stratify, () => OpenResultTool(reference, () => OpenTableTool(true, output)));
+                    Menu(node, "Gerar coluna…", CommandIconKind.CalculateColumn, () => OpenResultTool(reference, () => OpenTableTool(false, output, true)));
+                    Menu(node, "Isolation Forest…", CommandIconKind.Anomaly, () => OpenAnomalyTool(output, name));
+                    Menu(node, "Limpeza integrada…", CommandIconKind.IntegratedCleaning, () => OpenIntegratedCleaning(output, name));
                     if (name is "DIRETO - PARCELAS" or "RESULTADO - PARCELAS")
-                        Menu(node, "Auditar inventário…", () => OpenInventoryAudit(output, name));
-                    Menu(node, "Testes estatísticos…", () => OpenResultTool(reference, () => OpenStatistics(false, output)));
+                        Menu(node, "Auditar inventário…", CommandIconKind.InventoryAudit, () => OpenInventoryAudit(output, name));
+                    Menu(node, "Testes estatísticos…", CommandIconKind.Statistics, () => OpenResultTool(reference, () => OpenStatistics(false, output)));
                     node.ContextMenu.Items.Add(new Separator());
-                    Menu(node, "Remover tabela", async () => {
+                    Menu(node, "Remover tabela", CommandIconKind.Remove, async () => {
+                        string[] descendants = Session.PreviewRemoveResultTable(output, name);
+                        string bank = Session.IsManagedTable(output)
+                            ? "arquivo .dlb do projeto"
+                            : $"arquivo .dlb de origem ‘{Path.GetFileName(Session.Resolve(output))}’";
+                        string message = $"Excluir a tabela ‘{name}’ apagará seus dados do {bank}.";
+                        if (descendants.Length > 0)
+                            message += "\n\nTambém serão removidos os resultados dependentes:\n" +
+                                string.Join("\n", descendants.Select(removed => "• " + Session.ContentName(removed)));
+                        message += "\n\nDeseja continuar?";
+                        if (!ConfirmRemoval(message)) return;
                         await Session.RemoveResultTable(output, name);
                         CloseDocuments();
                         processor = null;
@@ -527,24 +855,18 @@ public partial class MainWindow : Window
 
     private TreeViewItem AnalysisNode(JsonObject analysis)
     {
-        var node = ContentItem(analysis.S("title"), analysis["definition"].S("kind") switch {
-            "isolation_forest" => CommandIconKind.Anomaly,
-            "inventory_audit" => CommandIconKind.InventoryAudit,
-            "growth_comparison" => CommandIconKind.CurveComparison,
-            "increments" => CommandIconKind.Increments,
-            _ => CommandIconKind.Statistics,
-        });
+        var node = ContentItem(analysis.S("title"), AnalysisIcon(analysis));
         node.Tag = new AnalysisReference(analysis);
         node.ContextMenu = new ContextMenu();
-        Menu(node, "Abrir análise", () => AnalysisDocuments.OpenSaved(this, Session, analysis));
+        Menu(node, "Abrir análise", AnalysisIcon(analysis), () => AnalysisDocuments.OpenSaved(this, Session, analysis));
         if (analysis["definition"].S("kind") == "isolation_forest")
         {
             var table = ContentItem("Tabela de resultados · escores e classificação", CommandIconKind.Table);
             table.Tag = new AnalysisTableReference(analysis);
             table.ContextMenu = new ContextMenu();
-            Menu(table, "Abrir tabela", () => AnalysisDocuments.OpenResultTable(this, Session, analysis));
+            Menu(table, "Abrir tabela", CommandIconKind.Table, () => AnalysisDocuments.OpenResultTable(this, Session, analysis));
             node.Items.Add(table);
-            Menu(node, "Abrir tabela de resultados", () => AnalysisDocuments.OpenResultTable(this, Session, analysis));
+            Menu(node, "Abrir tabela de resultados", CommandIconKind.Table, () => AnalysisDocuments.OpenResultTable(this, Session, analysis));
         }
         if (analysis["definition"].S("kind") != "growth_comparison"
             && (Dendro.Core.Configuration.ProjectSnapshots.HasPlot(analysis) || analysis["definition"].S("kind") == "increments"))
@@ -552,15 +874,19 @@ public partial class MainWindow : Window
             var graph = ContentItem("Gráfico · " + analysis.S("title"), CommandIconKind.Chart);
             graph.Tag = new AnalysisPlotReference(analysis);
             graph.ContextMenu = new ContextMenu();
-            Menu(graph, "Abrir gráfico", () => AnalysisDocuments.OpenPlot(this, Session, analysis));
+            Menu(graph, "Abrir gráfico", CommandIconKind.Chart, () => AnalysisDocuments.OpenPlot(this, Session, analysis));
             node.Items.Add(graph);
-            Menu(node, "Abrir gráfico", () => AnalysisDocuments.OpenPlot(this, Session, analysis));
+            Menu(node, "Abrir gráfico", CommandIconKind.Chart, () => AnalysisDocuments.OpenPlot(this, Session, analysis));
         }
         Menu(
             node,
             "Remover",
+            CommandIconKind.Remove,
             () =>
             {
+                string title = analysis.S("title", "análise sem título");
+                if (!Ui.Confirm("Remover análise", $"A análise ‘{title}’ será removida do projeto e suas janelas abertas serão fechadas. Deseja continuar?", "Remover", destructive: true))
+                    return Task.CompletedTask;
                 Session.Meta.Arr("analyses").Remove(analysis);
                 CloseDocument("analysis:" + analysis.S("id"));
                 CloseDocument("analysis-plot:" + analysis.S("id"));
@@ -572,6 +898,15 @@ public partial class MainWindow : Window
         return node;
     }
 
+    private static CommandIconKind AnalysisIcon(JsonObject analysis) => analysis["definition"].S("kind") switch
+    {
+        "isolation_forest" => CommandIconKind.Anomaly,
+        "inventory_audit" => CommandIconKind.InventoryAudit,
+        "growth_comparison" => CommandIconKind.CurveComparison,
+        "increments" => CommandIconKind.Increments,
+        _ => CommandIconKind.Statistics,
+    };
+
     private static IEnumerable<TreeViewItem> ContentsDescendants(ItemsControl parent)
     {
         foreach (var child in parent.Items.OfType<TreeViewItem>())
@@ -581,33 +916,21 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Menu(TreeViewItem item, string title, Func<Task> action)
+    private static CommandIcon ContentMenuIcon(CommandIconKind kind) => new()
     {
-        var kind = title switch
-        {
-            "Renomear…" => CommandIconKind.Rename,
-            "Remover" or "Remover gráfico" => CommandIconKind.Remove,
-            "Abrir gráfico" or "Gráfico de dispersão…" => CommandIconKind.Chart,
-            "Regressões 1P…" => CommandIconKind.Regression,
-            "Estratificar…" => CommandIconKind.Stratify,
-            "Gerar coluna…" => CommandIconKind.CalculateColumn,
-            "Isolation Forest…" => CommandIconKind.Anomaly,
-            "Auditar inventário…" => CommandIconKind.InventoryAudit,
-            "Juntar tabelas…" => CommandIconKind.Merge,
-            "Adicionar banco DendroLab…" => CommandIconKind.Database,
-            _ => CommandIconKind.Table,
-        };
+        Kind = kind,
+        Width = 17,
+        Height = 17,
+    };
+
+    private void Menu(TreeViewItem item, string title, CommandIconKind iconKind, Func<Task> action)
+    {
         var m = new MenuItem
         {
             Header = title,
-            Icon = new CommandIcon
-            {
-                Kind = kind,
-                Width = 17,
-                Height = 17,
-            },
+            Icon = ContentMenuIcon(iconKind),
         };
-        if (title == "Renomear…")
+        if (iconKind == CommandIconKind.Rename && title == "Renomear…")
             m.InputGestureText = "F2";
         m.Click += async (_, e) =>
         {
@@ -616,6 +939,111 @@ public partial class MainWindow : Window
         };
         item.ContextMenu!.Items.Add(m);
     }
+
+    private void AddRelinkMenu(TreeViewItem node, string path)
+    {
+        var relink = new MenuItem
+        {
+            Header = "Referenciar arquivo novamente…",
+            Icon = ContentMenuIcon(CommandIconKind.Open),
+            ToolTip = "Selecione a planilha ou o arquivo de origem no novo local.",
+        };
+        relink.Click += async (_, e) => { e.Handled = true; await RelinkContent(path); };
+        node.ContextMenu?.Items.Insert(0, relink);
+        node.ContextMenu?.Items.Insert(1, new Separator());
+    }
+
+    private void AddGISLayerMenu(TreeViewItem node)
+    {
+        var addLayer = new MenuItem
+        {
+            Header = "Adicionar raster TIFF ou shapefile…",
+            Icon = ContentMenuIcon(CommandIconKind.Add),
+            ToolTip = "Selecione um raster GeoTIFF (.tif/.tiff) ou um vetor shapefile (.shp).",
+        };
+        addLayer.Click += async (_, e) => { e.Handled = true; await AddGISLayerFiles(); };
+        node.ContextMenu?.Items.Add(addLayer);
+    }
+
+    private async Task AddGISLayerFiles()
+    {
+        var picker = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Adicionar raster ou shapefile ao mapa",
+            Filter = "Raster GeoTIFF|*.tif;*.tiff|Shapefile vetorial|*.shp|Todos os formatos aceitos|*.tif;*.tiff;*.shp",
+            Multiselect = true,
+            CheckFileExists = true,
+        };
+        if (picker.ShowDialog(this) != true) return;
+        string[] selected = picker.FileNames.Select(Path.GetFullPath).ToArray();
+        foreach (string path in selected)
+            if (!IsRasterPath(path) && !Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Selecione um raster TIFF ou um shapefile (.shp).");
+        await Execute(async () =>
+        {
+            foreach (string path in selected)
+                if (!Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) Session.AddFile(path);
+            await OpenGIS(selected.LastOrDefault());
+            Log($"{selected.Length:N0} camada(s) GIS adicionada(s) ao projeto.");
+        });
+    }
+
+    private async Task RelinkContent(string oldPath)
+    {
+        string extension = Path.GetExtension(oldPath);
+        string filter = Session.IsSpreadsheet(oldPath) ? "Planilhas Excel|*.xlsx;*.xls|Todos os arquivos|*.*"
+            : extension.Equals(".shp", StringComparison.OrdinalIgnoreCase) ? "Shapefiles|*.shp|Todos os arquivos|*.*"
+            : extension.Equals(".dlb", StringComparison.OrdinalIgnoreCase) ? "Bancos DendroLab|*.dlb|Todos os arquivos|*.*"
+            : extension.Length > 0 ? $"Arquivos {extension.ToUpperInvariant()}|*{extension}|Todos os arquivos|*.*"
+            : "Todos os arquivos|*.*";
+        var picker = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Localizar arquivo de origem",
+            Filter = filter,
+            FileName = Path.GetFileName(oldPath),
+            CheckFileExists = true,
+        };
+        if (picker.ShowDialog(this) != true) return;
+        string newPath = Path.GetFullPath(picker.FileName);
+        await Execute(() =>
+        {
+            foreach (var chart in Session.Meta.Arr("charts").OfType<JsonObject>()
+                .Where(chart => SameProjectPath(chart.S("path"), oldPath)).ToArray())
+                CloseDocument(ChartView.Identity(chart));
+            foreach (string documentId in documents.Keys.Where(id =>
+                id.Equals("table:" + oldPath, StringComparison.OrdinalIgnoreCase)
+                || id.StartsWith("table:" + oldPath + ":", StringComparison.OrdinalIgnoreCase)).ToArray())
+                CloseDocument(documentId);
+            Session.RelinkFile(oldPath, newPath);
+            sourceAvailability.Remove(oldPath);
+            sourceAvailability[newPath] = true;
+            Log($"Arquivo referenciado novamente: {newPath}");
+            return Task.CompletedTask;
+        });
+    }
+
+    private bool ConfirmRemoval(string message) => Ui.Confirm("Confirmar remoção", message, "Remover", destructive: true);
+
+    private async Task RemoveProcessingRevision(string id)
+    {
+        await Session.RefreshHistory(true);
+        var revision = Session.Meta.Arr("processing_results").OfType<JsonObject>().SingleOrDefault(record => record.S("id") == id)
+            ?? throw new InvalidOperationException("Esta revisão não existe mais no histórico atualizado.");
+        if (revision.S("status") == "aprovado" || revision.B("current_approved"))
+            throw new InvalidOperationException("Uma versão aprovada é preservada e não pode ser removida.");
+        if (Session.Meta.Arr("processing_results").Any(record => record.S("parent_id") == id))
+            throw new InvalidOperationException("Esta versão tem revisões posteriores. Remova primeiro as revisões descendentes.");
+        string message = $"Remover {revision.S("inventory_type")} V{revision.N("number")} e apagar os dados desta revisão do arquivo DLB do projeto? Esta ação não pode ser desfeita.";
+        if (!ConfirmRemoval(message)) return;
+        await Session.RemoveProcessingRevision(revision, OperationCancellation);
+        CloseDocuments();
+        processor = null;
+        ShowTools();
+        Log($"Revisão removida: {id}");
+    }
+
+    private static bool SameProjectPath(string first, string second) =>
+        string.Equals(first.Replace('/', '\\'), second.Replace('/', '\\'), StringComparison.OrdinalIgnoreCase);
 
     private TreeViewItem ContentItem(string name, CommandIconKind icon)
     {
@@ -714,8 +1142,14 @@ public partial class MainWindow : Window
             documentSelection[key] = selected;
         if (documents.TryGetValue(key, out var existing))
         {
-            if (!ReferenceEquals(existing.Content, content) && existing.Content is IDisposable disposable) disposable.Dispose();
-            existing.Content = content;
+            if (!ReferenceEquals(existing.Content, content))
+            {
+                object? previousContent = existing.Content;
+                // Release the old WPF logical child before disposing it or attaching its replacement.
+                existing.Content = null;
+                if (previousContent is IDisposable disposable) disposable.Dispose();
+                existing.Content = content;
+            }
             existing.Title = title;
             existing.IsActive = true;
             AttachChartPanels(content as ChartWorkspace);
@@ -852,7 +1286,7 @@ public partial class MainWindow : Window
 
     private async void OpenClick(object s, RoutedEventArgs e)
     {
-        var path = Ui.PickFile("Projeto DendroLab|*.dendro");
+        var path = Ui.PickFile("Projeto DendroLab|*.dlb");
         if (path != null)
             await OpenProject(path);
     }
@@ -870,7 +1304,7 @@ public partial class MainWindow : Window
             processor?.Capture();
             var path = Session.FilePath;
             if (saveAs || string.IsNullOrEmpty(path))
-                path = Ui.SaveFile("Projeto DendroLab|*.dendro", "Projeto.dendro");
+                path = Ui.SaveFile("Projeto DendroLab|*.dlb", "Projeto.dlb");
             if (path == null)
                 return false;
             string original = Session.FilePath;
@@ -964,86 +1398,96 @@ public partial class MainWindow : Window
 
     private void ToolSearchChanged(object s, TextChangedEventArgs e)
     {
-        if (IsInitialized)
+        // Searching should filter the tool list without replacing an open editor/form.
+        if (IsInitialized && ToolContent?.Content is ListBox)
             ShowTools();
     }
 
-    private void ShowTools()
+    internal void ShowTools()
     {
         if (ToolContent == null)
             return;
+        ToolSearchPanel.Visibility = Visibility.Visible;
         var list = new ListBox
         {
             Margin = new Thickness(12, 6, 12, 12),
             BorderThickness = new Thickness(0),
             Background = System.Windows.Media.Brushes.Transparent,
         };
-        foreach (
-            var tool in new[]
-            {
-                "Processador",
-                "Revisão de inventário",
-                "Auditoria pós-processamento",
-                "Ativo biológico",
-                "Gráficos",
-                "Regressões 1P",
-                "Fronteira de eficiência",
-                "Juntar tabelas",
-                "Gerar coluna",
-                "Estratificar",
-                "ICA e IMA",
-                "Comparar curvas de produção",
-                "Isolation Forest",
-                "Limpeza integrada",
-                "Identidade de modelos",
-                "Testes estatísticos",
-            }.Where(n =>
-                n.Contains(ToolSearch.Text, StringComparison.CurrentCultureIgnoreCase)
-                || n == "Identidade de modelos"
-                    && "Graybill F equações grupos".Contains(
-                        ToolSearch.Text,
-                        StringComparison.CurrentCultureIgnoreCase
-                    )
-                || n == "Testes estatísticos"
-                    && "Welch Student t F ANOVA Levene Brown Forsythe variâncias médias".Contains(
-                        ToolSearch.Text,
-                        StringComparison.CurrentCultureIgnoreCase
-                    )
-            )
-        )
+        bool MatchesToolSearch(string name) =>
+            name.Contains(ToolSearch.Text, StringComparison.CurrentCultureIgnoreCase)
+            || name == "Testes estatísticos"
+                && "identidade Graybill regressão Welch Student t F ANOVA Levene Brown Forsythe variâncias médias".Contains(
+                    ToolSearch.Text, StringComparison.CurrentCultureIgnoreCase);
+        var toolGroups = new (string Title, string[] Items)[]
         {
-            var entry = new ListBoxItem
+            ("Preparar e revisar dados", ["Processador", "Revisão de inventário", "Auditoria pós-processamento", "Juntar tabelas", "Parear medições", "Gerar coluna", "Estratificar", "Limpeza integrada", "Ativo biológico"]),
+            ("Gráficos e modelos", ["Gráficos", "Regressões", "Fronteira de eficiência"]),
+            ("Comparar e validar", ["Comparar curvas de produção", "ICA e IMA", "Testes estatísticos", "Isolation Forest"]),
+        };
+        foreach (var (groupTitle, groupTools) in toolGroups)
+        {
+            var visibleTools = groupTools.Where(MatchesToolSearch).ToArray();
+            if (visibleTools.Length == 0) continue;
+            if (string.IsNullOrWhiteSpace(ToolSearch.Text))
+                list.Items.Add(new ListBoxItem
+                {
+                    Content = new TextBlock { Text = groupTitle, Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(104, 122, 137)), FontSize = 11, FontWeight = FontWeights.SemiBold, Margin = new Thickness(3, 8, 0, 2) },
+                    IsEnabled = false, IsHitTestVisible = false, Focusable = false,
+                    Padding = new Thickness(5, 0, 5, 0), BorderThickness = new Thickness(0),
+                    Background = System.Windows.Media.Brushes.Transparent,
+                });
+            foreach (var tool in visibleTools)
             {
-                Content = tool,
-                Style = (Style)FindResource("ToolCardItem"),
-                Tag = tool,
-                IsEnabled =
-                    (tool != "Regressões 1P" && tool != "Fronteira de eficiência")
-                    || (Session.IsOpen && Session.Meta.Arr("charts").Count > 0),
-            };
-            ShellVisuals.SetIcon(
-                entry,
-                tool switch
+                var entry = new ListBoxItem
+                {
+                    Content = tool,
+                    Style = (Style)FindResource("ToolCardItem"),
+                    Tag = tool,
+                    ToolTip = tool switch
+                    {
+                        "Processador" => "Processe inventários em lote e gere resultados por árvore, parcela e nível do projeto.",
+                        "Revisão de inventário" => "Revise fatores, crie versões corrigidas, aprove resultados e exporte a versão vigente.",
+                        "Auditoria pós-processamento" => "Confira resultados processados com dados de origem e sinalize inconsistências para revisão.",
+                        "Ativo biológico" => "Vincule a medição mais recente do processamento à tabela base do inventário.",
+                        "Parear medições" => "Organize medições repetidas em colunas por ano, usando as chaves de árvore ou parcela configuradas no projeto.",
+                        "Limpeza integrada" => "Revise pontos de vários gráficos, remova observações e grave uma tabela limpa.",
+                        "Gráficos" => "Crie um gráfico e confira a prévia antes de ajustar modelos.",
+                        "Regressões" => "Ajuste modelos em um gráfico já criado. Também há um atalho no editor de gráficos.",
+                        "Comparar curvas de produção" => "Escolha uma curva base e compare uma ou mais candidatas; a prévia mostra as séries selecionadas.",
+                        "Testes estatísticos" => "Execute testes de médias, variâncias e identidade de modelos.",
+                        _ => null,
+                    },
+                    IsEnabled = tool switch
+                    {
+                        "Parear medições" => Session.IsOpen,
+                        "Regressões" or "Fronteira de eficiência" => Session.IsOpen && Session.Meta.Arr("charts").Count > 0,
+                        _ => true,
+                    },
+                };
+                if (entry.ToolTip is string description)
+                    System.Windows.Automation.AutomationProperties.SetHelpText(entry, description);
+                ShellVisuals.SetIcon(entry, tool switch
                 {
                     "Processador" => CommandIconKind.Processor,
                     "Revisão de inventário" => CommandIconKind.ProcessingReview,
                     "Auditoria pós-processamento" => CommandIconKind.InventoryAudit,
                     "Ativo biológico" => CommandIconKind.BiologicalAsset,
                     "Gráficos" => CommandIconKind.Chart,
-                    "Regressões 1P" => CommandIconKind.Regression,
+                    "Regressões" => CommandIconKind.Regression,
                     "Fronteira de eficiência" => CommandIconKind.Frontier,
                     "Juntar tabelas" => CommandIconKind.Merge,
+                    "Parear medições" => CommandIconKind.Merge,
                     "Gerar coluna" => CommandIconKind.CalculateColumn,
                     "ICA e IMA" => CommandIconKind.Increments,
                     "Comparar curvas de produção" => CommandIconKind.CurveComparison,
                     "Isolation Forest" => CommandIconKind.Anomaly,
                     "Limpeza integrada" => CommandIconKind.IntegratedCleaning,
-                    "Identidade de modelos" => CommandIconKind.Identity,
                     "Testes estatísticos" => CommandIconKind.Statistics,
                     _ => CommandIconKind.Stratify,
-                }
-            );
-            list.Items.Add(entry);
+                });
+                list.Items.Add(entry);
+            }
         }
         list.SelectionChanged += async (_, _) =>
         {
@@ -1052,12 +1496,14 @@ public partial class MainWindow : Window
             if ((string)i.Tag == "Processador")
             {
                 processor = new ProcessorView(this, Session);
-                ToolContent.Content = processor;
+                SetTool(processor);
             }
             else if ((string)i.Tag == "Revisão de inventário")
                 await Execute(() => OpenProcessingReview());
             else if ((string)i.Tag is "Juntar tabelas" or "Estratificar")
                 await Execute(() => OpenTableTool((string)i.Tag == "Estratificar"));
+            else if ((string)i.Tag == "Parear medições")
+                await Execute(() => OpenPairedMeasurementsTool());
             else if ((string)i.Tag == "Gerar coluna")
                 await Execute(() => OpenTableTool(false, calculateColumns: true));
             else if ((string)i.Tag == "ICA e IMA")
@@ -1074,8 +1520,8 @@ public partial class MainWindow : Window
                 await Execute(async()=>{var view=new BiologicalAssetView(this,Session);SetTool(view);await view.Initialize();});
             else if ((string)i.Tag == "Fronteira de eficiência")
                 SetTool(new FrontierView(this, Session));
-            else if ((string)i.Tag is "Identidade de modelos" or "Testes estatísticos")
-                await Execute(() => OpenStatistics((string)i.Tag == "Identidade de modelos"));
+            else if ((string)i.Tag == "Testes estatísticos")
+                await Execute(() => OpenStatistics(false));
             else
                 await Execute(() => OpenChart(null, (string)i.Tag != "Gráficos"));
         };
@@ -1088,6 +1534,7 @@ public partial class MainWindow : Window
         if (closing)
             return;
         ToolsPane.Show();
+        ToolSearchPanel.Visibility = Visibility.Collapsed;
         ToolContent.Content = content;
     }
 
@@ -1096,6 +1543,13 @@ public partial class MainWindow : Window
         var view = new TableToolsView(this, Session, stratify, path, calculateColumns);
         SetTool(view);
         await view.Initialize();
+    }
+
+    internal async Task OpenPairedMeasurementsTool(string? path = null)
+    {
+        var view = new PairedMeasurementsView(this, Session);
+        SetTool(view);
+        await view.Initialize(path);
     }
 
     internal async Task OpenAnomalyTool(string? path = null, string? sheet = null)
@@ -1140,6 +1594,31 @@ public partial class MainWindow : Window
         Session.SetExcel(path, tables[0], 1);
     }
 
+    private async void GISClick(object sender, RoutedEventArgs e) => await Execute(() => OpenGIS());
+
+    private async Task OpenGIS(string? selectedVector = null)
+    {
+        if (!Session.IsOpen)
+            throw new InvalidOperationException("Abra um projeto para visualizar os dados vetoriais no GIS.");
+        if (Session.Meta.S("gis_basemap") != "openstreetmap")
+        {
+            Session.Meta["gis_basemap"] = "openstreetmap";
+            Session.Touch();
+        }
+        if (gisView != null && documents.TryGetValue("gis", out var existing) && ReferenceEquals(existing.Content, gisView))
+        {
+            existing.IsActive = true;
+            if (selectedVector == null || !gisView.HasLayer(selectedVector)) await gisView.Initialize(selectedVector);
+            else gisView.FocusLayer(selectedVector);
+            return;
+        }
+        var view = new GisView(Session);
+        gisView = view;
+        var document = Document("gis", "GIS · Mapa", view);
+        document.Closed += (_, _) => { if (ReferenceEquals(gisView, view)) gisView = null; };
+        await view.Initialize(selectedVector);
+    }
+
     internal DockPanel ToolHeader(string title)
     {
         var header = new DockPanel { LastChildFill = true };
@@ -1147,16 +1626,7 @@ public partial class MainWindow : Window
         back.Style = (Style)FindResource("ToolBackButton");
         back.ToolTip = "Voltar às ferramentas";
         System.Windows.Automation.AutomationProperties.SetName(back, "Voltar às ferramentas");
-        back.Content = new System.Windows.Shapes.Path
-        {
-            Data = System.Windows.Media.Geometry.Parse("M 9,2 L 3,8 L 9,14 M 3,8 L 15,8"),
-            Stroke = System.Windows.Media.Brushes.SlateGray,
-            StrokeThickness = 1.6,
-            StrokeStartLineCap = System.Windows.Media.PenLineCap.Round,
-            StrokeEndLineCap = System.Windows.Media.PenLineCap.Round,
-            Width = 18,
-            Height = 16,
-        };
+        back.Content = new CommandIcon { Kind = CommandIconKind.ArrowLeft, Width = 18, Height = 18 };
         DockPanel.SetDock(back, Dock.Left);
         header.Children.Add(back);
         var label = Ui.Text(title, 21);
@@ -1196,6 +1666,9 @@ public partial class MainWindow : Window
 
     internal sealed record ResultSheetReference(string Path, string Sheet);
     internal sealed record ProcessingVersionReference(string Id);
+    private sealed record ContentGroupReference(string Id, string Type);
+    private sealed record ContentGroupRootReference(string Type);
+    private sealed record BasemapReference(string Id);
 
     private Task OpenResultTool(ResultSheetReference result, Func<Task> open)
     {
@@ -1249,7 +1722,7 @@ public partial class MainWindow : Window
     internal async Task OpenChart(string? path, bool fitting, JsonObject? config = null, bool activateTool = true)
     {
         if (fitting && Session.Meta.Arr("charts").Count == 0)
-            throw new InvalidOperationException("Crie um gráfico antes de abrir Regressões 1P.");
+            throw new InvalidOperationException("Crie um gráfico antes de abrir Regressões.");
         var view = new ChartView(this, Session, fitting);
         if (activateTool) SetTool(view);
         await view.Load(path, config);
@@ -1271,6 +1744,8 @@ public partial class MainWindow : Window
                 await Execute(() => AnalysisDocuments.OpenResultTable(this, Session, analysisTable.Entry));
             else if (i.Tag is ProcessingVersionReference version)
                 await Execute(() => OpenProcessingReview(version.Id));
+            else if (i.Tag is BasemapReference)
+                await Execute(() => OpenGIS());
             else if (i.Tag is ResultSheetReference result)
                 await Execute(() => OpenTable(result.Path, result.Sheet));
         }

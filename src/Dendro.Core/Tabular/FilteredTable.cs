@@ -13,7 +13,8 @@ public sealed class FilteredTable : IDisposable
     private FilteredTable(string path, string index, long count) { Source = new(path); indexPath = index; SourceCount = count; }
 
     public static FilteredTable Create(TableSource source, IReadOnlyList<TableFilter> filters, CancellationToken cancellation = default,
-        IProgress<TableProgress>? progress = null, string? temporaryFolder = null, TableSort? sort = null)
+        IProgress<TableProgress>? progress = null, string? temporaryFolder = null, TableSort? sort = null,
+        IReadOnlySet<long>? includedSourceRows = null)
     {
         cancellation.ThrowIfCancellationRequested();
         string path = Path.Combine(temporaryFolder ?? Path.GetTempPath(), "DendroLab-filter-" + Guid.NewGuid().ToString("N") + ".dlb");
@@ -22,7 +23,7 @@ public sealed class FilteredTable : IDisposable
         {
             if (sort != null)
             {
-                long scannedRows = TableSorting.Create(source, filters, sort, path, indexPath, cancellation, progress);
+                long scannedRows = TableSorting.Create(source, filters, sort, path, indexPath, cancellation, progress, includedSourceRows);
                 return new(path,indexPath,scannedRows);
             }
             using var cursor = new TableCursor(source);
@@ -36,7 +37,8 @@ public sealed class FilteredTable : IDisposable
             foreach (var row in cursor.Rows())
             {
                 cancellation.ThrowIfCancellationRequested(); scanned++;
-                if (matches(row)) { writer.Add(id, row); index.Write(source.HeaderRow + scanned); matched++; }
+                if ((includedSourceRows == null || includedSourceRows.Contains(source.HeaderRow + scanned)) && matches(row))
+                { writer.Add(id, row); index.Write(source.HeaderRow + scanned); matched++; }
                 if ((scanned & 2047) == 0)
                     updates.Report(cursor.TotalRows > 0 ? 95d * scanned / cursor.TotalRows : null,
                         $"Filtrando: {scanned:N0} linhas verificadas · {matched:N0} encontradas", scanned);

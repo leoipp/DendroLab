@@ -35,21 +35,19 @@ public static class ProjectModels
             ["fields"] = ProjectStore.Fields,
             ["growth"] = growth,
             ["models"] = new JsonArray(
-                (
-                    project == null
-                        ? Regression.RegressionEngine.Models
-                        : RegressionCatalog.Families(project)
-                )
-                    .Select(m =>
-                        (JsonNode?)
-                            new JsonObject
-                            {
-                                ["name"] = m.Name,
-                                ["formula"] = m.Formula,
-                                ["parameters"] = m.Parameters,
-                                ["id"] = m.Id,
-                            }
-                    )
+                (project == null
+                    ? Regression.RegressionEngine.Models.Select(m => (m, predictors: 1))
+                    : Enumerable.Range(1, 3).SelectMany(predictors =>
+                        RegressionCatalog.Families(project, predictors)
+                            .Select(m => (m, predictors))))
+                    .Select(item => (JsonNode?)new JsonObject
+                    {
+                        ["name"] = item.m.Name,
+                        ["formula"] = item.m.Formula,
+                        ["parameters"] = item.m.Parameters,
+                        ["id"] = item.m.Id,
+                        ["predictors"] = item.predictors,
+                    })
                     .ToArray()
             ),
         };
@@ -151,8 +149,10 @@ public static class ProjectModels
         };
         if (custom?["entradas"] is not null)
             row["entradas"] = custom["entradas"]!.DeepClone();
+        if (request["fixed_inputs"] is JsonObject fixedInputs)
+            row["fixed_inputs"] = fixedInputs.DeepClone();
         if (index >= 0 && models[index].S("modelo") == family)
-            foreach (string key in new[] { "formula", "modelo_nome", "unidade_idade", "entradas" })
+            foreach (string key in new[] { "formula", "modelo_nome", "unidade_idade", "entradas", "fixed_inputs" })
                 if (models[index]![key] is { } old)
                     row[key] = old.DeepClone();
         if (request["inputs"] is not null)

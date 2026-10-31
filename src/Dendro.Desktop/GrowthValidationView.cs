@@ -13,6 +13,7 @@ internal sealed class GrowthValidationView : ScrollViewer
 {
     internal sealed class CurveChoice
     {
+        public string Id { get; init; } = "";
         public bool Selected { get; set; }
         public string Name { get; init; } = "";
         public string Unit => FromChart ? "Gráfico" : Curve.AgeUnit;
@@ -61,6 +62,7 @@ internal sealed class GrowthValidationView : ScrollViewer
         Content = form;
         form.Children.Add(owner.ToolHeader("ICA e IMA"));
         Ui.AddHelp(form, "Selecione curvas ajustadas ou versões cadastradas em Crescimento e produção. As idades do intervalo e os incrementos do resultado são expressos em anos.");
+        Ui.Section(form,"Curvas de origem");
         grid.Columns.Add(
             new DataGridCheckBoxColumn
             {
@@ -90,7 +92,9 @@ internal sealed class GrowthValidationView : ScrollViewer
         grid.ItemsSource = choices;
         form.Children.Add(grid);
         form.Children.Add(Ui.Button("Atualizar curvas disponíveis", Refresh));
+        Ui.Section(form,"Unidade e idades");
         Ui.Field(form, "Unidade de X nos ajustes de gráficos", units);
+        Ui.Section(form,"Intervalo e cálculo");
         form.Children.Add(confirmAge);
         Ui.Field(form, "Idade mínima (anos)", minimum);
         Ui.Field(form, "Idade máxima (anos)", maximum);
@@ -124,43 +128,66 @@ internal sealed class GrowthValidationView : ScrollViewer
     {
         var choices = new List<CurveChoice>();
         foreach (var chart in session.Meta.Arr("charts").OfType<JsonObject>())
-        foreach (var fit in chart["fits"] as JsonArray ?? [])
         {
-            if (!fit.B("converged"))
-                continue;
+            var fits = chart["fits"] as JsonArray ?? [];
+            for (int fitIndex = 0; fitIndex < fits.Count; fitIndex++)
+            {
+            var fit = fits[fitIndex] as JsonObject;
+            if (fit is null || !fit.B("converged")) continue;
             string name =
                 session.ContentName(chart.S("path"), chart)
                 + " · "
                 + fit.S("group")
                 + " · "
                 + fit.S("model");
+            var fixedInputs = new Dictionary<string, double>(StringComparer.Ordinal);
+            int predictorCount = (int)fit.N("predictor_count", 1);
+            for (int predictor = 1; predictor < predictorCount; predictor++)
+            {
+                string symbol = "x" + (predictor + 1);
+                if (fit[$"{symbol}_mean"] is not null && double.IsFinite(fit.N($"{symbol}_mean")))
+                    fixedInputs[symbol] = fit.N($"{symbol}_mean");
+            }
+            string formula = System.Text.RegularExpressions.Regex.Replace(fit.S("formula"), @"\b(?:x1|x|t)\b", "t");
             choices.Add(
                 new()
                 {
+                    Id = ChartView.Identity(chart) + ":fit:" + fitIndex,
                     Name = name,
                     Path = chart.S("path"),
                     FromChart = true,
                     Curve = new(
                         name,
-                        fit.S("formula"),
+                        formula,
                         Enumerable
                             .Range(0, (int)fit.N("parameters", 2))
                             .Select(i => fit.N("b" + i))
                             .ToArray(),
-                        "anos"
+                        "anos",
+                        "t",
+                        1,
+                        fixedInputs
                     ),
                 }
             );
+            }
         }
-        foreach (
-            var model in session
+        var equations = session
                 .Data!.Obj("curvas_crescimento")
                 .Arr("equacoes")
                 .OfType<JsonObject>()
-        )
+                .ToArray();
+        for (int equationIndex = 0; equationIndex < equations.Length; equationIndex++)
         {
+            var model = equations[equationIndex];
             var inputs = ModelDefinition.Inputs(model, true);
-            var input = inputs.Count == 1 ? inputs[0] : null;
+            var ageInputs = inputs.OfType<JsonObject>().Where(i => i.S("simbolo") == "t").ToArray();
+            var input = ageInputs.Length == 1 ? ageInputs[0] : null;
+            var fixedInputs = new Dictionary<string, double>(StringComparer.Ordinal);
+            var savedFixedInputs = model["fixed_inputs"] as JsonObject;
+            foreach (var extra in inputs.OfType<JsonObject>().Where(i => i.S("simbolo") != "t"))
+                if (savedFixedInputs?[extra.S("simbolo")] is not null && double.IsFinite(savedFixedInputs.N(extra.S("simbolo"))))
+                    fixedInputs[extra.S("simbolo")] = savedFixedInputs.N(extra.S("simbolo"));
             string unit = input?.S("coluna") switch
             {
                 "idade_meses" => "meses",
@@ -168,8 +195,10 @@ internal sealed class GrowthValidationView : ScrollViewer
                 _ => input?.S("unidade") ?? model.S("unidade_idade", "meses"),
             };
             string issue =
-                inputs.Count != 1 || unit is not ("anos" or "meses")
-                    ? "ICA/IMA requer uma única entrada de idade, em anos ou meses."
+                input is null || unit is not ("anos" or "meses")
+                    ? "ICA/IMA requer uma entrada t de idade, em anos ou meses."
+                    : inputs.OfType<JsonObject>().Any(i => i.S("simbolo") != "t" && !fixedInputs.ContainsKey(i.S("simbolo")))
+                        ? "As entradas adicionais precisam de valores fixos para comparar curvas."
                     : "";
             string name =
                 model.S("codigo")
@@ -181,6 +210,7 @@ internal sealed class GrowthValidationView : ScrollViewer
             choices.Add(
                 new()
                 {
+                    Id = $"model:{model.S("codigo")}:{model.S("modelo")}:{model.N("ano")}:{equationIndex}",
                     Name = name,
                     Issue = issue,
                     Curve = new(
@@ -192,7 +222,8 @@ internal sealed class GrowthValidationView : ScrollViewer
                             .ToArray(),
                         unit,
                         input?.S("simbolo", "t") ?? "t",
-                        input?.N("fator", 1) ?? 1
+                        input?.N("fator", 1) ?? 1,
+                        fixedInputs
                     ),
                 }
             );

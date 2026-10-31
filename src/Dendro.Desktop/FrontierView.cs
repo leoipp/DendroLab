@@ -20,6 +20,7 @@ internal sealed class FrontierView : ScrollViewer
         this.session = session;
         var form = Ui.Form();
         form.Children.Add(owner.ToolHeader("Fronteira de eficiência"));
+        Ui.Section(form,"Gráfico e método");
         Ui.Field(form, "Gráfico de origem", source);
         side.ItemsSource = new[] { "Superior", "Inferior", "Superior e inferior" }; side.SelectedIndex = 0;
         method.ItemsSource = new[] { "Máximo / mínimo observado", "Percentil de Y", "Média dos extremos da cauda" }; method.SelectedIndex = 0;
@@ -34,6 +35,7 @@ internal sealed class FrontierView : ScrollViewer
         void MethodChanged() { percentile.IsEnabled = method.SelectedIndex == 1; tail.IsEnabled = method.SelectedIndex == 2; }
         method.SelectionChanged += (_, _) => MethodChanged(); MethodChanged();
         form.Children.Add(observations);
+        Ui.Section(form,"Gerar resultado");
         Ui.AddHelp(form, "Usa X, Y, estratos, filtro de grupo e exclusões do gráfico. Máximos/mínimos mantêm o X observado; percentis usam o X médio da faixa; médias de cauda usam o X médio dos pontos selecionados. Faixas insuficientes são omitidas.");
         form.Children.Add(Ui.AsyncButton("Calcular fronteira", () => owner.Execute(Calculate)));
         Content = form;

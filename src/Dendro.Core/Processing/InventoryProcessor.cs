@@ -78,9 +78,13 @@ public sealed class InventoryProcessor
         if (!compact && !output.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("O resultado deve usar .dlb ou .xlsx.");
         progress?.Invoke(3, "Lendo configuração do inventário…");
-        var cfg = JsonNode.Parse(File.ReadAllText(request.Config))!.AsObject();
+        var cfg = Dendro.Core.Tabular.CompactBankFile.IsCompactBank(request.Config)
+            ? ProjectStore.Read(request.Config)
+            : JsonNode.Parse(File.ReadAllText(request.Config))?.AsObject()
+                ?? throw new InvalidDataException("Arquivo de configuração do processamento vazio ou inválido.");
         ProjectStore.Validate(cfg);
         var height = cfg["ajuste_altura"]!;
+        int dominantTreesPerPlot = (int)cfg.At("processador").N("n_dominantes_parcela", 5);
         string mode = height.S("h_mode", "KEEP_FILE");
         bool useRna = mode is "MODEL_GENERAL" or "FINETUNE_MODEL";
         if (mode != "KEEP_FILE" && !useRna)
@@ -115,6 +119,11 @@ public sealed class InventoryProcessor
         bool directMode = cfg["processador"].S("modo", "completo") == "resumo_direto";
         using var direct = directMode ? new DirectInventorySummary(output, cfg) : null;
         bool versioned = !directMode && ProcessingHistory.Enabled(cfg);
+        var areaColumns = cfg.At("arquivo_entrada.colunas");
+        int lengthColumn = input.Require(areaColumns.S("comprimento_parcela", "Compr")),
+            widthColumn = input.Require(areaColumns.S("largura_parcela", "Larg")),
+            slopeLengthColumn = input.Require(areaColumns.S("declinacao_comprimento", "Dec_Compr")),
+            slopeWidthColumn = input.Require(areaColumns.S("declinacao_largura", "Dec_Larg"));
         bool removeDuplicateRows = cfg["processador"].B("remover_duplicadas");
         var identification = new InventoryIdentity(input, cfg, versioned || removeDuplicateRows);
         int[] identityColumns = versioned ? new[] { "cova", "fuste", "fila" }.Select(key => input.Column(colCfg.S(key, key == "cova" ? "Cova" : key == "fuste" ? "Fuste" : "Fila"))).ToArray() : [];
@@ -146,7 +155,7 @@ public sealed class InventoryProcessor
             if (removedDuplicates > 0) progress?.Invoke(15, $"Duplicadas removidas: {removedDuplicates:N0}. Mantida a primeira ocorrência de cada árvore e data de medição.");
         }
         progress?.Invoke(16, "Verificando dimensões e áreas das parcelas…");
-        var validatedAreas = ParcelAreaValidation.Compute(input, cfg, cancellation, progress);
+        var validatedAreas = ParcelAreaValidation.Compute(input, cfg, cancellation, progress, retainAreas: !directMode);
         var cad = cfg["cadastro"];
         var cadCols = cad?["colunas"];
         string registryPath = Path.GetFullPath(
@@ -306,7 +315,10 @@ public sealed class InventoryProcessor
                     $"Linha {r + 1}: data inválida de plantio ou medição."
                 );
             double age = Math.Floor(measured - planted) / 365.25,
-                area = validatedAreas[r],
+                area = directMode
+                    ? InventoryMath.Area(input.Number(r, lengthColumn), input.Number(r, widthColumn),
+                        input.Number(r, slopeLengthColumn), input.Number(r, slopeWidthColumn))
+                    : validatedAreas[r],
                 dap = input.Number(r, c[3]),
                 h = input.Number(r, c[4]),
                 effective = registry.Number(rr, ca);
@@ -421,6 +433,8 @@ public sealed class InventoryProcessor
             "Curva_Modelo",
             "Curva_Ano",
             "VMI_real",
+            "DAPd",
+            "Hd",
         ]);
         var stands = new DataTable([
             "Talhão",
@@ -436,6 +450,8 @@ public sealed class InventoryProcessor
             "Vol_Esperado_ha",
             "Dif_IFC_pct",
             "IcV",
+            "DAPd",
+            "Hd",
         ]);
         var curves = cfg["curvas_crescimento"]?["equacoes"] as JsonArray ?? [];
         if (versioned) { plots.Ensure("Data_Medicao"); stands.Ensure("Data_Medicao"); }
@@ -459,6 +475,8 @@ public sealed class InventoryProcessor
                 stemsHa = stems * 10000 / area,
                 age = InventoryMath.Mean(group.Select(t => t.Age)),
                 expected = double.NaN;
+            var dominant = new DominantTreeMetrics(dominantTreesPerPlot);
+            foreach (var tree in group) dominant.Add(tree.Dap, tree.Height);
             JsonNode? curve = null;
             if (useCurves)
             {
@@ -498,7 +516,9 @@ public sealed class InventoryProcessor
                 expected > 0 ? perHa / expected : double.NaN,
                 curve?.S("modelo_nome", curve.S("modelo")) ?? "",
                 curve.N("ano", double.NaN),
-                InventoryMath.Mean(group.Select(t => t.Volume))
+                InventoryMath.Mean(group.Select(t => t.Volume)),
+                dominant.Dap,
+                dominant.Height
             );
             if (versioned)
             {
@@ -528,6 +548,11 @@ public sealed class InventoryProcessor
                             (object?)InventoryMath.Mean(group.Select(r => plots.Number(r, p)))
                         )
                     )
+                    .Concat(new object?[]
+                    {
+                        DominantTreeMetrics.AreaWeightedMean(group.Select(r => (plots.Number(r, plots.Require("DAPd")), plots.Number(r, plots.Require("area_corr"))))),
+                        DominantTreeMetrics.AreaWeightedMean(group.Select(r => (plots.Number(r, plots.Require("Hd")), plots.Number(r, plots.Require("area_corr")))))
+                    })
                     .ToArray()
             );
             if (versioned) stands.Set(stands.Count - 1, stands.Require("Data_Medicao"), group.Key.Measurement);

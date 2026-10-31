@@ -46,7 +46,7 @@ internal static partial class DesktopTests
         await AnalysisDocuments.OpenSaved(window, window.Session, entry);
         await AnalysisDocuments.OpenPlot(window, window.Session, entry);
         Check(ReferenceEquals(window.ToolContent.Content, selectedTool), "abrir informações e gráfico ICA/IMA preserva a ferramenta selecionada");
-        string project = Path.Combine(root, "resultados.dendro");
+        string project = Path.Combine(root, "resultados.dlb");
         await window.Session.Save(project); await window.Session.Open(project);
         var restored = window.Session.Meta.Arr("analyses").OfType<JsonObject>().Single();
         await AnalysisDocuments.OpenPlot(window, window.Session, restored);
@@ -143,6 +143,8 @@ internal static partial class DesktopTests
         var filterFit=new ChartView(window,window.Session,true);window.SetTool(filterFit);
         await filterFit.Load(source,filterChart.CurrentConfig);await filterFit.Generate();
         var filterWorkspace=(ChartWorkspace)window.DockManager.Layout.Descendents().OfType<LayoutDocument>().Single(d=>d.ContentId==ChartView.Identity(filterFit.CurrentConfig)).Content;
+        Check(!window.RegressionModelsButton.IsEnabled && window.RegressionDataButton.IsEnabled,
+            "botões de exibição habilitam apenas dados disponíveis no documento ativo");
         var filterBody=filterWorkspace.GraphBody;
         await filterFit.RegressionDataReady;
         Check(LogicalControls<TableBrowser>(filterWorkspace.DataContent!).Any(),"regressão apresenta dados em painel encaixável com filtros e paginação");
@@ -181,6 +183,8 @@ internal static partial class DesktopTests
         await comparison.Generate("fit",true);await comparison.RegressionDataReady;
         var comparisonDoc=window.DockManager.Layout.Descendents().OfType<LayoutDocument>().Single(d=>d.ContentId==ChartView.Identity(comparison.CurrentConfig));
         var workspace=(ChartWorkspace)comparisonDoc.Content;window.UpdateLayout();
+        Check(window.RegressionModelsButton.IsEnabled && window.RegressionDataButton.IsEnabled,
+            "botões de modelos e dados ficam disponíveis na regressão ativa");
         await Application.Current.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         Capture(window,Path.Combine(root,"modelos-inicial.png"));
         var modelPane=window.RegressionModelsPane!;var dataPane=window.RegressionDataPane!;
@@ -206,8 +210,12 @@ internal static partial class DesktopTests
         Check(!dataPane.IsFloating,"dados retornam ao encaixe após flutuar");
         modelPane.ToggleAutoHide();
         window.Document("other-chart-test","Outro documento",Ui.Text("Outra tabela"));
+        Check(!window.RegressionModelsButton.IsEnabled && !window.RegressionDataButton.IsEnabled,
+            "botões de regressão ficam desabilitados em outro documento");
         Check(modelPane.IsHidden && dataPane.IsHidden,"outro documento recolhe painéis da regressão");
         comparisonDoc.IsActive=true;window.UpdateLayout();
+        Check(window.RegressionModelsButton.IsEnabled && window.RegressionDataButton.IsEnabled,
+            "botões de regressão reabilitam ao voltar ao documento correspondente");
         Check(ReferenceEquals(window.RegressionModelsPane!.Content,workspace.ModelsContent) && ReferenceEquals(window.RegressionDataPane!.Content,workspace.DataContent),
             "voltar ao gráfico recupera os respectivos modelos e dados");
         Check(modelPane.IsAutoHidden && !window.ContentsPane.IsHidden && !window.ToolsPane.IsHidden,

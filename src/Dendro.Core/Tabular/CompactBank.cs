@@ -13,6 +13,8 @@ public sealed record CompactCatalog(int Version, CompactTable[] Tables);
 public sealed class CompactBankReader : IDisposable
 {
     public const string Extension = ".dlb";
+    public const int MaximumBlockBytes = 320 * 1024 * 1024;
+    public const long MaximumRowBytes = 256L * 1024 * 1024;
     internal static readonly byte[] Magic = "DNDRDB02"u8.ToArray();
     private readonly FileStream stream;
     public CompactCatalog Catalog { get; }
@@ -41,7 +43,7 @@ public sealed class CompactBankReader : IDisposable
                 foreach (var block in table.Blocks)
                 {
                     if (block.FirstRow != rows || block.Rows is < 1 or > 2048 || (long)block.Rows * table.Columns.Length > 1_000_000
-                        || block.Bytes < 1 || block.Bytes > 64 * 1024 * 1024
+                        || block.Bytes < 1 || block.Bytes > MaximumBlockBytes
                         || block.Offset < 16 || block.Offset > index - block.Bytes)
                         throw new InvalidDataException("Bloco inválido no banco.");
                     rows += block.Rows;
@@ -75,19 +77,24 @@ public sealed class CompactBankReader : IDisposable
             using var compressed = new MemoryStream(bytes, false);
             using var brotli = new BrotliStream(compressed, CompressionMode.Decompress);
             using var reader = new BinaryReader(brotli, Encoding.UTF8);
-            var rows = new object?[block.Rows][];
+            int firstRequested = (int)Math.Max(0, offset - block.FirstRow);
+            int requested = block.Rows - firstRequested;
+            if (limit.HasValue) requested = Math.Min(requested, limit.Value - (int)emitted);
+            var rows = new object?[requested][];
             for (int i = 0; i < rows.Length; i++) rows[i] = new object?[table.Columns.Length];
             // Columns are adjacent before compression, improving repeated-value compression.
             for (int c = 0; c < table.Columns.Length; c++)
-                for (int r = 0; r < rows.Length; r++)
-                    rows[r][c] = reader.ReadByte() switch {
+                for (int r = 0; r < block.Rows; r++)
+                {
+                    object? value = reader.ReadByte() switch {
                         0 => null, 1 => reader.ReadDouble(), 2 => reader.ReadString(),
                         _ => throw new InvalidDataException("Tipo de célula inválido.") };
+                    if (r >= firstRequested && r < firstRequested + requested)
+                        rows[r - firstRequested][c] = value;
+                }
             if (brotli.ReadByte() != -1) throw new InvalidDataException("Tamanho de bloco inconsistente.");
-            for (int i = 0; i < rows.Length; i++)
+            for (int i = 0; i < requested; i++)
             {
-                if (block.FirstRow + i < offset) continue;
-                if (limit.HasValue && emitted >= limit) yield break;
                 emitted++; yield return rows[i];
             }
         }
@@ -129,6 +136,7 @@ public sealed class CompactBankWriter : IDisposable
         if (row.Length != table.Columns.Length) throw new InvalidDataException("Largura da linha difere do cabeçalho.");
         var copy = new object?[row.Length];
         long size = 24L + row.Length * 8L;
+        int oversizedColumn = -1;
         for (int c = 0; c < row.Length; c++)
         {
             copy[c] = row[c] switch {
@@ -138,9 +146,15 @@ public sealed class CompactBankWriter : IDisposable
                 int n => (double)n, long n => (double)n,
                 var v => TableCursor.Text(v),
             };
-            size += copy[c] is string s ? 24L + s.Length * 2L : 16;
+            if (copy[c] is string s)
+            {
+                size += 16L + Encoding.UTF8.GetByteCount(s);
+                if (size > CompactBankReader.MaximumRowBytes) oversizedColumn = c;
+            }
+            else size += 16;
         }
-        if (size > 16 * 1024 * 1024) throw new InvalidDataException("Linha acima do limite de 16 MB do banco.");
+        if (size > CompactBankReader.MaximumRowBytes)
+            throw new InvalidDataException($"A linha excede o limite técnico de 256 MiB do DLB (coluna '{table.Columns[Math.Max(0, oversizedColumn)]}'). Reduza o conteúdo dessa coluna ou divida o registro.");
         if (pendingBytes + size > 4 * 1024 * 1024) Flush();
         table.Pending.Add(copy); table.Rows++; pendingBytes += size;
         if (table.Pending.Count >= 2048) Flush();

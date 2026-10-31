@@ -32,6 +32,28 @@ public class CompactBankTests : IDisposable
     }
 
     [Fact]
+    public void ExcelPageCountsAndSkipsBlankRowsWithoutChangingPageContents()
+    {
+        string path = Path.Combine(folder, "sparse.xlsx");
+        var input = new DataTable(["ID", "Nome"]);
+        input.Add(1d, "A");
+        input.Add(null, null);
+        input.Add("", "");
+        input.Add(2d, "B");
+        WorkbookWriter.Write(path, [new("Dados", input)]);
+
+        var first = TableStore.Page(new(path, "Dados"), 0, 1);
+        Assert.Equal(2, first.Total);
+        Assert.Equal(2, first.Data.Count);
+        Assert.Equal(1d, first.Data.Number(1, 0));
+        var second = TableStore.Page(new(path, "Dados"), 1, 1);
+        Assert.Equal(2, second.Total);
+        Assert.Equal(2, second.Data.Count);
+        Assert.Equal(2d, second.Data.Number(1, 0));
+        Assert.Equal(1, TableStore.Page(new(path, "Dados"), 2, 1).Data.Count);
+    }
+
+    [Fact]
     public void CompactMergeAndStrataRemainInDatabaseAndUseSameValues()
     {
         string input = Path.Combine(folder, "entrada.dlb");

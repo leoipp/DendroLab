@@ -29,6 +29,7 @@ internal sealed class ProcessingReviewView : ScrollViewer
     private readonly ObservableCollection<FactorRow> factors = [];
     private readonly DataGrid grid = new() { AutoGenerateColumns = false, CanUserAddRows = false, IsReadOnly = false, Height = 240 };
     private readonly StackPanel exports = new();
+    private readonly Button removeRevision;
     private JsonObject[] records = [];
     private JsonObject? selected;
     private DataTable? template;
@@ -41,12 +42,17 @@ internal sealed class ProcessingReviewView : ScrollViewer
         var panel = Ui.Form(); Content = panel;
         panel.Children.Add(owner.ToolHeader("Revisão de inventário"));
         Ui.AddHelp(panel, "Histórico do processamento completo. As versões são preservadas; qualquer usuário pode revisar e aprovar, com identificação do Windows.");
+        Ui.Section(panel,"Selecionar versão");
         Ui.Field(panel, "Versão do processamento", versions);
         panel.Children.Add(Ui.AsyncButton("Atualizar histórico da rede", () => owner.Execute(() => Initialize(selected?.S("id")))));
         panel.Children.Add(status);
+        removeRevision = Ui.AsyncButton("Remover revisão selecionada…", () => owner.Execute(RemoveSelected));
+        panel.Children.Add(removeRevision);
+        Ui.AddHelp(panel, "É possível remover versões ainda não aprovadas e sem revisões posteriores. Versões aprovadas e seus históricos ficam preservados.");
         var open = new WrapPanel();
         open.Children.Add(Ui.AsyncButton("Abrir árvores", () => owner.Execute(() => Open(ProcessingHistory.Trees))));
         open.Children.Add(Ui.AsyncButton("Abrir parcelas", () => owner.Execute(() => Open(ProcessingHistory.Plots)))); panel.Children.Add(open);
+        Ui.Section(panel,"Revisar e corrigir fatores");
         Ui.Field(panel, "Nível dos fatores (trocar redefine a grade)", scope);
         grid.ItemsSource = factors;
         grid.Columns.Add(new DataGridTextColumn { Header = "Talhão / Lote · Base · Tipo", Binding = new Binding(nameof(FactorRow.Label)), IsReadOnly = true, Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
@@ -60,6 +66,7 @@ internal sealed class ProcessingReviewView : ScrollViewer
         Ui.Field(panel, "Motivo da revisão / observações", note);
         panel.Children.Add(Ui.AsyncButton("Criar nova versão corrigida", () => owner.Execute(Correct)));
         Ui.AddHelp(panel, "A grade prepara uma NOVA versão. Aprovar a versão selecionada não aplica edições ainda não publicadas. O cálculo usa sempre o VTCC original, sem repetir o ajuste de altura.");
+        Ui.Section(panel,"Status e exportação");
         var approvals = new WrapPanel();
         approvals.Children.Add(Ui.AsyncButton("Marcar em análise", () => owner.Execute(() => ChangeStatus("em_analise"))));
         approvals.Children.Add(Ui.AsyncButton("Aprovar versão selecionada", () => owner.Execute(() => ChangeStatus("aprovado")))); panel.Children.Add(approvals);
@@ -82,7 +89,7 @@ internal sealed class ProcessingReviewView : ScrollViewer
         }
         finally { loading = false; }
         if (versions.SelectedIndex >= 0) await LoadSelected();
-        else status.Text = "Nenhum processamento completo versionado. Crie o original no Processador.";
+        else { status.Text = "Nenhum processamento completo versionado. Crie o original no Processador."; removeRevision.IsEnabled = false; }
     }
 
     internal static string Status(JsonObject run) => run.S("status") switch { "aprovado" => run.B("current_approved") ? "Aprovado vigente" : "Aprovado histórico", "em_analise" => "Em análise", _ => "Processado" };
@@ -90,6 +97,8 @@ internal sealed class ProcessingReviewView : ScrollViewer
     private async Task LoadSelected()
     {
         selected = records[versions.SelectedIndex].DeepClone().AsObject();
+        removeRevision.IsEnabled = selected.S("status") != "aprovado" && !selected.B("current_approved")
+            && !records.Any(r => r.S("parent_id") == selected.S("id"));
         status.Text = $"{selected.S("inventory_type")} · V{selected.N("number")} · {Status(selected)}\nProcessado por {selected.S("user")} em {selected.S("created")}\n"
             + (selected.S("approved_by").Length > 0 ? $"Aprovado por {selected.S("approved_by")} em {selected.S("approved_at")}" : "Aguardando revisão/aprovação.");
         loading = true; scope.SelectedIndex = selected.S("factor_scope") == "lote" ? 1 : 0; loading = false;
@@ -179,6 +188,22 @@ internal sealed class ProcessingReviewView : ScrollViewer
         string id = selected.S("id");
         await session.ChangeProcessingStatus(selected, state, note.Text, owner.OperationCancellation);
         await Initialize(id); owner.Log("Estado atualizado por " + ProcessingCatalog.User);
+    }
+
+    private async Task RemoveSelected()
+    {
+        if (selected == null) throw new InvalidOperationException("Selecione uma revisão.");
+        if (selected.S("status") == "aprovado" || selected.B("current_approved"))
+            throw new InvalidOperationException("Uma versão aprovada é preservada e não pode ser removida.");
+        if (records.Any(r => r.S("parent_id") == selected.S("id")))
+            throw new InvalidOperationException("Esta versão tem revisões posteriores. Remova primeiro as revisões descendentes.");
+        if (!Ui.Confirm("Remover revisão de inventário",
+            $"Remover {selected.S("inventory_type")} V{selected.N("number")} e apagar os dados desta revisão do arquivo DLB do projeto? Esta ação não pode ser desfeita.",
+            "Remover revisão", destructive: true)) return;
+        string id = selected.S("id");
+        await session.RemoveProcessingRevision(selected, owner.OperationCancellation);
+        await Initialize();
+        owner.Log("Revisão removida: " + id);
     }
 
     private async Task ExportApproved()

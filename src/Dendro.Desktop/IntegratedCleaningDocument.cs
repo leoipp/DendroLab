@@ -24,15 +24,26 @@ internal sealed class IntegratedCleaningDocument : DockPanel, IDisposable
     {
         this.owner=owner;this.session=session;Cleaning=cleaning;this.reference=reference;this.tableName=tableName;
         outputName=Ui.Input(TableTools.SuggestedName(Path.GetFileNameWithoutExtension(tableName)+"_limpa"));outputName.Width=170;
-        var toolbar=new WrapPanel {Margin=new Thickness(5)};
-        remove=Ui.Button("Remover seleção",()=>Remove(selected));undo=Ui.Button("Desfazer remoção",Undo);
-        toolbar.Children.Add(remove);toolbar.Children.Add(undo);toolbar.Children.Add(Ui.Button("Limpar seleção",()=>Select([])));
-        var show=new CheckBox{Content="Mostrar removidos",VerticalAlignment=VerticalAlignment.Center};
-        show.Checked+=(_,_)=>ShowRemoved(true);show.Unchecked+=(_,_)=>ShowRemoved(false);toolbar.Children.Add(show);
-        toolbar.Children.Add(Ui.AsyncButton("Exportar tabela limpa…",()=>owner.Execute(Export)));
-        toolbar.Children.Add(outputName);toolbar.Children.Add(Ui.AsyncButton("Salvar tabela limpa no projeto",()=>owner.Execute(SaveToProject)));
-        var layout=Ui.Combo(["1 coluna","2 colunas","3 colunas"]);layout.Width=105;layout.SelectedIndex=1;toolbar.Children.Add(layout);
-        toolbar.Children.Add(Ui.Help("Todos os gráficos compartilham a mesma máscara de linhas. Selecione primeiro e remova depois, pelo botão ou Delete. Linhas sem valores válidos em um gráfico continuam na tabela e só saem se forem removidas em outro. A exportação mantém todas as colunas e a ordem das linhas restantes. A sessão é temporária: exporte ou salve antes de fechar."));
+        var toolbar=new DockPanel {Margin=new Thickness(4,1,4,3),LastChildFill=true};
+        remove=Ui.IconButton("Remover seleção",CommandIconKind.Remove,()=>Remove(selected));
+        undo=Ui.IconButton("Desfazer remoção",CommandIconKind.Undo,Undo);
+        var clear=Ui.IconButton("Limpar seleção",CommandIconKind.ClearSelection,()=>Select([]));
+        var actions=new WrapPanel {VerticalAlignment=VerticalAlignment.Center};
+        actions.Children.Add(remove);actions.Children.Add(undo);actions.Children.Add(clear);
+        var show=new CheckBox{Content="Mostrar removidos",VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(5,0,8,0)};
+        show.Checked+=(_,_)=>ShowRemoved(true);show.Unchecked+=(_,_)=>ShowRemoved(false);actions.Children.Add(show);
+        actions.Children.Add(Ui.AsyncIconButton("Exportar tabela limpa…",CommandIconKind.Export,()=>owner.Execute(Export)));
+        outputName.ToolTip="Nome da nova tabela limpa dentro do projeto.";
+        System.Windows.Automation.AutomationProperties.SetName(outputName,"Nome da tabela limpa");
+        actions.Children.Add(outputName);
+        actions.Children.Add(Ui.AsyncIconButton("Salvar tabela limpa no projeto",CommandIconKind.Save,()=>owner.Execute(SaveToProject)));
+        var layout=Ui.Combo(["1 coluna","2 colunas","3 colunas"]);layout.Width=105;layout.SelectedIndex=1;
+        layout.ToolTip="Quantidade de gráficos por linha.";
+        System.Windows.Automation.AutomationProperties.SetName(layout,"Gráficos por linha");
+        var help=Ui.Help("Todos os gráficos compartilham a mesma máscara de linhas. Selecione primeiro e remova depois, pelo botão ou Delete. Linhas sem valores válidos em um gráfico continuam na tabela e só saem se forem removidas em outro. A exportação mantém todas as colunas e a ordem das linhas restantes. A sessão é temporária: exporte ou salve antes de fechar.");
+        var options=new WrapPanel {VerticalAlignment=VerticalAlignment.Center};
+        options.Children.Add(layout);options.Children.Add(help);
+        DockPanel.SetDock(options,Dock.Right);toolbar.Children.Add(options);toolbar.Children.Add(actions);
         SetDock(toolbar,Dock.Top);Children.Add(toolbar);status.Margin=new Thickness(10,4,10,7);SetDock(status,Dock.Bottom);Children.Add(status);
         var cards=new UniformGrid{Columns=2};layout.SelectionChanged+=(_,_)=>cards.Columns=layout.SelectedIndex+1;
         foreach(var data in cleaning.Charts)

@@ -11,15 +11,18 @@ public class ProjectSnapshotTests
     [Fact]
     public void OpensProjectLargerThanOldSixteenMegabyteLimit()
     {
-        string path = Path.Combine(Path.GetTempPath(), "large-project-" + Guid.NewGuid().ToString("N") + ".dendro");
+        string path = Path.Combine(Path.GetTempPath(), "large-project-" + Guid.NewGuid().ToString("N") + ".dlb");
         try
         {
             var project = ProjectStore.Create("Projeto grande");
-            project["anotacoes"] = new string('A', 17 * 1024 * 1024);
+            var random = new Random(42);
+            var content = new char[17 * 1024 * 1024];
+            for (int i = 0; i < content.Length; i++) content[i] = (char)(0x0800 + random.Next(0x5800));
+            project["anotacoes"] = new string(content);
             ProjectStore.Save(path, project);
             Assert.True(new FileInfo(path).Length > 16 * 1024 * 1024);
             var restored = ProjectStore.Read(path);
-            Assert.Equal(17 * 1024 * 1024, restored["anotacoes"]!.GetValue<string>().Length);
+            Assert.Equal(content.Length, restored["anotacoes"]!.GetValue<string>().Length);
         }
         finally { File.Delete(path); }
     }

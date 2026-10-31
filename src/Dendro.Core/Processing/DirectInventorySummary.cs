@@ -11,7 +11,7 @@ public sealed class DirectInventorySummary : IDisposable
     {
         var columns=new JsonObject();foreach(string level in Levels){var fields=new JsonObject();foreach(string field in DirectOutputColumns.Headers(level))fields[field]=true;columns[level]=fields;}
         return new() {
-        ["modo"] = "completo", ["remover_duplicadas"] = false, ["inventory_type"]="",["factor_scope"]="talhao",["colunas_direto"]=columns,["saidas"] = new JsonObject {
+        ["modo"] = "completo", ["remover_duplicadas"] = false, ["inventory_type"]="",["factor_scope"]="talhao",["n_dominantes_parcela"] = 5,["colunas_direto"]=columns,["saidas"] = new JsonObject {
             ["arvore"] = false, ["parcela"] = true, ["talhao"] = true, ["lote"] = true, ["projeto"] = true,
         },
         };
@@ -20,6 +20,9 @@ public sealed class DirectInventorySummary : IDisposable
     {
         if (config == null) return;
         DirectOutputColumns.Validate(config);
+        double dominantTrees = config.N("n_dominantes_parcela", 5);
+        if (!double.IsFinite(dominantTrees) || dominantTrees < 1 || dominantTrees > 10000 || dominantTrees != Math.Truncate(dominantTrees))
+            throw new InvalidDataException("N de árvores dominantes por parcela deve ser um inteiro entre 1 e 10.000.");
         if (config.S("modo", "completo") is not ("completo" or "resumo_direto"))
             throw new InvalidDataException("Modo do Processador inválido.");
         if (config["saidas"] is not null && config["saidas"] is not JsonObject)
@@ -30,7 +33,17 @@ public sealed class DirectInventorySummary : IDisposable
         if (config.S("modo") == "resumo_direto" && !Levels.Any(l => config["saidas"].B(l, l != "arvore")))
             throw new InvalidDataException("Selecione pelo menos um nível no resumo direto.");
     }
-    private sealed class Plot(string stand, string lot, string plot, int year, double effective, string id, InventoryContext context)
+
+    public static void MigrateConfiguration(JsonObject project)
+    {
+        var processing = project.Obj("processador");
+        if (!processing.ContainsKey("n_dominantes_ha")) return;
+        if (!processing.ContainsKey("n_dominantes_parcela"))
+            processing["n_dominantes_parcela"] = 5;
+        processing.Remove("n_dominantes_ha");
+    }
+
+    private sealed class Plot(string stand, string lot, string plot, int year, double effective, string id, InventoryContext context, int dominantCount)
     {
         public readonly string Id = id;
         public readonly InventoryContext Context = context;
@@ -40,6 +53,7 @@ public sealed class DirectInventorySummary : IDisposable
         public double Volume, Area, AgeSum;
         public string Measurement = "";
         public double DapSum, DapSquareSum, HeightSum, BasalArea;
+        public readonly DominantTreeMetrics Dominant = new(dominantCount);
         public int Rows, Stems, Invalid;
         public int ValidDap, ValidHeight;
         public double VolumeHa => Area > 0 ? Volume * 10000 / (Area / Rows) : double.NaN;
@@ -55,6 +69,7 @@ public sealed class DirectInventorySummary : IDisposable
     private readonly HashSet<string> levels;
     private readonly string? trees;
     private readonly JsonNode? processing;
+    private readonly int dominantTreesPerPlot;
     private readonly Dictionary<string,int[]> projections=new();
     private string AddTable(string level,string[] columns,string name)
     {
@@ -69,12 +84,13 @@ public sealed class DirectInventorySummary : IDisposable
     {
         Validate(config["processador"]);
         processing=config["processador"]?.DeepClone();
+        dominantTreesPerPlot=(int)(processing?.N("n_dominantes_parcela",5)??5);
         if (!Path.GetExtension(output).Equals(CompactBankReader.Extension, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Resumo direto deve ser gravado em DLB.");
         this.output = output;
         projectName = config["_dendro"].S("name", "Projeto");
         levels = Levels.Where(l => config.At("processador.saidas").B(l, l != "arvore")).ToHashSet();
-        temporary = Path.Combine(Path.GetDirectoryName(output)!, ".dendro-" + Guid.NewGuid().ToString("N") + ".tmp");
+        temporary = Path.Combine(Path.GetDirectoryName(output)!, ".dendrolab-" + Guid.NewGuid().ToString("N") + ".tmp");
         writer = new CompactBankWriter(temporary);
         if (levels.Contains("arvore")) trees = AddTable("arvore",[
             "Talhão", "Parcela", "Lote", "Ano_Medicao", "Linha_Origem", "DAP", "H", "AS", "Idade_anos", "Volume_m3",
@@ -90,7 +106,7 @@ public sealed class DirectInventorySummary : IDisposable
         if (double.IsFinite(treeVolume)) volume += treeVolume;
         context ??= new("", "", "");
         string key = plotId ?? new JsonArray(stand, plot, year).ToJsonString();
-        if (!plots.TryGetValue(key, out var p)) plots.Add(key, p = new(stand, lot, plot, year, effective, key, context));
+        if (!plots.TryGetValue(key, out var p)) plots.Add(key, p = new(stand, lot, plot, year, effective, key, context, dominantTreesPerPlot));
         else if (p.Stand != stand || p.Lot != lot || p.Name != plot) throw new InvalidDataException("A chave de parcela está agrupando talhões, lotes ou números de parcela diferentes. Revise Configurações > Identificação.");
         p.Measurement = p.Rows == 0 ? measurement : p.Measurement == measurement ? measurement : "";
         p.Rows++; p.Area += area; p.AgeSum += age;
@@ -101,6 +117,7 @@ public sealed class DirectInventorySummary : IDisposable
             p.BasalArea += Math.PI * Math.Pow(dap / 10, 2) / 40000;
         }
         if (double.IsFinite(height) && height > 0) { p.HeightSum += height; p.ValidHeight++; }
+        p.Dominant.Add(dap, height);
         if (double.IsFinite(treeVolume)) p.Volume += treeVolume; else if (stem) p.Invalid++;
         if (trees != null) AddRow(trees, [stand, plot, lot, year == 0 ? null : (double)year,
             (double)sourceRow, dap, height, Math.PI * Math.Pow(dap / 10, 2) / 40000, age, treeVolume,
@@ -110,13 +127,13 @@ public sealed class DirectInventorySummary : IDisposable
     {
         string[] headers = ["Grupo", "Talhão", "Parcela", "Lote", "Ano_Medicao", "N_Parcelas", "Volume_amostrado_m3",
             "Fustes_amostrados", "VMI_amostrado_m3_fuste", "Volume_m3_ha", "Fustes_ha", "VMI_m3_fuste",
-            "Area_efetiva_ha", "Volume_total_m3", "Fustes_totais_estimados", "Fustes_sem_volume"];
+            "DAPd", "Hd", "Area_efetiva_ha", "Volume_total_m3", "Fustes_totais_estimados", "Fustes_sem_volume"];
         void Write(string level, string name, IEnumerable<(string Name, IEnumerable<Plot> Plots)> groups)
         {
             if (!levels.Contains(level)) return;
             bool includeAge = level is "parcela" or "talhao";
             string[] parcelHeaders = ["Grupo", "Talhão", "Parcela", "Lote", "Ano_Medicao", "N_Parcelas",
-                "DAP_medio", "Dq", "H_medio", "AB", "Volume_m3_ha", "Fustes_ha", "VMI_m3_fuste",
+                "DAP_medio", "Dq", "H_medio", "DAPd", "Hd", "AB", "Volume_m3_ha", "Fustes_ha", "VMI_m3_fuste",
                 "Area_efetiva_ha", "Volume_total_m3", "Fustes_totais_estimados", "Fustes_sem_volume",
                 "Idade_anos", "Idade_meses"];
             string[] selectedHeaders = level == "parcela" ? [.. parcelHeaders, "Data_Medicao", "area_corr"] : includeAge ? [.. headers, "Idade_anos", "Idade_meses", "Data_Medicao"] : [..headers,"Data_Medicao"];
@@ -136,18 +153,20 @@ public sealed class DirectInventorySummary : IDisposable
                     : effective > 0 ? totalVolume / effective : double.NaN;
                 double stemsHa = level == "parcela" ? first.StemsHa : level == "talhao" ? all.Average(p => p.StemsHa)
                     : effective > 0 ? totalStems / effective : double.NaN;
+                double dapd = DominantTreeMetrics.AreaWeightedMean(all.Select(p => (p.Dominant.Dap, p.Area / p.Rows)));
+                double hd = DominantTreeMetrics.AreaWeightedMean(all.Select(p => (p.Dominant.Height, p.Area / p.Rows)));
                 // A plot is a sample; extrapolated stand totals do not belong to individual plot rows.
                 if (level == "parcela") effective = totalVolume = totalStems = double.NaN;
                 object?[] cells = [group.Name, level is "parcela" or "talhao" ? first.Stand : "",
                     level == "parcela" ? first.Name : "", level is "parcela" or "lote" ? first.Lot : "",
                     first.Year == 0 ? null : (double)first.Year, (double)all.Length, rawVolume, stems,
                     stems > 0 ? rawVolume / stems : double.NaN, volumeHa, stemsHa,
-                    stemsHa > 0 ? volumeHa / stemsHa : double.NaN, effective, totalVolume, totalStems, (double)all.Sum(p => p.Invalid)];
+                    stemsHa > 0 ? volumeHa / stemsHa : double.NaN, dapd, hd, effective, totalVolume, totalStems, (double)all.Sum(p => p.Invalid)];
                 double age = all.Average(p => p.Age);
                 if (level == "parcela")
                     AddRow(id, [group.Name, first.Stand, first.Name, first.Lot,
                         first.Year == 0 ? null : (double)first.Year, (double)all.Length,
-                        first.MeanDap, first.QuadraticDap, first.MeanHeight, all.Sum(p => p.BasalArea),
+                        first.MeanDap, first.QuadraticDap, first.MeanHeight, first.Dominant.Dap, first.Dominant.Height, all.Sum(p => p.BasalArea),
                         volumeHa, stemsHa, stemsHa > 0 ? volumeHa / stemsHa : double.NaN,
                         effective, totalVolume, totalStems, (double)all.Sum(p => p.Invalid), age, age * 12, first.Measurement, first.Area / first.Rows, first.Id, first.Context.Id, first.Context.Origin, first.Context.Type]);
                 else
@@ -164,7 +183,7 @@ public sealed class DirectInventorySummary : IDisposable
         writer.Add(info, ["Amostra e totais", "Volume/fustes amostrados são somas observadas. Por hectare: média entre parcelas por talhão; lote/projeto ponderam talhões por área efetiva. Totais dependem dessa área e ficam vazios se desconhecida."]);
         writer.Add(info, ["Volumes ausentes", "Fustes_sem_volume identifica DAP positivo sem volume válido; reveja os dados antes de interpretar VMI e totais."]);
         writer.Add(info, ["Linhas duplicadas removidas antes da RNA e das somas", (double)removedDuplicates]);
-        writer.Add(info, ["Unidades", "DAP e Dq: mm; H: dm; AS e AB: m². AS = π × (DAP_mm / 10)² / 40000. Área corrigida: m². Data_Medicao é preservada por parcela quando única."]);
+        writer.Add(info, ["Unidades", "DAP, Dq e DAPd: mm; H e Hd: dm. DAPd e Hd são médias das N árvores com maiores DAP em cada parcela, e os níveis acima da parcela ponderam os resultados pela área da parcela. AS = π × (DAP_mm / 10)² / 40000. Área corrigida: m²."]);
         writer.Add(info,["Colunas selecionadas",processing?["colunas_direto"]?.ToJsonString()??"Todas as colunas padrão habilitadas"]);
         writer.Add(info,["Data dos níveis agregados","Em talhão, lote e projeto, Data_Medicao registra a última data das parcelas abrangidas pelo grupo. Os indicadores continuam agregando as parcelas do grupo; a data não transforma o resultado em medição de uma única parcela."]);
         writer.Complete(); writer.Dispose(); File.Move(temporary, output); published = true;

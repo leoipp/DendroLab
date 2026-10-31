@@ -62,15 +62,13 @@ são alteradas por essas opções.
 
 ## Pasta de rede
 
-A base compartilhada possui três arquivos essenciais, que devem ser mantidos juntos:
+A base compartilhada usa um único arquivo `Projeto.dlb`, com configurações,
+tabelas e catálogo do histórico no mesmo contêiner. Aprovações e resultados de
+processamento são publicados automaticamente, sem exigir Salvar projeto depois
+de cada aprovação. Clientes abertos consultam atualizações a cada cinco segundos,
+quando não estão executando uma operação. O botão Atualizar histórico força a consulta.
 
-- `Projeto.dendro`: configurações e demais objetos do projeto;
-- `Projeto.dlb`: dados das tabelas;
-- `Projeto.dendro.history.json`: catálogo compartilhado e aprovações dos processamentos.
-
-O app publica o catálogo do histórico automaticamente, sem exigir Salvar projeto depois de cada aprovação. Clientes abertos consultam atualizações a cada cinco segundos, quando não estão executando uma operação. O botão Atualizar histórico força a consulta.
-
-O processamento e o cálculo dos fatores usam uma área temporária local. A publicação na base usa bloqueios de arquivo e substituição atômica. O cálculo pode ocorrer em paralelo; gravações são coordenadas. O banco DLB atual ainda copia seus blocos ao publicar conjuntos, portanto o tempo de publicação cresce com o banco e com a velocidade da rede.
+O processamento e o cálculo dos fatores usam uma área temporária local. A publicação no projeto usa bloqueios de arquivo e substituição atômica. O cálculo pode ocorrer em paralelo; gravações são coordenadas. O DLB copia os blocos existentes ao publicar conjuntos, portanto o tempo de publicação cresce com o arquivo e com a velocidade da rede.
 
 A gravação mostra o nome da tabela e as linhas gravadas. A publicação no banco mostra os MB copiados. Ambas permitem cancelamento, descartando o arquivo temporário e preservando o banco anterior quando a publicação ainda não foi concluída. A largura de cada tabela é calculada uma vez por gravação, evitando percorrer todas as linhas a cada linha escrita. O formato DLB permanece compatível com os bancos existentes.
 

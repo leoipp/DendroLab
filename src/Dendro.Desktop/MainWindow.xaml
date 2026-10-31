@@ -117,6 +117,16 @@
               <TextBlock Text="Modelagem florestal" Style="{StaticResource RibbonGroupLabel}" />
             </StackPanel>
           </TabItem>
+          <TabItem Header="GIS">
+            <StackPanel Orientation="Horizontal" Margin="9,4">
+              <StackPanel>
+                <WrapPanel>
+                  <Button x:Name="GISButton" Content="Abrir GIS" Click="GISClick" Style="{StaticResource RibbonCommand}" Tag="Map" ToolTip="Abrir o mapa base e as camadas raster e vetoriais do projeto." />
+                </WrapPanel>
+                <TextBlock Text="Mapa e camadas vetoriais" Style="{StaticResource RibbonGroupLabel}" />
+              </StackPanel>
+            </StackPanel>
+          </TabItem>
           <TabItem Header="Exibir">
             <StackPanel Orientation="Horizontal" Margin="9,4">
               <StackPanel>
@@ -139,8 +149,8 @@
                     Style="{StaticResource RibbonCommand}"
                     Tag="History"
                   />
-                  <Button Content="Modelos do ajuste" Click="RegressionModelsClick" Style="{StaticResource RibbonCommand}" Tag="Regression" />
-                  <Button Content="Dados do ajuste" Click="RegressionDataClick" Style="{StaticResource RibbonCommand}" Tag="Contents" />
+                  <Button x:Name="RegressionModelsButton" Content="Modelos do ajuste" Click="RegressionModelsClick" Style="{StaticResource RibbonCommand}" Tag="Regression" IsEnabled="False" />
+                  <Button x:Name="RegressionDataButton" Content="Dados do ajuste" Click="RegressionDataClick" Style="{StaticResource RibbonCommand}" Tag="Contents" IsEnabled="False" />
                 </WrapPanel>
                 <TextBlock Text="Painéis" Style="{StaticResource RibbonGroupLabel}" />
               </StackPanel>
@@ -206,7 +216,7 @@
                 CanHide="True"
               >
                 <DockPanel Background="White">
-                  <StackPanel DockPanel.Dock="Top" Margin="10">
+                  <StackPanel x:Name="ContentSearchPanel" DockPanel.Dock="Top" Margin="10">
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
                       <local:CommandIcon Kind="Search" Width="14" Height="14" Margin="0,0,5,0" />
                       <TextBlock Text="Pesquisar conteúdos" Foreground="#6D8296" FontSize="11" />
@@ -239,7 +249,7 @@
                 CanHide="True"
               >
                 <DockPanel Background="White">
-                  <StackPanel DockPanel.Dock="Top" Margin="10">
+                  <StackPanel x:Name="ToolSearchPanel" DockPanel.Dock="Top" Margin="10">
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
                       <local:CommandIcon Kind="Search" Width="14" Height="14" Margin="0,0,5,0" />
                       <TextBlock Text="Pesquisar ferramentas" Foreground="#6D8296" FontSize="11" />

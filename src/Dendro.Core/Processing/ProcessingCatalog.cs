@@ -8,42 +8,48 @@ namespace Dendro.Core.Processing;
 /// <summary>Small shared catalogue. Runs publish data first and then atomically publish the catalogue.</summary>
 public static class ProcessingCatalog
 {
-    public static string FilePath(string project) => Path.GetFullPath(project) + ".history.json";
+    public const string HistoryDataset = "__DENDRO_HISTORY__.json";
+    public static string FilePath(string project) => Path.GetFullPath(project);
     public static string User => Environment.UserDomainName + "\\" + Environment.UserName;
 
     public static JsonObject Read(string project, JsonArray? seed = null)
     {
-        string path = FilePath(project);
-        if (!File.Exists(path)) return new JsonObject { ["format"] = "DENDRO_PROCESSING_HISTORY", ["version"] = 1, ["revision"] = 0,
-            ["records"] = new JsonArray((seed ?? []).OfType<JsonObject>().Where(r => r.S("id").Length > 0).Select(r => (JsonNode?)r.DeepClone()).ToArray()) };
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-        var catalog = JsonNode.Parse(stream)?.AsObject() ?? throw new InvalidDataException("Catálogo de processamento vazio.");
+        string? text = CompactBankFile.ReadTextDataset(project, HistoryDataset);
+        if (text == null) return Empty(seed);
+        var catalog = JsonNode.Parse(text)?.AsObject() ?? throw new InvalidDataException("Catálogo de processamento vazio.");
         if (catalog.S("format") != "DENDRO_PROCESSING_HISTORY" || catalog.N("version") != 1 || catalog["records"] is not JsonArray)
             throw new InvalidDataException("Catálogo de processamento incompatível.");
         return catalog;
     }
 
-    private static JsonObject Update(string project, JsonArray seed, Action<JsonObject> update, CancellationToken cancellation)
+    private static JsonObject Empty(JsonArray? seed) => new() { ["format"] = "DENDRO_PROCESSING_HISTORY", ["version"] = 1, ["revision"] = 0,
+        ["records"] = new JsonArray((seed ?? []).OfType<JsonObject>().Where(r => r.S("id").Length > 0).Select(r => (JsonNode?)r.DeepClone()).ToArray()) };
+
+    private static JsonObject Update(string project, JsonArray seed, Action<JsonObject> update, CancellationToken cancellation,
+        IReadOnlyList<(string Source, string Dataset)>? incoming = null, IReadOnlyCollection<string>? removeDatasets = null,
+        Action<long, long>? progress = null)
     {
-        string path = FilePath(project);
-        using var lease = SharedFileLock.Acquire(path + ".lock", cancellation);
-        var catalog = Read(project, seed);
-        update(catalog);
-        catalog["revision"] = catalog.N("revision") + 1;
-        ProjectStore.AtomicWrite(path, temp => {
-            using var stream = File.Create(temp); using var writer = new Utf8JsonWriter(stream);
-            catalog.WriteTo(writer); writer.Flush(); stream.Flush(true);
-        }, true);
-        return catalog;
+        JsonObject? updated = null;
+        CompactBankFile.UpdateTextDataset(project, HistoryDataset, text => {
+            var catalog = text == null ? Empty(seed) : JsonNode.Parse(text)?.AsObject()
+                ?? throw new InvalidDataException("Catálogo de processamento vazio.");
+            if (catalog.S("format") != "DENDRO_PROCESSING_HISTORY" || catalog.N("version") != 1 || catalog["records"] is not JsonArray)
+                throw new InvalidDataException("Catálogo de processamento incompatível.");
+            update(catalog);
+            catalog["revision"] = catalog.N("revision") + 1;
+            updated = catalog.DeepClone().AsObject();
+            return catalog.ToJsonString();
+        }, incoming, removeDatasets, cancellation, progress);
+        return updated!;
     }
 
     public static JsonObject Publish(string project, JsonArray seed, string bank, string stage, JsonObject record,
         CancellationToken cancellation = default, Action<long, long>? progress = null)
     {
-        string dataset = Path.GetFileName(record.S("path")); bool imported = false;
-        try
-        {
-            return Update(project, seed, catalog => {
+        if (!string.Equals(Path.GetFullPath(project), Path.GetFullPath(bank), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Os resultados e o histórico devem ser publicados no arquivo DLB único do projeto.");
+        string dataset = Path.GetFileName(record.S("path"));
+        return Update(project, seed, catalog => {
                 var records = catalog.Arr("records");
                 if (records.Any(r => r.S("id") == record.S("id"))) throw new InvalidDataException("Identificador de processamento já publicado.");
                 string family = record.S("family_id");
@@ -52,16 +58,9 @@ public static class ProcessingCatalog
                 if (next > 1 && !records.Any(r => r.S("id") == record.S("parent_id") && r.S("family_id") == family))
                     throw new InvalidDataException("Versão de origem não encontrada.");
                 cancellation.ThrowIfCancellationRequested();
-                catalog["database_path"] = Path.GetRelativePath(Path.GetDirectoryName(Path.GetFullPath(project))!, Path.GetFullPath(bank));
-                CompactBankFile.Import(bank, [(stage, dataset)], cancellation: cancellation, progress: progress); imported = true;
+                catalog["database_path"] = Path.GetFileName(project);
                 records.Add(record.DeepClone());
-            }, cancellation);
-        }
-        catch
-        {
-            if (imported) CompactBankFile.RemoveDatasets(bank, [dataset]);
-            throw;
-        }
+            }, cancellation, [(stage, dataset)], progress: progress);
     }
 
     public static JsonObject ChangeStatus(string project, JsonArray seed, string id, int expectedRevision, string status, string note = "",
@@ -90,6 +89,25 @@ public static class ProcessingCatalog
             record["status"] = status; record["revision"] = record.N("revision") + 1;
             record.Arr("audit").Add(new JsonObject { ["status"] = status, ["user"] = User, ["at"] = DateTimeOffset.Now.ToString("O"), ["note"] = note });
         }, cancellation);
+
+    public static JsonObject RemoveRevision(string project, JsonArray seed, string bank, string id, CancellationToken cancellation = default)
+    {
+        if (!string.Equals(Path.GetFullPath(project), Path.GetFullPath(bank), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("O histórico e os dados devem estar no arquivo DLB único do projeto.");
+        string dataset = Path.GetFileName(seed.OfType<JsonObject>().FirstOrDefault(r => r.S("id") == id)?.S("path") ?? "");
+        var catalog = Update(project, seed, value => {
+            var records = value.Arr("records").OfType<JsonObject>().ToArray();
+            var record = records.SingleOrDefault(r => r.S("id") == id)
+                ?? throw new InvalidDataException("Revisão de inventário não encontrada.");
+            if (record.S("status") == "aprovado" || record.B("current_approved"))
+                throw new InvalidOperationException("Uma versão aprovada é preservada e não pode ser removida.");
+            if (records.Any(r => r.S("parent_id") == id))
+                throw new InvalidOperationException("Esta versão tem revisões posteriores. Remova primeiro as revisões descendentes.");
+            records = records.Where(r => r.S("id") != id).ToArray();
+            value["records"] = new JsonArray(records.Select(r => (JsonNode?)r.DeepClone()).ToArray());
+        }, cancellation, removeDatasets: dataset.Length > 0 ? [dataset] : []);
+        return catalog;
+    }
 
     public static JsonObject NewRecord(string source, string inventoryType, string scope, JsonObject? parent = null, int number = 1)
     {

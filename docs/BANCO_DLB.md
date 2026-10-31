@@ -1,21 +1,22 @@
 # Banco DLB do projeto
 
-O formato DLB é um armazenamento autoral do DendroLab em C#/.NET. O projeto
-`MeuProjeto.dendro` contém configuração, referências e hierarquia. O arquivo
-**`MeuProjeto.dlb` é o único banco físico do projeto** e contém as tabelas de
-junções, estratos, importações e resultados de processamento no mesmo catálogo.
-Não há uma pasta `.dlb` com bancos separados por processamento.
+O formato DLB é um armazenamento autoral do DendroLab em C#/.NET. **`MeuProjeto.dlb`
+é o projeto inteiro e seu único arquivo físico**: configuração, vínculos, histórico
+de processamento, tabelas de entrada copiadas, junções, estratos e resultados
+compartilham o mesmo catálogo.
 
-Mova ou copie o `.dendro` e seu arquivo `.dlb` juntos. Se houver processamento
-versionado, inclua também `Projeto.dendro.history.json`; veja [Processamento versionado](PROCESSAMENTO_VERSIONADO.md).
-Os vínculos gerados usam
-caminhos relativos. Salvar como copia o banco, preserva o original e atualiza os
-vínculos do novo projeto. Um destino com banco já existente é recusado para não
-substituir dados. Para gerar tabelas é necessário salvar o projeto primeiro.
+Configuração e histórico ficam em tabelas internas reservadas do contêiner e não
+aparecem como conteúdo do projeto. As demais tabelas usam referências relativas
+como `MeuProjeto.dlb/Entrada.dlb`, que identificam uma tabela dentro do próprio
+arquivo; não são arquivos nem pastas reais. Mova ou copie somente o `.dlb` para
+transportar o projeto. **Salvar como** copia o arquivo completo e remapeia os
+vínculos. Um destino existente é recusado para não substituir dados. Para gerar
+tabelas é necessário salvar o projeto primeiro.
 
 Junção, estratificação e Processador gravam diretamente em DLB. Nenhum deles
-gera Excel automaticamente. A opção Copiar para o banco do projeto traz uma
+gera Excel automaticamente. A opção Copiar para o projeto traz uma
 worksheet/tabela externa, com seu cabeçalho selecionado, sem alterar a origem.
+Ela grava os dados no mesmo arquivo `.dlb`; a planilha original permanece intacta.
 Excel e CSV são exportações explícitas na visualização de tabelas.
 
 Na visualização, **Excluir selecionadas** remove as linhas marcadas na página atual;
@@ -23,7 +24,7 @@ Na visualização, **Excluir selecionadas** remove as linhas marcadas na página
 páginas. As ações pedem confirmação da quantidade, preservam as demais tabelas e
 recusam a gravação se os dados exibidos tiverem sido alterados por outro usuário.
 Estão disponíveis em tabelas DLB editáveis. Planilhas externas e versões do histórico
-devem ser copiadas para o banco antes de editar, preservando os originais.
+devem ser copiadas para o projeto antes de editar, preservando os originais.
 
 Datas e horas recebem formatação de exibição pelo nome da coluna e pelos mapeamentos
 do inventário. O menu do botão direito no cabeçalho permite escolher Automático,
@@ -49,7 +50,9 @@ manter ao menos uma coluna. A proteção de versões históricas e de alteraçõ
   o bloco é verificado antes de ser descomprimido. Índices incompletos, contagens
   inconsistentes e blocos alterados são recusados.
 - Escrita com buffers compartilhados entre tabelas, alvo aproximado de 4 MiB e
-  até 2.048 linhas por bloco. Uma linha excepcional pode chegar a 16 MiB. O uso
+  até 2.048 linhas por bloco. Linhas excepcionais podem chegar a 256 MiB; o
+  tamanho é calculado pelos bytes UTF-8 gravados, em vez de estimar cada caractere
+  como dois bytes. O bloco comprimido também admite até 320 MiB. O uso
   real inclui objetos .NET, buffers de compressão e o catálogo. Não é uma cota
   fixa de memória do processo.
 
@@ -58,20 +61,18 @@ pasta do projeto. Ao concluir, a transação publica as tabelas no arquivo únic
 por substituição atômica. Os blocos comprimidos são copiados sem recompressão,
 com validação SHA-256 e atualização dos seus deslocamentos. A publicação atual
 copia os blocos existentes para um novo arquivo temporário; o custo cresce com
-o tamanho do banco, mas não materializa suas linhas em memória. Falhas deixam
-o banco anterior intacto. Não há suporte a escritores concorrentes.
+o tamanho do arquivo, mas não materializa suas linhas em memória. Falhas deixam
+o projeto anterior intacto. Escritas concorrentes são coordenadas por bloqueio
+de arquivo.
 
-Cada conjunto de tabelas tem um identificador de origem (`Dataset`) no catálogo;
-referências internas como `MeuProjeto.dlb/Entrada.dlb` identificam esse escopo,
-**não representam arquivos nem pastas reais**. Elas preservam os vínculos de
-projetos anteriores. Na árvore aparecem tabelas, não novos bancos `.dlb`.
+Cada conjunto de tabelas tem um identificador de origem (`Dataset`) no catálogo.
+Na árvore aparecem tabelas, não novos arquivos `.dlb`.
 Reprocessar a mesma entrada no mesmo modo atualiza seu conjunto de resultados;
 a árvore apresenta cada nome de aba uma vez, usando a versão mais recente.
 
-Ao abrir um projeto com a organização antiga, a pasta é consolidada em um
-arquivo no mesmo caminho e a pasta original é preservada com sufixo
-`.legacy-backup-...`. A conversão verifica os blocos e mantém as referências.
-Salvar como copia o arquivo único e remapeia os vínculos para o novo nome.
+A gravação publica o contêiner completo por substituição atômica e mantém os
+blocos comprimidos das tabelas existentes. Salvar como copia o arquivo único e
+remapeia os vínculos para o novo nome.
 A edição de dados em linhas, índices espaciais,
 geometrias/CRS e consultas SQL não fazem parte desta primeira versão. DLB não é
 compatível com File Geodatabase da Esri.
@@ -112,6 +113,6 @@ Métricas originais:
 `.build/storage-probe/results-a33afff7f2f14fe482a0028a1c759d44/metrics.json`.
 Os testes cobrem tipos, Unicode, múltiplas tabelas, fronteiras entre blocos,
 cabeçalho alternativo, cancelamento, corrupção, paginação tardia e movimentação
-do projeto com seu banco. Bancos antigos `.dendrodb` permanecem compatíveis.
+do arquivo único do projeto. Bancos de dados antigos `.dendrodb` permanecem compatíveis como fontes tabulares.
 
 A medição de gravação acima precede a otimização de publicação direta do estágio comprimido. A junção DLB atual evita a segunda descompressão/recompressão, informa andamento com atualização limitada a aproximadamente 150 ms, permite cancelamento no rodapé e registra resultados em uma única atualização do projeto. O teste de interface adicional une 32 fontes (262.144 linhas), verifica atendimento do dispatcher e cancela uma segunda operação sem publicar saída parcial.

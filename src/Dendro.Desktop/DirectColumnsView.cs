@@ -42,7 +42,7 @@ internal sealed class DirectColumnsView : DockPanel
     }
     internal static void Show(MainWindow owner,ProjectSession session)
     {
-        var view=new DirectColumnsView(session.Data!.DeepClone().AsObject());var apply=new Button {Content="Aplicar colunas do resumo direto"};
+        var view=new DirectColumnsView(session.Data!.DeepClone().AsObject());var apply=Ui.Button("Aplicar colunas do resumo direto",()=>{});
         var window=Ui.Dialog("Colunas do resumo direto",Ui.WithToolbar(view,apply),1100,720);
         apply.Click+=(_,_)=>{session.Data!.Obj("processador")["colunas_direto"]=view.Read();session.Touch();owner.Log("Colunas do resumo direto atualizadas. Salve o projeto para reutilizar a seleção.");window.Close();};
         window.ShowDialog();

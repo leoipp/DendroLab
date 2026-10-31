@@ -2,11 +2,13 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dendro.Core.Mathematics;
+using Dendro.Core.Tabular;
 
 namespace Dendro.Core.Configuration;
 
 public static class ProjectStore
 {
+    public const string ProjectMetadataDataset = "__DENDRO_PROJECT__.json";
     private static JsonNode Resource(string name)
     {
         using var stream = typeof(ProjectStore).Assembly.GetManifestResourceStream(
@@ -41,6 +43,7 @@ public static class ProjectStore
         EnsureInputUnits(p);
         RegressionCatalog.Ensure(p);
         EnsureRegistryFallback(p);
+        Processing.DirectInventorySummary.MigrateConfiguration(p);
         MergeDefaults(p.Obj("processador"), Processing.DirectInventorySummary.Defaults());
         foreach (var f in Fields)
             if (p.At(f.S("path")) is null)
@@ -50,10 +53,9 @@ public static class ProjectStore
 
     public static JsonObject Read(string path)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-        var p =
-            JsonNode.Parse(stream)?.AsObject()
-            ?? throw new InvalidDataException("Projeto inválido.");
+        string json = CompactBankFile.ReadTextDataset(path, ProjectMetadataDataset)
+            ?? throw new InvalidDataException("O arquivo não contém um projeto DendroLab (.dlb).");
+        var p = JsonNode.Parse(json)?.AsObject() ?? throw new InvalidDataException("Metadados do projeto inválidos.");
         RegressionCatalog.Ensure(p);
         EnsureRegistryFallback(p);
         MergeDefaults(p.Obj("processador"), Processing.DirectInventorySummary.Defaults());
@@ -65,32 +67,21 @@ public static class ProjectStore
     public static void Save(string path, JsonObject p)
     {
         path = Path.GetFullPath(path);
-        using var lease = SharedFileLock.Acquire(path + ".write.lock");
+        long previousRevision = (long)p.Obj("_dendro").N("store_revision");
         Validate(p, true);
         ProjectSnapshots.Compact(p);
-        long revision = 0;
-        if (File.Exists(path))
-        {
-            using var current = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-            using var document = JsonDocument.Parse(current);
-            if (document.RootElement.TryGetProperty("_dendro", out var meta) && meta.TryGetProperty("store_revision", out var stored)) revision = stored.GetInt64();
-            if ((long)p["_dendro"].N("store_revision") != revision)
-                throw new InvalidOperationException("O projeto foi salvo por outro usuário. Reabra a versão atual antes de gravar; suas alterações locais não foram sobrescritas.");
-        }
-        p.Obj("_dendro")["store_revision"] = revision + 1;
+        long revision = -1;
         try
         {
-            AtomicWrite(
-                path,
-                temporary => {
-                    using var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                    using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
-                    p.WriteTo(writer); writer.Flush(); stream.Flush(true);
-                },
-                true
-            );
+            CompactBankFile.UpdateTextDataset(path, ProjectMetadataDataset, current => {
+                revision = current == null ? 0 : (long)(JsonNode.Parse(current)?["_dendro"]?.N("store_revision") ?? 0);
+                if ((long)p["_dendro"].N("store_revision") != revision)
+                    throw new InvalidOperationException("O projeto foi salvo por outro usuário. Reabra a versão atual antes de gravar; suas alterações locais não foram sobrescritas.");
+                p.Obj("_dendro")["store_revision"] = revision + 1;
+                return p.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+            });
         }
-        catch { p.Obj("_dendro")["store_revision"] = revision; throw; }
+        catch { p.Obj("_dendro")["store_revision"] = previousRevision; throw; }
     }
 
     public static void AtomicWrite(string path, Action<string> write, bool replace = false)
@@ -98,7 +89,7 @@ public static class ProjectStore
         path = Path.GetFullPath(path);
         string temp = Path.Combine(
             Path.GetDirectoryName(path)!,
-            ".dendro-" + Guid.NewGuid().ToString("N") + ".tmp"
+            ".dendrolab-" + Guid.NewGuid().ToString("N") + ".tmp"
         );
         try
         {

@@ -214,7 +214,7 @@ internal static partial class DesktopTests
             }
         );
         Check(session.Data!.Obj("volume").Arr("equacoes").Count == 1, "modelo C#");
-        var path = Path.Combine(root, "wpf-test.dendro");
+        var path = Path.Combine(root, "wpf-test.dlb");
         await session.Save(path);
         await session.Open(path);
         Check(!session.IsDirty, "persistência");
@@ -278,7 +278,7 @@ internal static partial class DesktopTests
         }
         Check(
             requiresChart,
-            "Regressões 1P exige um gráfico existente, mesmo quando há planilhas disponíveis"
+            "Regressões exige um gráfico existente, mesmo quando há planilhas disponíveis"
         );
         foreach (
             var tool in new FrameworkElement[]
@@ -438,7 +438,7 @@ internal static partial class DesktopTests
             foreach (double factor in new[] { 1, .5, 0 })
             {
                 window.Session.Data!.Obj("volume")["fator"] = factor;
-                string cfg = Path.Combine(root, $"factor-{factor}.dendro"),
+                string cfg = Path.Combine(root, $"factor-{factor}.dlb"),
                     output = Path.Combine(root, $"factor-{factor}.xlsx");
                 await window.Session.Save(cfg);
                 int progress = 0;
@@ -516,6 +516,8 @@ internal static partial class DesktopTests
                 window.Session.AddFile(legacy);
                 window.Session.SetExcel(legacy, "Dados", 1);
                 window.Session.Data!.Obj("volume")["fator"] = .5;
+                window.Session.Data!.Obj("processador")["inventory_type"] = "IFC";
+                window.Session.Data!.Obj("identificacao")["arvore"] = new JsonArray("talhao", "parcela", "lote", "dap", "data_medicao");
                 window.Session.Meta["batch_inputs"] = new JsonArray(input, legacy);
                 window.Session.Meta["output_folder"] = root;
                 window.Session.Meta["output_prefix"] = "batch_";
@@ -525,21 +527,21 @@ internal static partial class DesktopTests
                 Check(File.Exists(window.Session.Resolve(window.Session.Meta.S("database_path")))
                     && !Directory.Exists(window.Session.Resolve(window.Session.Meta.S("database_path")))
                     && Directory.GetFiles(window.Session.ProjectWorkFolder(), "batch_*.dlb").Length == 0, "lote misto XLS/XLSX grava apenas um arquivo de banco no projeto");
-                Check(
-                    window.Session.Files.Count(p => Path.GetFileName(p).StartsWith("batch_")) == 2,
-                    "resultados populam os Conteúdos"
-                );
+                var processingContents = window.Session.Files.Where(p => Path.GetFileName(p).StartsWith("processamento_", StringComparison.OrdinalIgnoreCase)).ToArray();
+                Check(processingContents.Length == 2,
+                    $"versões de processamento populam os Conteúdos com identificadores estáveis: {string.Join(" | ", window.Session.Files)}; resultados={window.Session.Meta.Arr("processing_results").Count}; modo={window.Session.Data!.At("processador.modo")}; tipo={window.Session.Data.At("processador.inventory_type")}; log={window.HistoryText.Text}");
                 var results = window.Session.Meta.Arr("processing_results").OfType<JsonObject>().ToArray();
                 Check(results.Length == 2 && results.All(r => r.Arr("sheets").Any(s => s.Display() == "RESULTADO - ARVORES")
                     && r.Arr("sheets").Any(s => s.Display() == "RESUMO - BYLOTE")),
                     "cada entrada do batch conserva suas abas de árvores e lote");
                 var sourceNode = LogicalControls<TreeViewItem>(window.ContentsTree).First(n => n.Tag is string p && p == input);
-                Check(sourceNode.Items.OfType<TreeViewItem>().Any(n => n.Tag is MainWindow.ResultSheetReference r
+                var versionNode = sourceNode.Items.OfType<TreeViewItem>().Single(n => n.Tag is MainWindow.ProcessingVersionReference);
+                Check(versionNode.Items.OfType<TreeViewItem>().Any(n => n.Tag is MainWindow.ResultSheetReference r
                     && r.Sheet == "RESUMO - BYPLOT"), "abas de saída ficam abaixo do inventário de entrada");
                 string report = results[0].S("path");
                 var storedTrees = Dendro.Core.Tabular.TableStore.Read(new(window.Session.Resolve(report), "RESULTADO - ARVORES"));
-                Check(Math.Abs(Enumerable.Range(1, storedTrees.Count - 1).Sum(r => storedTrees.Number(r, storedTrees.Column("VTCC"))) - 5.5) < 1e-9,
-                    "resultados do Processador em DLB preservam os volumes e o fator");
+                Check(Math.Abs(Enumerable.Range(1, storedTrees.Count - 1).Sum(r => storedTrees.Number(r, storedTrees.Column("VTCC"))) - 11) < 1e-9,
+                    "versão original do Processador em DLB preserva os volumes sem aplicar fator");
                 await window.OpenTable(report, "RESULTADO - ARVORES");
                 await window.OpenTable(report, "RESUMO - BYLOTE");
                 Check(window.Documents.Children.Count(d => d.ContentId?.StartsWith("table:" + report + ":") == true) == 2,
@@ -583,9 +585,9 @@ internal static partial class DesktopTests
                     "reprocessar atualiza resultados existentes sem criar outro banco ou duplicar registros");
                 foreach (var inputPath in new[] { input, legacy }) {
                     var inputTree = LogicalControls<TreeViewItem>(window.ContentsTree).Single(n => n.Tag as string == inputPath);
-                    var resultNames = inputTree.Items.OfType<TreeViewItem>().Where(n => n.Tag is MainWindow.ResultSheetReference)
-                        .Select(n => ((MainWindow.ResultSheetReference)n.Tag).Sheet).ToArray();
-                    Check(resultNames.Length == resultNames.Distinct().Count(), "abas de resultado aparecem uma única vez por entrada");
+                    var resultKeys = LogicalControls<TreeViewItem>(inputTree).Where(n => n.Tag is MainWindow.ResultSheetReference)
+                        .Select(n => { var reference = (MainWindow.ResultSheetReference)n.Tag; return reference.Path + "\0" + reference.Sheet; }).ToArray();
+                    Check(resultKeys.Length == resultKeys.Distinct(StringComparer.OrdinalIgnoreCase).Count(), "cada tabela de resultado aparece uma única vez por entrada e arquivo");
                 }
                 window.Session.Data.Obj("processador")["modo"] = "completo";
             }
@@ -599,7 +601,7 @@ internal static partial class DesktopTests
                 !LogicalControls<TabItem>(chartView).Any(t => t.Header?.ToString() == "Aparência")
                     && LogicalControls<TextBlock>(chartView)
                         .Any(t => t.Text == "Gráfico de origem"),
-                "Regressões 1P usa Gráfico de origem e não oferece Aparência"
+                "Regressões usa Gráfico de origem e não oferece Aparência"
             );
             var inherited = window
                 .Session.Meta.Arr("charts")
@@ -614,7 +616,7 @@ internal static partial class DesktopTests
             Check(
                 chartView.CurrentConfig.N("point_size") == 7
                     && chartView.CurrentConfig.S("x_label") == "DAP do gráfico original",
-                "Regressões 1P herda a aparência atual do gráfico original"
+                "Regressões herda a aparência atual do gráfico original"
             );
             var inputNode = window
                 .ContentsTree.Items.OfType<TreeViewItem>()
@@ -624,14 +626,14 @@ internal static partial class DesktopTests
             Check(
                 !inputNode
                     .ContextMenu!.Items.OfType<MenuItem>()
-                    .Any(m => m.Header?.ToString() == "Regressões 1P…")
+                    .Any(m => m.Header?.ToString() == "Regressões…")
                     && inputNode
                         .Items.OfType<TreeViewItem>()
                         .Any(n =>
                             n.ContextMenu!.Items.OfType<MenuItem>()
-                                .Any(m => m.Header?.ToString() == "Regressões 1P…")
+                                .Any(m => m.Header?.ToString() == "Regressões…")
                         ),
-                "menu Regressões 1P aparece no gráfico, sem aparecer na planilha"
+                "menu Regressões aparece no gráfico, sem aparecer na planilha"
             );
             await chartView.RemoveRows(new[] { 1 });
             Check(
@@ -685,7 +687,7 @@ internal static partial class DesktopTests
                     .Items.Cast<System.Data.DataRowView>()
                     .First(row => (int)row["fit_index"] == 0)
             );
-            string selectedProject = Path.Combine(root, "multiple-fits.dendro");
+            string selectedProject = Path.Combine(root, "multiple-fits.dlb");
             await window.Session.Save(selectedProject);
             var selectedSession = new ProjectSession();
             await selectedSession.Open(selectedProject);
@@ -783,13 +785,14 @@ internal static partial class DesktopTests
                 lassoRows.Order().SequenceEqual(new[] { 1, 3 }),
                 "laço na regressão seleciona os IDs esperados: " + string.Join(",", lassoRows)
             );
-            var plotBody = ChartBody(window
-                    .DockManager.Layout.Descendents()
-                    .OfType<LayoutDocument>()
-                    .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
-                    .Content);
-            var confirmRemoval = LogicalControls<Button>(plotBody)
-                .First(b => b.Content?.ToString() == "Remover selecionados");
+            var activeChartWorkspace = (ChartWorkspace)window
+                .DockManager.Layout.Descendents()
+                .OfType<LayoutDocument>()
+                .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
+                .Content;
+            var plotBody = activeChartWorkspace.DataContent!;
+            var confirmRemoval = Controls<Button>(plotBody)
+                .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Remover seleção do ajuste");
             Check(
                 confirmRemoval.IsEnabled
                     && chartView.CurrentConfig["excluded"]?.AsArray().Count is null or 0,
@@ -803,19 +806,20 @@ internal static partial class DesktopTests
                 chartView.CurrentConfig["excluded"]!.AsArray().Count == 2,
                 "contorno livre fechado remove os dois pontos abrangidos"
             );
-            var removedBody = ChartBody(window
-                    .DockManager.Layout.Descendents()
-                    .OfType<LayoutDocument>()
-                    .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
-                    .Content);
+            var removedWorkspace = (ChartWorkspace)window
+                .DockManager.Layout.Descendents()
+                .OfType<LayoutDocument>()
+                .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
+                .Content;
+            var removedBody = removedWorkspace.GraphBody;
             var remainingPlot = removedBody.Children.OfType<ScatterPlot>().Single();
             Capture(window, Path.Combine(root, "removed-hidden.png"));
             Check(
                 !remainingPlot.Config.B("show_removed") && remainingPlot.DisplayBounds.XMin > 30,
                 "removidos ocultos por padrão; eixos automáticos usam somente pontos mantidos"
             );
-            var showRemoved = LogicalControls<CheckBox>(removedBody)
-                .Single(c => c.Content?.ToString() == "Mostrar removidos");
+            var showRemoved = LogicalControls<CheckBox>(removedWorkspace.DataContent!)
+                .Single(c => c.Content?.ToString() == "Mostrar pontos removidos no gráfico");
             showRemoved.IsChecked = true;
             Capture(window, Path.Combine(root, "removed-visible.png"));
             Check(
@@ -824,9 +828,11 @@ internal static partial class DesktopTests
             );
             showRemoved.IsChecked = false;
             await chartView.UndoRemoval();
-            var compare = LogicalControls<Button>(chartView)
-                .First(b => b.Content?.ToString() == "Comparar modelos");
-            compare.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var compare = LogicalControls<CheckBox>(chartView)
+                .First(c => c.Content?.ToString() == "Ajustar e comparar modelos");
+            compare.IsChecked = true;
+            var adjust = LogicalControls<Button>(chartView).First(b => b.Content?.ToString() == "Ajustar");
+            adjust.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await Until(() =>
                 !window.IsBusy
                 && chartView.CurrentConfig["fits"] is JsonArray compared
@@ -834,25 +840,21 @@ internal static partial class DesktopTests
             );
             Check(
                 chartView.CurrentConfig.N("selected_fit", -1) == -1,
-                "comparar modelos pelo botão restaura a escolha automática"
+                "comparar modelos pela opção selecionada restaura a escolha automática"
             );
             string firstTitle = chartView.CurrentConfig.S("title"),
                 firstIdentity = ChartView.Identity(chartView.CurrentConfig);
             var secondConfig = chartView.CurrentConfig.DeepClone().AsObject();
             secondConfig["title"] = "Segunda regressão";
-            var secondGraph = new ChartView(window, window.Session, false);
-            await secondGraph.Load(input, secondConfig);
-            await chartView.Load(input, secondGraph.CurrentConfig);
-            var graphSelector = LogicalControls<ComboBox>(chartView).First();
+            window.Session.StoreChart(secondConfig);
+            await chartView.Load(input, secondConfig);
+            var graphSelector = LogicalControls<ComboBox>(chartView).Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "Chart.Source");
             Check(
-                graphSelector.Items.Count == window.Session.Meta.Arr("charts").Count
-                    && graphSelector
-                        .Items.Cast<object>()
-                        .Any(item => item.ToString()!.Contains(firstTitle))
+                graphSelector.Items.Cast<object>().Any(item => item.ToString()!.Contains(firstTitle))
                     && graphSelector
                         .Items.Cast<object>()
                         .Any(item => item.ToString()!.Contains("Segunda regressão")),
-                "combo de origem lista gráficos distintos da mesma planilha"
+                $"combo de origem lista gráficos distintos da mesma planilha: {string.Join(" | ", LogicalControls<ComboBox>(chartView).Select(c => string.Join(",", c.Items.Cast<object>())))}; esperado {firstTitle} e Segunda regressão"
             );
             graphSelector.SelectedIndex = graphSelector.Items.Cast<object>().ToList().FindIndex(item => item.ToString()!.Contains(firstTitle));
             await Until(() => !window.IsBusy && chartView.CurrentConfig.S("title") == firstTitle);
@@ -910,7 +912,7 @@ internal static partial class DesktopTests
                 window.SetTool(regressions);
                 await regressions.Load(frontierSource, frontierConfig);
                 Check(!LogicalControls<Button>(regressions).Any(b => b.Content?.ToString()?.Contains("Calcular fronteira") == true),
-                    "Regressões 1P não contém comando de fronteira");
+                    "Regressões não contém comando de fronteira");
                 var frontierTool = new FrontierView(window, window.Session, frontierConfig);
                 window.SetTool(frontierTool);
                 var controls = LogicalControls<TextBox>(frontierTool).ToArray();
@@ -966,28 +968,6 @@ internal static partial class DesktopTests
             reopenedDocument.Root == window.DockManager.Layout,
             "documentos continuam funcionais após restaurar layout"
         );
-        if (args.Length > 3)
-        {
-            string userProject = args[3];
-            var before = System.Security.Cryptography.SHA256.HashData(
-                File.ReadAllBytes(userProject)
-            );
-            var compatibility = new ProjectSession();
-            await compatibility.Open(userProject, migrateBank: false);
-            int modelsCount = compatibility.Data!.Obj("volume").Arr("equacoes").Count;
-            await compatibility.Save(Path.Combine(root, "compatibility.dendro"));
-            await compatibility.Open(Path.Combine(root, "compatibility.dendro"));
-            Check(
-                compatibility.Data!.Obj("volume").Arr("equacoes").Count == modelsCount,
-                "compatibilidade com projeto existente"
-            );
-            Check(
-                before.SequenceEqual(
-                    System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(userProject))
-                ),
-                "projeto original intacto"
-            );
-        }
         await TestTableTools(window, root);
         await TestInlineReportSettings(window, root);
         await TestRegressionCatalog(window, root);
@@ -997,8 +977,8 @@ internal static partial class DesktopTests
         await TestCloseLifecycle(root);
         await TestSpreadsheetMenuAfterOpening(root);
         await TestLargeMergeProgress(root);
-        await TestSingleBankMigration(root);
-        await window.Session.Save(Path.Combine(root, "ui-project.dendro"));
+        await TestSingleFileProject(root);
+        await window.Session.Save(Path.Combine(root, "ui-project.dlb"));
         window.CloseConfirmation = () => Task.FromResult(true);
         window.WorkspacePath = Path.Combine(root, "closing-layout.xml");
         bool closed = false;
@@ -1091,7 +1071,7 @@ internal static partial class DesktopTests
             invalid && window.Session.ContentName(bank) == "Inventários anuais",
             "nomes vazios são rejeitados sem alteração"
         );
-        string project = Path.Combine(root, "renamed.dendro");
+        string project = Path.Combine(root, "renamed.dlb");
         await window.Session.Save(project);
         var restored = new ProjectSession();
         await restored.Open(project);
@@ -1101,6 +1081,7 @@ internal static partial class DesktopTests
             "nomes dos conteúdos persistem ao reabrir projeto"
         );
         window.ToolSearch.Text = "";
+        window.ShowTools();
         // Exercise the real search event to show the complete catalogue.
         window.ToolSearch.Text = " ";
         window.ToolSearch.Text = "";
@@ -1126,40 +1107,38 @@ internal static partial class DesktopTests
             Controls<CommandIcon>(window).Count() > 12,
             "ícones vetoriais presentes na faixa de opções, árvore e ferramentas"
         );
-        var toolIcons = ((ListBox)window.ToolContent.Content).Items.OfType<ListBoxItem>().Select(ShellVisuals.GetIcon).ToArray();
-        Check(toolIcons.Length == 9 && toolIcons.Distinct().Count() == 9,
+        var toolCards = ((ListBox)window.ToolContent.Content).Items.OfType<ListBoxItem>().Where(i => i.Tag is string).ToArray();
+        var toolIcons = toolCards.Select(ShellVisuals.GetIcon).ToArray();
+        Check(toolCards.Length == 15 && toolIcons.Distinct().Count() == toolCards.Length,
             "cada ferramenta possui um ícone próprio");
         Check(!Controls<Image>(window.Ribbon.Parent as DependencyObject ?? window).Any(i => i.Source?.ToString()?.Contains("logo.png") == true),
             "logo removido do canto superior direito da faixa de opções");
         Capture(window, Path.Combine(root, "modern-shell-wpf.png"));
     }
 
-    private static async Task TestSingleBankMigration(string root)
+    private static async Task TestSingleFileProject(string root)
     {
-        string path = Path.Combine(root, "legacy-bank-project.dendro");
+        string path = Path.Combine(root, "single-file-project.dlb");
         var session = new ProjectSession();
-        await session.New("Migração do banco"); await session.Save(path);
-        string bank = Path.ChangeExtension(path, ".dlb"); Directory.CreateDirectory(bank);
-        File.WriteAllText(Path.Combine(bank, "bank.json"), "{\"format\":\"DENDROLAB_GEODATABASE\",\"version\":2}");
-        string oldTable = Path.Combine(bank, "Entrada.dlb");
+        await session.New("Projeto em arquivo único"); await session.Save(path);
+        string bank = path;
+        string oldTable = Path.Combine(root, "Entrada.dlb");
         using (var writer = new Dendro.Core.Tabular.CompactBankWriter(oldTable)) {
             string id = writer.AddTable(["Idade", "Volume"]); writer.Add(id, [10d, 100d]); writer.Complete();
         }
-        session.Meta["database_path"] = Path.GetFileName(bank);
+        Dendro.Core.Tabular.CompactBankFile.Import(bank, [(oldTable, "Entrada.dlb")]);
         string reference = Path.Combine(Path.GetFileName(bank), "Entrada.dlb");
         session.AddFile(reference); session.SetExcel(reference, "Dados", 1);
         Dendro.Core.Configuration.ProjectStore.Save(path, session.Data!);
         await session.Open(path);
-        Check(File.Exists(bank) && !Directory.Exists(bank), "abrir projeto antigo converte pasta DLB em arquivo único");
+        Check(Dendro.Core.Tabular.CompactBankFile.IsCompactBank(bank), "o projeto único é um arquivo DLB");
         Check(Dendro.Core.Tabular.TableStore.Page(new(session.Resolve(reference))).Data.Number(1, 1) == 100,
-            "migração preserva tabelas e referências existentes");
-        Check(Directory.GetDirectories(root, "legacy-bank-project.dlb.legacy-backup-*").Length == 1,
-            "migração preserva cópia da pasta original");
-        string copy = Path.Combine(root, "single-bank-copy.dendro"); await session.Save(copy);
-        Check(File.Exists(Path.ChangeExtension(copy, ".dlb")) && !Directory.Exists(Path.ChangeExtension(copy, ".dlb")),
-            "Salvar como copia somente um arquivo de banco");
+            "tabela interna continua acessível no projeto");
+        string copy = Path.Combine(root, "single-file-copy.dlb"); await session.Save(copy);
+        Check(File.Exists(copy) && Dendro.Core.Tabular.CompactBankFile.IsCompactBank(copy),
+            "Salvar como copia o arquivo único do projeto");
         Check(Dendro.Core.Tabular.TableStore.Page(new(session.Resolve(session.Files.Single()))).Total == 1,
-            "tabela permanece acessível no banco copiado");
+            "a tabela permanece acessível na cópia do projeto");
     }
 
     private static async Task TestContentRemoval(MainWindow window)
@@ -1308,7 +1287,7 @@ internal static partial class DesktopTests
                 .Any(t => t.Header?.ToString() == "Análises"),
             "diagnósticos sem tabela de origem aparecem em Análises nos Conteúdos"
         );
-        string saved = Path.Combine(root, "scientific-project.dendro");
+        string saved = Path.Combine(root, "scientific-project.dlb");
         await window.Session.Save(saved);
         var restored = new ProjectSession();
         await restored.Open(saved);
@@ -1405,6 +1384,10 @@ internal static partial class DesktopTests
                     if (title == "Processador")
                     {
                         var icon = LogicalControls<HelpIcon>((StructuredEditor)((TabItem)tabs.SelectedItem).Content).First(h => h.Text.Contains("revisão e aprovação"));
+                        Check(icon.Width == 16 && icon.Height == 16
+                            && icon.VerticalAlignment == VerticalAlignment.Center
+                            && DockPanel.GetDock(icon) == Dock.Left,
+                            "ícones de ajuda menores, centralizados e antes do texto");
                         var popup = (ToolTip)icon.ToolTip;
                         popup.IsOpen = true;
                         await Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
@@ -1445,7 +1428,7 @@ internal static partial class DesktopTests
             "seleção inline de sheets aplicada ao projeto"
         );
         Check(window.Session.Data.At("cadastro.fallback_idade").B("ativo") && window.Session.Data.At("cadastro.fallback_idade").N("limite_ano_2000") == 29, "fallback configurável aplicado ao projeto");
-        string path = Path.Combine(root, "inline-settings.dendro");
+        string path = Path.Combine(root, "inline-settings.dlb");
         await window.Session.Save(path);
         var restored = new ProjectSession();
         await restored.Open(path);
@@ -1522,9 +1505,9 @@ internal static partial class DesktopTests
                 && !tool.CurrentConfig["fits"]!
                     .AsArray()
                     .Any(f => f.S("model_id") is "teste_2p" or "teste_3p"),
-            "Regressões 1P filtra o catálogo por quantidade de preditores"
+            "Regressões filtra o catálogo por quantidade de preditores"
         );
-        string saved = Path.Combine(root, "regression-catalog.dendro");
+        string saved = Path.Combine(root, "regression-catalog.dlb");
         await window.Session.Save(saved);
         var restored = new ProjectSession();
         await restored.Open(saved);
@@ -1582,7 +1565,7 @@ internal static partial class DesktopTests
 
     private static async Task TestSpreadsheetMenuAfterOpening(string root)
     {
-        string path = Path.Combine(root, "menu-project.dendro");
+        string path = Path.Combine(root, "menu-project.dlb");
         Dendro.Core.Configuration.ProjectStore.Save(path, Dendro.Core.Configuration.ProjectStore.Create("Menu"));
         var window = new MainWindow {
             Left = -30000, Top = -30000, ShowInTaskbar = false,
@@ -1630,7 +1613,7 @@ internal static partial class DesktopTests
         };
         window.Show();
         await window.Session.New("Junção grande");
-        await window.Session.Save(Path.Combine(root, "merge-stress.dendro"));
+        await window.Session.Save(Path.Combine(root, "merge-stress.dlb"));
         string bank = window.Session.ProjectWorkFolder();
         await window.Session.AddTableResults(fixtures);
         await window.OpenTableTool(false);
@@ -1666,7 +1649,7 @@ internal static partial class DesktopTests
         Check(window.IsBusy && window.CancelOperationButton.IsEnabled, "cancelamento permanece acessível fora do painel desabilitado");
         window.CancelOperationButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
-        Check(!File.Exists(Path.Combine(bank, "cancelada.dlb")) && !Directory.EnumerateDirectories(bank, ".dendro-*").Any()
+        Check(!File.Exists(Path.Combine(bank, "cancelada.dlb")) && !Directory.EnumerateDirectories(bank, ".dendrolab-*").Any()
             && !window.Session.Files.Any(p => Path.GetFileName(p) == "cancelada.dlb"),
             "cancelar pela interface limpa temporários sem publicar ou registrar resultado parcial");
         window.Close(); await Until(() => !window.IsVisible);
@@ -1754,7 +1737,7 @@ internal static partial class DesktopTests
                 == 2,
             "resultados dos estratos ficam abaixo da origem"
         );
-        string saved = Path.Combine(root, "tables-ui.dendro");
+        string saved = Path.Combine(root, "tables-ui.dlb");
         await window.Session.Save(saved);
         bank = window.Session.Files.Single(p => Path.GetFileName(p) == "Uniao_UI.dlb");
         var restored = new ProjectSession();
@@ -1763,7 +1746,11 @@ internal static partial class DesktopTests
             restored
                 .Meta.Arr("derived_tables")
                 .OfType<JsonObject>()
-                .Count(d => d.S("source_path") == bank) == 2,
+                .Count(d => string.Equals(
+                    Path.GetFileName(d.S("source_path").Replace('/', Path.DirectorySeparatorChar)),
+                    Path.GetFileName(bank),
+                    StringComparison.OrdinalIgnoreCase
+                )) == 2,
             "hierarquia dos resultados persiste no projeto"
         );
         var graph = new ChartView(window, window.Session, false);
@@ -1774,15 +1761,19 @@ internal static partial class DesktopTests
         );
         string copyFolder = Path.Combine(root, "project-copy"), movedFolder = Path.Combine(root, "project-moved");
         Directory.CreateDirectory(copyFolder);
-        await window.Session.Save(Path.Combine(copyFolder, "Portatil.dendro"));
+        await window.Session.Save(Path.Combine(copyFolder, "Portatil.dlb"));
+        string liveBankRef = window.Session.Files.Single(p => Path.GetFileName(p) == "Uniao_UI.dlb");
+        Check(liveBankRef.StartsWith("Portatil.dlb\\", StringComparison.OrdinalIgnoreCase), $"Salvar como atualiza a referência na sessão: {liveBankRef}");
         Check(window.Session.Files.Where(p => Path.GetExtension(p) == ".dlb").All(p => !Path.IsPathRooted(p)),
             "tabelas do projeto usam caminhos relativos");
         if (!Path.GetFullPath(movedFolder).StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Destino de teste fora da pasta de QA.");
         Directory.Move(copyFolder, movedFolder);
         var moved = new ProjectSession();
-        await moved.Open(Path.Combine(movedFolder, "Portatil.dendro"));
+        await moved.Open(Path.Combine(movedFolder, "Portatil.dlb"));
         string movedBank = moved.Files.Single(p => Path.GetFileName(p) == "Uniao_UI.dlb");
+        var movedLocation = Dendro.Core.Tabular.CompactBankFile.Location(moved.Resolve(movedBank));
+        Check(File.Exists(movedLocation.File), $"Salvar como remapeia referências: banco={moved.Meta.S("database_path")}; referência={movedBank}; localização={movedLocation}");
         Check(Dendro.Core.Tabular.TableStore.Page(new(moved.Resolve(movedBank))).Total == 4,
             "Salvar como copia o banco e mover o projeto preserva a leitura dos dados");
         await window.Session.Open(saved);

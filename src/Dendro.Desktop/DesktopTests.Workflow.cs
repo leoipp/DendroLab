@@ -12,6 +12,154 @@ namespace Dendro.Desktop;
 
 internal static partial class DesktopTests
 {
+    internal static async Task RunDeferredRemoval(string root)
+    {
+        Directory.CreateDirectory(root);
+        string project = Path.Combine(root, "removal-rollback.dlb");
+        var session = new ProjectSession();
+        await session.New("Teste de remoção transacional");
+        await session.Save(project);
+
+        string CreateSource(string name)
+        {
+            string path = Path.Combine(root, name + ".dlb");
+            using var writer = new CompactBankWriter(path);
+            string id = writer.AddTable(["ID", "Valor"], "Dados");
+            writer.Add(id, ["A", 42d]);
+            writer.Complete();
+            return path;
+        }
+
+        string contentDataset = "conteudo_teste.dlb";
+        string resultDataset = "tabela_teste.dlb";
+        string contentReference = Path.Combine(Path.GetFileName(project), contentDataset);
+        string resultReference = Path.Combine(Path.GetFileName(project), resultDataset);
+        CompactBankFile.Import(project, [
+            (CreateSource("conteudo"), contentDataset),
+            (CreateSource("resultado"), resultDataset),
+        ]);
+        session.AddFile(contentReference);
+        session.AddFile(resultReference);
+        await session.Save(project);
+
+        int contentIndex = session.Files.ToList().IndexOf(contentReference);
+        await session.RemoveFile(contentIndex);
+        Check(CompactBankFile.Exists(session.Resolve(contentReference)),
+            "remover conteúdo mantém dataset físico enquanto o projeto não é salvo");
+        await session.Open(project); // Reabrir sem salvar simula a escolha Descartar.
+        Check(session.Files.Contains(contentReference, StringComparer.OrdinalIgnoreCase)
+            && CompactBankFile.Exists(session.Resolve(contentReference)),
+            "descartar remoção de conteúdo restaura referência e preserva o dataset");
+
+        await session.RemoveResultTable(resultReference, "Dados");
+        Check(CompactBankFile.Exists(session.Resolve(resultReference)),
+            "remover tabela filha mantém dataset físico até salvar o projeto");
+        await session.Open(project);
+        Check(session.Files.Contains(resultReference, StringComparer.OrdinalIgnoreCase)
+            && TableStore.Read(new(session.Resolve(resultReference), "Dados")).Count == 2,
+            "descartar remoção de tabela filha restaura referência e dados");
+
+        await session.RemoveResultTable(resultReference, "Dados");
+        string copyProject = Path.Combine(root, "removal-save-as.dlb");
+        await session.Save(copyProject);
+        var savedCopy = ProjectStore.Read(copyProject);
+        string copiedResultReference = Path.Combine(Path.GetFileName(copyProject), resultDataset);
+        Check(!session.Files.Contains(resultReference, StringComparer.OrdinalIgnoreCase)
+            && !CompactBankFile.Exists(Path.Combine(copyProject, resultDataset))
+            && CompactBankFile.Exists(Path.Combine(project, resultDataset))
+            && CompactBankFile.Exists(copyProject),
+            "salvar remoção em Save As apaga a cópia, preserva a origem e mantém DLB válido");
+        Check(savedCopy.Obj("_dendro").Arr("files").All(f =>
+            !string.Equals(f.Display(), copiedResultReference, StringComparison.OrdinalIgnoreCase)),
+            "metadata de Save As não referencia o dataset excluído");
+
+        await session.Open(project);
+        int savedContentIndex = session.Files.ToList().IndexOf(contentReference);
+        await session.RemoveFile(savedContentIndex);
+        await session.Save(project);
+        var savedOriginal = ProjectStore.Read(project);
+        Check(!session.Files.Contains(contentReference, StringComparer.OrdinalIgnoreCase)
+            && !CompactBankFile.Exists(Path.Combine(project, contentDataset))
+            && CompactBankFile.Exists(project),
+            "salvar remoção de conteúdo exclui o dataset e mantém projeto DLB válido");
+        Check(savedOriginal.Obj("_dendro").Arr("files").All(f =>
+            !string.Equals(f.Display(), contentReference, StringComparison.OrdinalIgnoreCase)),
+            "metadata salvo não referencia o dataset excluído");
+        File.WriteAllText(Path.Combine(root, "self-test.log"), $"Remoção transacional: {checks} verificações aprovadas.\n");
+    }
+
+    internal static async Task RunDuplicateSettings(string root)
+    {
+        Directory.CreateDirectory(root);
+        var window = new MainWindow { WorkspacePath = Path.Combine(root, "layout.xml"), CloseConfirmation = () => Task.FromResult(true) };
+        await window.Session.New("Teste de duplicadas");
+        var input = new DataTable(["Talhão", "Parcela", "Lote", "DAP", "H", "Data", "Compr", "Larg", "Dec_Compr", "Dec_Larg", "Cova", "Fuste", "Fila"]);
+        double date = new DateTime(2026, 6, 1).ToOADate();
+        input.Add("T01", "P01", "XXXXAL00000P", 20d, 10d, date, 100d, 100d, 0d, 0d, 1d, 1d, 1d);
+        input.Add("T01", "P01", "XXXXAL00000P", 40d, 20d, date, 100d, 100d, 0d, 0d, 2d, 1d, 1d);
+        input.Add("T01", "P01", "XXXXAL00000P", 20d, 10d, date + 30, 100d, 100d, 0d, 0d, 1d, 1d, 1d);
+        input.Add("T01", "P01", "XXXXAL00000P", 999d, 999d, date, 100d, 100d, 0d, 0d, 1d, 1d, 1d);
+        string SaveTable(string name, DataTable table)
+        {
+            string path = Path.Combine(root, name + ".dlb");
+            using var writer = new CompactBankWriter(path);
+            string id = writer.AddTable(Enumerable.Range(0, table.Width).Select(c => table.Text(0, c)).ToArray(), "Dados");
+            foreach (var row in table.Rows.Skip(1)) writer.Add(id, row.ToArray());
+            writer.Complete();
+            return path;
+        }
+        string source = SaveTable("input", input);
+        var registry = new DataTable(["Talhão", "Data de Plantio", "Área efetiva (ha)"]);
+        registry.Add("T01", new DateTime(2016, 6, 1).ToOADate(), 10d);
+        string cadastro = SaveTable("cadastro", registry);
+        window.Session.AddFile(source);
+        window.Session.SetExcel(source, "Dados", 1);
+        window.Session.Data!.Obj("cadastro")["caminho"] = cadastro;
+        window.Session.Data!.Obj("cadastro")["worksheet"] = "Dados";
+        window.Session.Data!.Obj("volume").Arr("equacoes").Add(new JsonObject { ["codigo"] = "AL1R", ["b0"] = 0, ["b1"] = 1, ["b2"] = 1 });
+        window.Session.Data!.Obj("ajuste_altura")["variaveis_customizadas"] = new JsonArray();
+        window.Session.Data!.Obj("ajuste_altura")["estatisticas_parcela"] = new JsonArray();
+        window.Session.Data!.Obj("processador")["inventory_type"] = "IFPC";
+        window.Session.Meta["batch_inputs"] = new JsonArray(source);
+        string project = Path.Combine(root, "duplicates.dlb");
+        await window.Session.Save(project);
+
+        var editor = new StructuredEditor(window.Session.Data!["processador"]!.DeepClone(), "processador");
+        var setting = LogicalControls<CheckBox>(editor).Single(c =>
+            System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "processador.remover_duplicadas");
+        Check(setting.IsChecked != true, "Configurações inicia com remover duplicadas desativado");
+        setting.IsChecked = true;
+        window.Session.Data["processador"] = editor.Read();
+        window.Session.Touch();
+        Check(window.Session.Data.At("processador").B("remover_duplicadas"), "Configurações grava remover duplicadas no projeto");
+
+        var processor = new ProcessorView(window, window.Session);
+        window.SetTool(processor);
+        Check(!LogicalControls<CheckBox>(processor).Any(c =>
+            System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "processador.remover_duplicadas"),
+            "a opção não aparece duplicada na ferramenta Processador");
+        var helpPanel = new StackPanel();
+        Ui.Field(helpPanel, "Número de árvores", new TextBox());
+        Ui.AddHelp(helpPanel, "Ajuda de teste");
+        var fieldGroup = (StackPanel)helpPanel.Children[0];
+        var helpRow = (DockPanel)fieldGroup.Children[0];
+        var helpIcon = helpRow.Children.OfType<HelpIcon>().Single();
+        Check(helpIcon.Width == 16 && helpIcon.Height == 16
+            && helpIcon.VerticalAlignment == VerticalAlignment.Center
+            && DockPanel.GetDock(helpIcon) == Dock.Left
+            && ReferenceEquals(helpRow.Children[0], helpIcon)
+            && ((TextBlock)helpRow.Children[1]).Text == "Número de árvores"
+            && fieldGroup.Children[1] is TextBox,
+            "ícone de ajuda alinhado ao rótulo acima do campo");
+        await window.Execute(processor.Process);
+        var run = window.Session.Meta.Arr("processing_results").OfType<JsonObject>().Single();
+        Check(run.N("removed_duplicates") == 1, "processamento aplica a opção salva nas Configurações");
+        var trees = TableStore.Read(new(window.Session.Resolve(run.S("path")), ProcessingHistory.Trees));
+        Check(trees.Count == 4, "remoção ocorre antes dos resultados: três árvores mais cabeçalho");
+        Check(TableStore.Read(new(source, "Dados")).Count == 5, "arquivo de entrada continua intacto");
+        File.WriteAllText(Path.Combine(root, "self-test.log"), $"WPF duplicadas: {checks} verificações aprovadas.\n");
+    }
+
     internal static async Task RunProcessingWorkflow(string root)
     {
         Directory.CreateDirectory(root);
@@ -40,9 +188,18 @@ internal static partial class DesktopTests
         window.Session.Data!.Obj("ajuste_altura")["estatisticas_parcela"] = new JsonArray();
         window.Session.Data!.Obj("processador")["inventory_type"] = "IFPC";
         window.Session.Meta["batch_inputs"] = new JsonArray(source);
-        string project = Path.Combine(root, "workflow.dendro"); await window.Session.Save(project);
+        string project = Path.Combine(root, "workflow.dlb"); await window.Session.Save(project);
+        var settingsEditor = new StructuredEditor(window.Session.Data!["processador"]!.DeepClone(), "processador");
+        var removeDuplicatesSetting = LogicalControls<CheckBox>(settingsEditor).Single(c =>
+            System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "processador.remover_duplicadas");
+        Check(removeDuplicatesSetting.IsChecked != true, "configuração única de remover duplicadas começa desativada");
+        removeDuplicatesSetting.IsChecked = true;
+        window.Session.Data["processador"] = settingsEditor.Read();
+        window.Session.Touch();
+        Check(window.Session.Data!.At("processador").B("remover_duplicadas"), "opção de duplicadas aplicada ao projeto pelas Configurações");
         var processor = new ProcessorView(window, window.Session); window.SetTool(processor);
-        LogicalControls<CheckBox>(processor).Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "Processor.RemoveDuplicates").IsChecked = true;
+        Check(!LogicalControls<CheckBox>(processor).Any(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "processador.remover_duplicadas"),
+            "Processador não duplica a opção das Configurações");
         await window.Execute(processor.Process);
         Check(window.Session.Meta.Arr("processing_results").Count > 0, "original publicado: " + window.HistoryText.Text);
         var original = window.Session.Meta.Arr("processing_results").OfType<JsonObject>().Single();
@@ -120,7 +277,7 @@ internal static partial class DesktopTests
             "AJUSTADO legado recupera colunas da entrada completa congelada");
         var historicalBrowser = (TableBrowser)adjustedDocument.Content;
         var historicalGrid = LogicalControls<DataGrid>(historicalBrowser).Single(); historicalGrid.SelectedItem = historicalGrid.Items[0];
-        Check(!LogicalControls<Button>(historicalBrowser).Single(b => b.Content?.ToString() == "Excluir selecionadas…").IsEnabled, "exclusão não modifica versões preservadas do histórico");
+        Check(!LogicalControls<Button>(historicalBrowser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir selecionadas…").IsEnabled, "exclusão não modifica versões preservadas do histórico");
         var currentOriginal = window.Session.Meta.Arr("processing_results").OfType<JsonObject>().Single(r => r.S("id") == original.S("id"));
         currentOriginal.Arr("sheets").Add("Graficos"); window.Session.Touch();
         Check(!LogicalControls<TreeViewItem>(window.ContentsTree).Any(n => n.Tag is MainWindow.ResultSheetReference r && r.Sheet == "Graficos"), "tabela Gráficos legada fica fora dos Conteúdos");
@@ -176,17 +333,17 @@ internal static partial class DesktopTests
         deletionGrid.SelectedItem = deletionGrid.Items[0];
         long confirmedRows = 0;
         browser.DeleteConfirmation = count => { confirmedRows = count; return Task.FromResult(false); };
-        LogicalControls<Button>(browser).Single(b => b.Content?.ToString() == "Excluir selecionadas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        LogicalControls<Button>(browser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir selecionadas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
         Check(confirmedRows == 1 && browser.Total == 8, "cancelar confirmação preserva linhas selecionadas");
         browser.DeleteConfirmation = count => { confirmedRows = count; return Task.FromResult(true); };
-        LogicalControls<Button>(browser).Single(b => b.Content?.ToString() == "Excluir selecionadas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        LogicalControls<Button>(browser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir selecionadas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
         Check(browser.Total == 7 && TableStore.Page(new(window.Session.Resolve(mergedPath))).Total == 7, "exclusão de seleção sem filtro é gravada na própria tabela");
         columnFilter.SelectedItem = "DAP"; operationFilter.SelectedItem = "Igual a"; valueFilter.Text = "999";
         LogicalControls<Button>(browser).Single(b => b.Content?.ToString() == "Aplicar filtro").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
-        LogicalControls<Button>(browser).Single(b => b.Content?.ToString() == "Excluir filtradas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        LogicalControls<Button>(browser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir filtradas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
         Check(confirmedRows == 2 && browser.Total == 5 && TableStore.Page(new(window.Session.Resolve(mergedPath))).Total == 5, "exclusão do filtro confirma quantidade total e limpa a prévia antiga");
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
@@ -206,7 +363,7 @@ internal static partial class DesktopTests
         Check(issueBrowser.Total == 2 && window.Session.Meta.Arr("processing_results").Count == publishedBefore,
             "falha abre todas as pendências sem publicar processamento parcial");
         var issueGrid = LogicalControls<DataGrid>(issueBrowser).Single(); issueGrid.SelectedItem = issueGrid.Items[0];
-        Check(!LogicalControls<Button>(issueBrowser).Single(b => b.Content?.ToString() == "Excluir selecionadas…").IsEnabled,
+        Check(!LogicalControls<Button>(issueBrowser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir selecionadas…").IsEnabled,
             "relatório de pendências orienta correção na origem e é somente leitura");
         Check(ReferenceEquals(window.ToolContent.Content, failingProcessor), "abrir pendências preserva a ferramenta do processamento");
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
@@ -281,8 +438,8 @@ internal static partial class DesktopTests
         window.Session.Meta["batch_inputs"] = new JsonArray(source);
         var directProcessor = new ProcessorView(window, window.Session); window.SetTool(directProcessor);
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        Check(LogicalControls<CheckBox>(directProcessor).Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "Processor.RemoveDuplicates").IsVisible,
-            "resumo direto exibe opção de remover duplicadas");
+        Check(!LogicalControls<CheckBox>(directProcessor).Any(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "processador.remover_duplicadas"),
+            "resumo direto usa a configuração única de remover duplicadas");
         await window.Execute(directProcessor.Process);
         var directRun = window.Session.Meta.Arr("processing_results").OfType<JsonObject>().Single(r => r.S("source_path") == source && r.Arr("sheets").Any(s => s.Display() == "DIRETO - PARCELAS"));
         Check(directRun.N("removed_duplicates") == 1 && directRun["totals"].N("trees") == 3,

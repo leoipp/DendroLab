@@ -20,6 +20,7 @@ internal sealed class IsolationForestView : ScrollViewer
     private readonly ListBox features = new() { SelectionMode = SelectionMode.Multiple, MinHeight = 110, MaxHeight = 210 };
     private readonly TextBox name = Ui.Input("IF_anomalias"), trees = Ui.Input("100"), samples = Ui.Input("256"),
         depth = Ui.Input("0"), maxFeatures = Ui.Input("0"), contamination = Ui.Input("2"), threshold = Ui.Input(), seed = Ui.Input("42"), trainingLimit = Ui.Input("50000");
+    private readonly TextBlock trainingEstimate = Ui.Text("");
 
     public IsolationForestView(MainWindow owner, ProjectSession session)
     {
@@ -28,9 +29,11 @@ internal sealed class IsolationForestView : ScrollViewer
         var panel = Ui.Form(); Content = panel;
         panel.Children.Add(owner.ToolHeader("Isolation Forest"));
         Ui.AddHelp(panel, "Detecta observações que são isoladas rapidamente por árvores aleatórias. Selecione as variáveis numéricas e treine um modelo; depois aplique o mesmo modelo a outras tabelas.");
+        Ui.Section(panel,"Dados de treinamento");
         Ui.Field(panel, "Fonte", source); Ui.Field(panel, "Tabela / worksheet", sheet);
         Ui.Field(panel, "Variáveis numéricas do treinamento (selecione várias)", features);
         Ui.AddHelp(panel, "Selecione medidas, como DAP, H, idade e volume. Códigos e identificadores numéricos podem distorcer a detecção. Linhas incompletas ou não numéricas ficam sem escore.");
+        Ui.Section(panel,"Parâmetros do modelo");
         Ui.Field(panel, "Nome do novo modelo", name);
         Ui.Field(panel, "Árvores (1 a 500)", trees);
         Ui.Field(panel, "Amostras por árvore (2 a 4096)", samples);
@@ -39,11 +42,14 @@ internal sealed class IsolationForestView : ScrollViewer
         Ui.Field(panel, "Contaminação de referência (%) — acima de 0 até 50", contamination);
         Ui.Field(panel, "Limiar manual do escore (opcional, 0 a 1; substitui o quantil)", threshold);
         Ui.Field(panel, "Máximo de linhas na amostra de treinamento (2 a 500.000)", trainingLimit);
+        panel.Children.Add(trainingEstimate);
         Ui.Field(panel, "Semente aleatória", seed);
         Ui.AddHelp(panel, "O limite de treinamento usa amostragem uniforme de linhas completas. Até 250.000 amostras somadas entre árvores. O escore varia de 0 a 1 e não é probabilidade de erro. Empates no limiar não são classificados como anomalia.");
+        Ui.Section(panel,"Gráfico de diagnóstico");
         Ui.Field(panel, "Eixo X do gráfico", x); Ui.Field(panel, "Eixo Y do gráfico", y);
         Ui.AddHelp(panel, "O modelo usa todas as variáveis selecionadas. O gráfico é uma projeção em dois eixos: azul = normal; vermelho = anomalia. O relatório mantém todas as linhas e acrescenta IF_Score e IF_Classificacao.");
         panel.Children.Add(Ui.AsyncButton("Treinar modelo e gerar gráfico", () => owner.Execute(() => Run(true))));
+        Ui.Section(panel,"Aplicar modelo existente");
         Ui.Field(panel, "Modelos salvos no projeto", models);
         panel.Children.Add(Ui.Button("Atualizar modelos", RefreshModels));
         panel.Children.Add(Ui.AsyncButton("Aplicar modelo salvo e gerar gráfico", () => owner.Execute(() => Run(false))));
@@ -54,6 +60,9 @@ internal sealed class IsolationForestView : ScrollViewer
         panel.Children.Add(files);
         source.SelectionChanged += async (_, _) => { if (!loading && source.SelectedIndex >= 0) await owner.Execute(() => LoadSource()); };
         sheet.SelectionChanged += async (_, _) => { if (!loading && sheet.SelectedIndex >= 0) await owner.Execute(LoadColumns); };
+        features.SelectionChanged += (_, _) => UpdateTrainingEstimate();
+        trainingLimit.TextChanged += (_, _) => UpdateTrainingEstimate();
+        UpdateTrainingEstimate();
         RefreshModels();
     }
 
@@ -97,6 +106,7 @@ internal sealed class IsolationForestView : ScrollViewer
         string[] columns = await Task.Run(() => { using var cursor = new TableCursor(selected); return cursor.Columns; });
         features.ItemsSource = columns;
         foreach (string column in columns.Where(c => c is "DAP" or "H")) features.SelectedItems.Add(column);
+        UpdateTrainingEstimate();
         string[] axes = new[] { "(Linha de origem)", "(Escore IF)" }.Concat(columns).ToArray();
         x.ItemsSource = y.ItemsSource = axes;
         x.SelectedItem = columns.Contains("DAP") ? "DAP" : "(Linha de origem)";
@@ -132,6 +142,20 @@ internal sealed class IsolationForestView : ScrollViewer
     private static string Axis(ComboBox combo) => combo.SelectedIndex == 0 ? "$row" : combo.SelectedIndex == 1 ? "$score"
         : combo.SelectedItem?.ToString() ?? throw new InvalidOperationException("Selecione os eixos do gráfico.");
 
+    private void UpdateTrainingEstimate()
+    {
+        if (!int.TryParse(trainingLimit.Text, out int rows) || rows < 0) { trainingEstimate.Text = "Informe o máximo de linhas para estimar a memória da amostra."; return; }
+        int dimensions = features.SelectedItems.Count;
+        long bytes;
+        try { bytes = IsolationForest.EstimateTrainingPoolBytes(rows, dimensions); }
+        catch (OverflowException) { trainingEstimate.Text = "A estimativa ultrapassa o limite numérico."; return; }
+        string size = bytes >= 1024L * 1024 * 1024 ? $"{bytes / (1024d * 1024 * 1024):N1} GB" : $"{bytes / (1024d * 1024):N0} MB";
+        bool overBudget = bytes > IsolationForest.TrainingPoolMemoryBudgetBytes;
+        trainingEstimate.Text = $"Memória estimada para a amostra de valores: {size} de 512 MB." +
+            (dimensions == 0 ? " Selecione as variáveis para completar a estimativa." : " A leitura completa da tabela e a geração do relatório também usam memória.");
+        trainingEstimate.Foreground = overBudget ? System.Windows.Media.Brushes.Firebrick : System.Windows.Media.Brushes.DimGray;
+    }
+
     private async Task Run(bool train)
     {
         if (loadedSource == null) throw new InvalidOperationException("Selecione uma fonte e uma tabela válidas.");
@@ -139,6 +163,13 @@ internal sealed class IsolationForestView : ScrollViewer
         string path = paths[source.SelectedIndex];
         string ax = Axis(x), ay = Axis(y);
         string[] selected = features.SelectedItems.Cast<string>().ToArray();
+        IsolationForestOptions? options = null;
+        if (train)
+        {
+            options = new IsolationForestOptions(Integer(trees), Integer(samples), Integer(depth), Integer(maxFeatures), Ui.Number(contamination.Text) / 100,
+                string.IsNullOrWhiteSpace(threshold.Text) ? null : Ui.Number(threshold.Text), Integer(seed), Integer(trainingLimit));
+            IsolationForest.ValidateTrainingFootprint(options.TrainingLimit, selected.Length);
+        }
         var progress = owner.StartTableOperation("Lendo tabela para Isolation Forest…");
         var cancellation = owner.OperationCancellation;
         var data = await Task.Run(() => TableStore.Read(table));
@@ -147,10 +178,8 @@ internal sealed class IsolationForestView : ScrollViewer
         string modelId = train ? "" : savedModels.ElementAtOrDefault(models.SelectedIndex)?.S("id") ?? "";
         if (train)
         {
-            var options = new IsolationForestOptions(Integer(trees), Integer(samples), Integer(depth), Integer(maxFeatures), Ui.Number(contamination.Text) / 100,
-                string.IsNullOrWhiteSpace(threshold.Text) ? null : Ui.Number(threshold.Text), Integer(seed), Integer(trainingLimit));
             string modelName = name.Text;
-            model = await Task.Run(() => IsolationForest.Fit(data, selected, modelName, options, cancellation,
+            model = await Task.Run(() => IsolationForest.Fit(data, selected, modelName, options!, cancellation,
                 (percent, message) => progress.Report(new(percent, message))));
         }
         else model = SelectedModel();

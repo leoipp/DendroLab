@@ -137,6 +137,7 @@ internal sealed class TableToolsView : UserControl
         if (source.SelectedIndex < 0 && inputs.Count > 0) source.SelectedIndex = 0;
         var panel = Ui.Form();
         panel.Children.Add(owner.ToolHeader(calculateColumns ? "Gerar coluna" : stratify ? "Estratificar" : "Juntar tabelas"));
+        Ui.Section(panel, calculateColumns ? "Definir coluna calculada" : stratify ? "Definir estratos" : "Selecionar tabelas para juntar");
         inputGrid = Grid(220);
         inputGrid.ItemsSource = inputs;
         inputGrid.Columns.Add(
@@ -233,6 +234,7 @@ internal sealed class TableToolsView : UserControl
             Ui.AddHelp(panel, "Exemplo para [Código] = RDBOBA00123P20-001:\nESQUERDA([Código]; 6) → RDBOBA\nMEIO([Código]; 12; 3) → P20\nMEIO([Código]; 12; 1) → P\nSE(MEIO([Código]; 12; 1) = \"P\"; \"Plantio\"; \"Outro\")\nAs posições começam em 1. Use ponto nos decimais. Também: DIREITA, ANTES, DEPOIS, CONTEM, SUBSTITUIR, MAIUSCULA, MINUSCULA, APARAR, TAMANHO, +, -, *, / e & para juntar textos.");
             Ui.Field(panel, "Separador entre valores", derivedSeparator);
             Ui.AddHelp(panel, "Se a expressão ficar vazia, as colunas selecionadas serão concatenadas com o separador. As novas colunas ficam disponíveis para cálculo, filtro e estratificação.");
+            Ui.Section(panel,"Revisar e gravar colunas");
             var derivedButtons = new StackPanel { Orientation = Orientation.Horizontal };
             derivedButtons.Children.Add(Ui.Button("Criar coluna derivada", AddDerivedColumn));
             derivedButtons.Children.Add(Ui.Button("Remover coluna derivada", RemoveDerivedColumn));
@@ -251,6 +253,7 @@ internal sealed class TableToolsView : UserControl
             }
             if (!calculateColumns)
             {
+            Ui.Section(panel,"Filtros e resultados");
             Ui.Field(panel, "Filtros opcionais (todas as condições)", filterGrid);
             var buttons = new StackPanel { Orientation = Orientation.Horizontal };
             buttons.Children.Add(
@@ -284,6 +287,7 @@ internal sealed class TableToolsView : UserControl
         }
         else
         {
+            Ui.Section(panel,"Opções da junção");
             Ui.Field(panel, "Tabelas de origem", inputGrid);
             Ui.AddHelp(panel, "A junção cria automaticamente a coluna Fonte com o nome da tabela de origem de cada linha. Se já existir uma coluna Fonte, seus valores são preservados como Fonte_anterior.");
             var buttons = new StackPanel { Orientation = Orientation.Horizontal };
@@ -315,7 +319,7 @@ internal sealed class TableToolsView : UserControl
             Ui.AddHelp(panel, "Marcado: A, B, C + A, B, C, D → A, B, C. Usa nomes exatamente iguais e mantém a ordem da primeira tabela. Desmarcado: exige as mesmas colunas em todas as origens.");
             Ui.Field(panel, "Nome do resultado", name);
         }
-        Ui.AddHelp(panel, "Resultados salvos no banco compacto do projeto (.dlb), sem gerar Excel automaticamente. Salve o projeto antes de executar. Use Exportar na tabela quando precisar de Excel ou CSV.");
+        Ui.AddHelp(panel, "Resultados salvos no próprio arquivo DLB do projeto, sem gerar Excel automaticamente. Salve o projeto antes de executar. Use Exportar na tabela quando precisar de Excel ou CSV.");
         if (!calculateColumns) panel.Children.Add(
             Ui.AsyncButton(stratify ? "Gerar estratos" : "Juntar tabelas", () => owner.Execute(Run))
         );

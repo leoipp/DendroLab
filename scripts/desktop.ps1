@@ -1,4 +1,4 @@
-param([switch]$Test,[switch]$Publish,[switch]$NoBuild,[string]$FixtureFolder,[string]$CompatibilityProject)
+param([switch]$Test,[switch]$Publish,[switch]$NoBuild,[string]$FixtureFolder)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 Push-Location $root
@@ -18,13 +18,36 @@ try {
         if(-not $FixtureFolder){$FixtureFolder=Join-Path $root 'tests/Fixtures'}
         $FixtureFolder=[IO.Path]::GetFullPath($FixtureFolder)
         $arguments=@('--self-test',('"'+$testRoot+'"'),('"'+(Join-Path $FixtureFolder 'inventário.xlsx')+'"'),('"'+(Join-Path $FixtureFolder 'cadastro.xlsx')+'"'))
-        if($CompatibilityProject){$arguments+=('"'+[IO.Path]::GetFullPath($CompatibilityProject)+'"')}
         $failure=Join-Path $staging 'self-test-error.txt'
         if(Test-Path -LiteralPath $failure){Remove-Item -LiteralPath $failure}
         $qa=Start-Process -FilePath (Join-Path $staging 'DendroLab.exe') -ArgumentList $arguments -WindowStyle Hidden -PassThru
         if(-not $qa.WaitForExit(60000)){Stop-Process -Id $qa.Id;throw ('Tempo excedido nos testes WPF: '+$testRoot)}
         if($qa.ExitCode -ne 0){if(Test-Path -LiteralPath $failure){Get-Content -LiteralPath $failure};throw 'Falha nos testes WPF'}
         Get-Content -LiteralPath (Join-Path $testRoot 'self-test.log')
+        $duplicateRoot=Join-Path $root ('.build/desktop-tests/duplicates-'+[guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force $duplicateRoot | Out-Null
+        if(Test-Path -LiteralPath $failure){Remove-Item -LiteralPath $failure}
+        $duplicateArguments=@('--self-test-duplicates',('"'+$duplicateRoot+'"'))
+        $duplicateTest=Start-Process -FilePath (Join-Path $staging 'DendroLab.exe') -ArgumentList $duplicateArguments -WindowStyle Hidden -PassThru
+        if(-not $duplicateTest.WaitForExit(60000)){Stop-Process -Id $duplicateTest.Id;throw ('Tempo excedido no teste de duplicadas: '+$duplicateRoot)}
+        if($duplicateTest.ExitCode -ne 0){if(Test-Path -LiteralPath $failure){Get-Content -LiteralPath $failure};throw 'Falha no teste WPF de duplicadas'}
+        Get-Content -LiteralPath (Join-Path $duplicateRoot 'self-test.log')
+        $removalRoot=Join-Path $root ('.build/desktop-tests/removal-discard-'+[guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force $removalRoot | Out-Null
+        if(Test-Path -LiteralPath $failure){Remove-Item -LiteralPath $failure}
+        $removalArguments=@('--self-test-remove-discard',('"'+$removalRoot+'"'))
+        $removalTest=Start-Process -FilePath (Join-Path $staging 'DendroLab.exe') -ArgumentList $removalArguments -WindowStyle Hidden -PassThru
+        if(-not $removalTest.WaitForExit(60000)){Stop-Process -Id $removalTest.Id;throw ('Tempo excedido no teste de remoção transacional: '+$removalRoot)}
+        if($removalTest.ExitCode -ne 0){if(Test-Path -LiteralPath $failure){Get-Content -LiteralPath $failure};throw 'Falha no teste WPF de remoção transacional'}
+        Get-Content -LiteralPath (Join-Path $removalRoot 'self-test.log')
+        $menuRoot=Join-Path $root ('.build/desktop-tests/context-menu-icons-'+[guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force $menuRoot | Out-Null
+        if(Test-Path -LiteralPath $failure){Remove-Item -LiteralPath $failure}
+        $menuArguments=@('--self-test-context-menu-icons',('"'+$menuRoot+'"'))
+        $menuTest=Start-Process -FilePath (Join-Path $staging 'DendroLab.exe') -ArgumentList $menuArguments -WindowStyle Hidden -PassThru
+        if(-not $menuTest.WaitForExit(60000)){Stop-Process -Id $menuTest.Id;throw ('Tempo excedido no teste dos menus de contexto: '+$menuRoot)}
+        if($menuTest.ExitCode -ne 0){if(Test-Path -LiteralPath $failure){Get-Content -LiteralPath $failure};throw 'Falha no teste WPF dos menus de contexto'}
+        Get-Content -LiteralPath (Join-Path $menuRoot 'self-test.log')
         Write-Output ('Artefatos WPF: '+$testRoot)
     }
     if($Publish){
