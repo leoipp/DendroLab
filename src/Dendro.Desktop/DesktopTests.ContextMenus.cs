@@ -111,7 +111,7 @@ internal static partial class DesktopTests
         CheckMenuIcon(groupNode, "Renomear grupo…", CommandIconKind.Rename);
         CheckMenuIcon(groupNode, "Excluir grupo…", CommandIconKind.Remove);
         CheckMenuIcon(chartNode, "Abrir gráfico", CommandIconKind.Chart);
-        CheckMenuIcon(chartNode, "Regressões…", CommandIconKind.Regression);
+        CheckMenuIcon(chartNode, "Ajuste de regressão…", CommandIconKind.Regression);
         CheckMenuIcon(chartNode, "Fronteira de eficiência…", CommandIconKind.Frontier);
         CheckMenuIcon(chartNode, "ICA e IMA…", CommandIconKind.Increments);
         CheckMenuIcon(chartNode, "Renomear…", CommandIconKind.Rename);

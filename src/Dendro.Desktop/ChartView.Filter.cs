@@ -10,15 +10,16 @@ internal sealed partial class ChartView
 {
     private static readonly (string Name,FilterOperator Operator)[] PointFilters = [
         ("Igual a",FilterOperator.Equal),("Diferente de",FilterOperator.NotEqual),("Contém",FilterOperator.Contains),
-        ("Começa com",FilterOperator.StartsWith),("Maior que",FilterOperator.Greater),("Maior ou igual a",FilterOperator.GreaterOrEqual),
+        ("Começa com",FilterOperator.StartsWith),("Termina com",FilterOperator.EndsWith),("Maior que",FilterOperator.Greater),("Maior ou igual a",FilterOperator.GreaterOrEqual),
         ("Menor que",FilterOperator.Less),("Menor ou igual a",FilterOperator.LessOrEqual),("Está vazio",FilterOperator.Empty),("Não está vazio",FilterOperator.NotEmpty)];
 
     internal async Task<RegressionFilterPreview> PreviewPointFilter(JsonObject saved, ScatterPlot plot, IReadOnlyList<TableFilter> filters)
     {
         var source=new TableSource(session.Resolve(saved.S("path")),saved.S("sheet"),(int)saved.N("header_row",1));
-        int[] eligible=(plot.Data?["points"] as JsonArray??[]).Where(p=>!p.B("excluded")).Select(p=>(int)p.N("row")).ToArray();
         var progress=owner.StartTableOperation("Filtrando observações da regressão…");var cancellation=owner.OperationCancellation;
-        return await Task.Run(()=>RegressionPointFilter.Select(source,filters,eligible,cancellation,progress),cancellation);
+        return await Task.Run(()=>RegressionPointFilter.Select(source,filters,
+            ChartPointView.Open(plot.Data!,plot.Config).Points().Where(point=>!point.Excluded).Select(point=>point.Row),
+            cancellation,progress),cancellation);
     }
 
     private readonly Dictionary<string,Action> dataCleanups=new();
@@ -37,9 +38,9 @@ internal sealed partial class ChartView
             string path=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"DendroLab-regression-data-"+Guid.NewGuid().ToString("N")+".dlb");
             try
             {
-                var eligible=(plot.Data?["points"] as JsonArray??[]).Where(p=>!p.B("excluded")).Select(p=>(int)p.N("row")).ToHashSet();
                 var sourceTable=new TableSource(session.Resolve(saved.S("path")),saved.S("sheet"),(int)saved.N("header_row",1));
                 var ids=await Task.Run(()=>{
+                    var eligible=ChartPointView.Open(plot.Data!,plot.Config).Points().Where(point=>!point.Excluded).Select(point=>point.Row).ToHashSet();
                     using var cursor=new TableCursor(sourceTable);
                     using var writer=new CompactBankWriter(path);
                     string rowName="Linha_original";while(cursor.Columns.Contains(rowName))rowName+="_";
@@ -57,7 +58,7 @@ internal sealed partial class ChartView
                 plot.SelectionChanged+=rows=>{if(!disposed)browser.SelectSourceRows(rows.Where(positions.ContainsKey).Select(r=>positions[r]));};
                 browser.AddToolbarAction(Ui.AsyncIconButton("Voltar ao gráfico de origem", CommandIconKind.ArrowLeft, () => owner.Execute(async () =>
                 {
-                    owner.SetTool(this);
+                    owner.SetTool(this, reveal: !owner.IsChartFullScreen);
                     await owner.OpenChart(saved.S("path"), false, saved);
                 })));
                 browser.AddToolbarAction(Ui.AsyncIconButton("Desfazer última remoção", CommandIconKind.Undo, () => owner.Execute(async () =>
@@ -77,7 +78,7 @@ internal sealed partial class ChartView
                 browser.AddToolbarAction(Ui.AsyncIconButton("Selecionar linhas filtradas no gráfico",CommandIconKind.SelectRows,async()=>{
                     var rows=await Task.Run(()=>browser.ViewSourceRows().ToArray());plot.SelectRows(rows.Select(r=>ids[(int)r-2]));
                 }));
-                var remove = Ui.IconButton("Remover seleção do ajuste",CommandIconKind.Remove,plot.ConfirmRemoval);
+                var remove = Ui.IconButton("Remover seleção do ajuste (Ctrl+Delete)",CommandIconKind.Remove,plot.ConfirmRemoval);
                 var clear = Ui.IconButton("Limpar seleção no gráfico e na tabela",CommandIconKind.ClearSelection,plot.ClearSelection);
                 remove.IsEnabled = clear.IsEnabled = plot.SelectedRows.Length > 0;
                 plot.SelectionChanged += rows => remove.IsEnabled = clear.IsEnabled = rows.Length > 0;

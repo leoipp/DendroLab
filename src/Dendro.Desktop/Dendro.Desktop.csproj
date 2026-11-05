@@ -21,4 +21,7 @@
     <Resource Include="Assets\logo.ico" />
     <Resource Include="Assets\logo.png" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="Scripts\model_fitter_bridge.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

@@ -103,6 +103,51 @@ internal sealed partial class ProjectSession
         return Task.CompletedTask;
     }
 
+    internal string[] PreviewRemoveFiles(IEnumerable<string> paths) => PrepareFileRemoval(paths).Removed;
+
+    private (JsonObject Updated, string[] Removed) PrepareFileRemoval(IEnumerable<string> paths)
+    {
+        static string Key(string path) => path.Replace('/', '\\');
+        var updated = Data!.DeepClone().AsObject();
+        var requested = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string selected in requested)
+        {
+            if (Meta.Arr("processing_results").OfType<JsonObject>().Any(result => result.S("id").Length > 0
+                && (string.Equals(Key(result.S("path")), Key(selected), StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Key(result.S("source_path")), Key(selected), StringComparison.OrdinalIgnoreCase))))
+                throw new InvalidOperationException("Uma das tabelas selecionadas possui histórico de processamento preservado e não pode ser removida.");
+            var files = updated.Obj("_dendro").Arr("files");
+            int index = files.ToList().FindIndex(value => string.Equals(Key(value.Display()), Key(selected), StringComparison.OrdinalIgnoreCase));
+            if (index < 0) continue; // It may already have been removed as a dependent of an earlier selection.
+            foreach (string path in ProjectModels.RemoveFile(updated, index)) removed.Add(path);
+        }
+        if (Meta.Arr("processing_results").OfType<JsonObject>().Any(result => result.S("id").Length > 0
+            && removed.Any(path => string.Equals(Key(path), Key(result.S("path")), StringComparison.OrdinalIgnoreCase))))
+            throw new InvalidOperationException("A remoção atingiria versões históricas de processamento. O histórico precisa ser preservado.");
+        return (updated, removed.ToArray());
+    }
+
+    public Task RemoveFiles(IEnumerable<string> paths)
+    {
+        var (updated, removed) = PrepareFileRemoval(paths);
+        string database = Meta.S("database_path");
+        if (database.Length > 0)
+        {
+            string bank = Path.GetFullPath(Resolve(database));
+            string[] datasets = removed
+                .Select(path => CompactBankFile.Location(Resolve(path)))
+                .Where(location => location.Dataset.Length > 0
+                    && string.Equals(location.File, bank, StringComparison.OrdinalIgnoreCase))
+                .Select(location => location.Dataset)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            if (datasets.Length > 0) DeferBankRemoval(bank, datasets: datasets);
+        }
+        Replace(updated);
+        return Task.CompletedTask;
+    }
+
     internal string[] PreviewRemoveResultTable(string path, string sheet)
     {
         if (IsHistoricalTable(path)) throw new InvalidOperationException("As tabelas de uma versão histórica são preservadas. Crie uma revisão para aplicar fatores.");
@@ -260,6 +305,7 @@ internal sealed partial class ProjectSession
             }
         }
         copy.Obj("_dendro")["database_path"] = replacement;
+        copy.Obj("_dendro")["name"] = Path.GetFileNameWithoutExtension(path);
         try
         {
             var r = await WorkspaceOperations.Run(new() { ["op"] = "save", ["path"] = path, ["project"] = copy });

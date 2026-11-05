@@ -3,7 +3,9 @@ using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using Dendro.Core.Regression;
 
 namespace Dendro.Desktop;
 
@@ -12,6 +14,7 @@ internal sealed partial class ChartView : DockPanel
     private readonly MainWindow owner;
     private readonly ProjectSession session;
     private readonly bool fitting;
+    internal bool IsFitting => fitting;
     private JsonObject config = new(),
         metadata = new();
     private string[] paths = Array.Empty<string>();
@@ -40,25 +43,42 @@ internal sealed partial class ChartView : DockPanel
         ymax = Ui.Input();
     private readonly TextBlock formula = new() { TextWrapping = TextWrapping.Wrap, Padding = new Thickness(6, 4, 6, 4) };
     private readonly TextBox xTickStep=Ui.Input(), yTickStep=Ui.Input();
+    private readonly TextBox violinBandwidth = Ui.Input("1");
+    private readonly TextBox violinBins = Ui.Input("12");
+    private readonly ComboBox violinResolution = Ui.Combo(["48 pontos", "64 pontos", "96 pontos", "128 pontos", "192 pontos"]);
+    private readonly ComboBox violinOutlierRule = Ui.Combo(["1,5 × IQR (padrão)", "2 × IQR", "3 × IQR"]);
     private readonly CheckBox grid = new() { Content = "Grade", IsChecked = true },
         logx = new() { Content = "X logarítmico" },
         logy = new() { Content = "Y logarítmico" };
     private readonly Stack<JsonArray> undo = new();
     private readonly CheckBox compareModels = new() { Content = "Ajustar e comparar modelos", Margin = new Thickness(2, 5, 2, 7) };
+    private readonly CheckBox showCurrentCurve = new() { Content = "Mostrar curva vigente do catálogo", Margin = new Thickness(2, 5, 2, 5) };
+    private readonly ComboBox currentCurveSource = Ui.Combo(["Regressão salva", "Índice de sítio", "Crescimento e produção"]);
+    private string currentCurveMessage = "";
+    private readonly ComboBox comparePredictors = Ui.Combo([
+        "Todos (1P, 2P e 3P)",
+        "Somente 1P",
+        "Somente 2P",
+        "Somente 3P",
+        "1P + 2P",
+        "1P + 3P",
+        "2P + 3P",
+    ]);
     private readonly Dictionary<string, ChartWorkspace> chartWorkspaces = new();
     private readonly TextBlock status = Ui.Text("");
     private Button? fitCurrentGraph;
     private readonly ComboBox predictorCount = Ui.Combo(["1 variável (1P)", "2 variáveis (2P)", "3 variáveis (3P)"]);
     private FrameworkElement? predictorCountField, x2Field, x3Field;
-    private JsonObject? lastData;
+    private FrameworkElement? comparePredictorsField;
     private ScatterPlot? currentPlot;
+    private ViolinPlot? currentViolinPlot;
 
     public ChartView(MainWindow owner, ProjectSession session, bool fitting)
     {
         this.owner = owner;
         this.session = session;
         this.fitting = fitting;
-        var header = owner.ToolHeader(fitting ? "Regressões" : "Gráficos");
+        var header = owner.ToolHeader(fitting ? "Ajuste de regressão" : "Gráficos");
         header.Margin = new Thickness(10);
         DockPanel.SetDock(header, Dock.Top);
         Children.Add(header);
@@ -151,21 +171,52 @@ internal sealed partial class ChartView : DockPanel
         );
         if (!fitting)
             tabs.Items.Add(new TabItem { Header = "Aparência", Content = Ui.Scroll(appearance) });
+        if (!fitting)
+        {
+            var violin = Ui.Form();
+            Ui.Section(violin, "Distribuição e identificação de outliers");
+            Ui.Field(violin, "Bins no eixo X (2–100)", violinBins);
+            Ui.Field(violin, "Resolução da densidade", violinResolution);
+            Ui.Field(violin, "Suavização da distribuição", violinBandwidth);
+            Ui.Field(violin, "Limite de outlier", violinOutlierRule);
+            Ui.AddHelp(violin, "O eixo X é dividido em intervalos de mesma largura. Cada intervalo forma um violino com a distribuição dos valores de Y naquele trecho de X. A resolução controla a suavidade do contorno; a largura de banda também ajusta a suavização. Pontos além dos limites de Tukey são marcados como possíveis outliers.");
+            violinResolution.SelectedIndex = 2;
+            violinOutlierRule.SelectedIndex = 0;
+            tabs.Items.Add(new TabItem { Header = "Violino", Content = Ui.Scroll(violin) });
+        }
         var fit = Ui.Form();
         Ui.Section(fit, "Modelo de regressão");
         predictorCountField = Ui.Field(fit, "Número de variáveis", predictorCount);
         x2Field = Ui.Field(fit, "Variável X2", x2);
         x3Field = Ui.Field(fit, "Variável X3", x3);
+        System.Windows.Automation.AutomationProperties.SetAutomationId(x2, "Chart.X2");
+        System.Windows.Automation.AutomationProperties.SetAutomationId(x3, "Chart.X3");
         Ui.Field(fit, "Modelo", models);
         models.ToolTip = "Modelos cadastrados para o tipo de ajuste selecionado.";
         Ui.Field(fit, "Fórmula cadastrada", formula);
         formula.ToolTip = "Fórmula registrada no cadastro do modelo; exibida somente para consulta.";
         Ui.AddHelp(fit, "Em modelos 2P e 3P, a curva é desenhada em função de X1; X2 e X3 ficam fixos na média das observações usadas no ajuste.");
         compareModels.ToolTip = "Marcado: ajusta todos os modelos 1P, 2P e 3P cadastrados. X2 e X3 devem ser informados conforme o modelo.";
+        System.Windows.Automation.AutomationProperties.SetAutomationId(compareModels, "Chart.CompareModels");
         fit.Children.Add(compareModels);
+        comparePredictorsField = Ui.Field(fit, "Grupos de modelos", comparePredictors);
+        System.Windows.Automation.AutomationProperties.SetAutomationId(comparePredictors, "Chart.ComparePredictors");
+        comparePredictors.ToolTip = "Escolha quais modelos entram na comparação. Para 2P e 3P, informe as variáveis X2 e X3 correspondentes.";
+        if (fitting)
+        {
+            Ui.Section(fit, "Curva de referência vigente");
+            fit.Children.Add(showCurrentCurve);
+            Ui.Field(fit, "Catálogo", currentCurveSource);
+            Ui.AddHelp(fit, "A curva é sobreposta após o ajuste quando o nome do gráfico em Conteúdos corresponde ao ID do modelo vigente. Em Regressão salva, é usada a versão salva mais recente cujo ID ou nome corresponda ao gráfico.");
+            showCurrentCurve.Checked += (_, _) => currentCurveSource.IsEnabled = true;
+            showCurrentCurve.Unchecked += (_, _) => currentCurveSource.IsEnabled = false;
+            currentCurveSource.IsEnabled = false;
+        }
         fit.Children.Add(Ui.AsyncButton("Ajustar", () => owner.Execute(() => Generate("fit", compareModels.IsChecked == true))));
         if (fitting)
-            tabs.Items.Add(new TabItem { Header = "Regressão", Content = Ui.Scroll(fit) });
+            fit.Children.Add(Ui.AsyncButton("Ajuste em lote…", () => owner.Execute(GenerateFitBatch)));
+        if (fitting)
+            tabs.Items.Add(new TabItem { Header = "Ajuste de regressão", Content = Ui.Scroll(fit) });
         var export = Ui.Form();
         Ui.Section(export, "Tamanho da exportação");
         Ui.Field(export, "Largura (pixels)", width);
@@ -196,6 +247,12 @@ internal sealed partial class ChartView : DockPanel
         };
         compareModels.Checked += (_, _) => CompareModeChanged();
         compareModels.Unchecked += (_, _) => CompareModeChanged();
+        comparePredictors.SelectionChanged += (_, _) =>
+        {
+            if (loading) return;
+            UpdatePredictorFields();
+            RefreshModelOptions();
+        };
         foreach (var predictor in new[] { x2, x3 })
             predictor.SelectionChanged += (_, _) =>
             {
@@ -241,8 +298,10 @@ internal sealed partial class ChartView : DockPanel
             source.SelectionChanged += (_, _) => MarkChartModified();
             foreach (var combo in new[] { x, y, stratum, group, color })
                 combo.SelectionChanged += (_, _) => MarkChartModified();
-            foreach (var input in new[] { title, xlabel, ylabel, size, pointAlpha, xmin, xmax, ymin, ymax, xTickStep, yTickStep })
+            foreach (var input in new[] { title, xlabel, ylabel, size, pointAlpha, xmin, xmax, ymin, ymax, xTickStep, yTickStep, violinBandwidth, violinBins })
                 input.TextChanged += (_, _) => MarkChartModified();
+            violinResolution.SelectionChanged += (_, _) => MarkChartModified();
+            violinOutlierRule.SelectionChanged += (_, _) => MarkChartModified();
             foreach (var check in new[] { grid, logx, logy })
             {
                 check.Checked += (_, _) => MarkChartModified();
@@ -260,14 +319,28 @@ internal sealed partial class ChartView : DockPanel
 
     private void UpdatePredictorFields()
     {
+        int[] compareCounts = SelectedComparePredictors();
         int count = compareModels.IsChecked == true
-            ? metadata["models"]?.AsArray().OfType<JsonObject>().Select(m => (int)m.N("predictors", 1)).DefaultIfEmpty(1).Max() ?? 1
+            ? compareCounts.DefaultIfEmpty(1).Max()
             : predictorCount.SelectedIndex + 1;
         if (predictorCountField != null)
             predictorCountField.Visibility = compareModels.IsChecked == true ? Visibility.Collapsed : Visibility.Visible;
+        if (comparePredictorsField != null)
+            comparePredictorsField.Visibility = compareModels.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         if (x2Field != null) x2Field.Visibility = count >= 2 ? Visibility.Visible : Visibility.Collapsed;
         if (x3Field != null) x3Field.Visibility = count >= 3 ? Visibility.Visible : Visibility.Collapsed;
     }
+
+    private int[] SelectedComparePredictors() => comparePredictors.SelectedIndex switch
+    {
+        1 => [1],
+        2 => [2],
+        3 => [3],
+        4 => [1, 2],
+        5 => [1, 3],
+        6 => [2, 3],
+        _ => [1, 2, 3],
+    };
 
     private void CompareModeChanged()
     {
@@ -293,13 +366,17 @@ internal sealed partial class ChartView : DockPanel
                 .ToArray();
             if (fitting && graphSources.Length == 0)
                 throw new InvalidOperationException(
-                    "Crie um gráfico antes de abrir Regressões."
+                    "Crie um gráfico antes de abrir Ajuste de regressão."
                 );
             paths = fitting
                 ? graphSources.Select(c => c.S("path")).ToArray()
                 : session.Files.Where(session.IsTabular).ToArray();
             config = saved?.DeepClone().AsObject() ?? new();
+            showCurrentCurve.IsChecked = config.B("show_current_curve");
+            currentCurveSource.SelectedIndex = Math.Clamp((int)config.N("current_curve_source"), 0, 2);
+            currentCurveSource.IsEnabled = fitting && showCurrentCurve.IsChecked == true;
             predictorCount.SelectedIndex = Math.Clamp((int)config.N("predictor_count", 1) - 1, 0, 2);
+            comparePredictors.SelectedIndex = (int)config.N("fit_predictor_scope", 0);
             UpdatePredictorFields();
             source.ItemsSource = fitting
                 ? graphSources.Select(GraphLabel).ToArray()
@@ -333,8 +410,11 @@ internal sealed partial class ChartView : DockPanel
     {
         var definitions = metadata["models"] as JsonArray ?? new JsonArray();
         int count = predictorCount.SelectedIndex + 1;
+        int[] compareCounts = SelectedComparePredictors();
         var available = definitions.OfType<JsonObject>()
-            .Where(m => compareModels.IsChecked == true || (int)m.N("predictors", 1) == count)
+            .Where(m => compareModels.IsChecked == true
+                ? compareCounts.Contains((int)m.N("predictors", 1))
+                : (int)m.N("predictors", 1) == count)
             .ToArray();
         models.ItemsSource = available.Select(model => model.S("name")).ToArray();
         int selected = preferredId is { Length: > 0 }
@@ -348,7 +428,9 @@ internal sealed partial class ChartView : DockPanel
 
     private JsonObject[] AvailableModels() => (metadata["models"] as JsonArray ?? new JsonArray())
         .OfType<JsonObject>()
-        .Where(m => compareModels.IsChecked == true || (int)m.N("predictors", 1) == predictorCount.SelectedIndex + 1)
+        .Where(m => compareModels.IsChecked == true
+            ? SelectedComparePredictors().Contains((int)m.N("predictors", 1))
+            : (int)m.N("predictors", 1) == predictorCount.SelectedIndex + 1)
         .ToArray();
 
     private JsonObject? SelectedModel() => models.SelectedIndex >= 0
@@ -386,11 +468,10 @@ internal sealed partial class ChartView : DockPanel
             await WorkspaceOperations.Run(
                 new()
                 {
-                    ["op"] = "table",
+                    ["op"] = "columns",
                     ["path"] = session.Resolve(path),
                     ["sheet"] = config.S("sheet"),
                     ["header_row"] = config.N("header_row", 1),
-                    ["limit"] = 1000,
                 }
             )
         )["result"]!;
@@ -449,6 +530,22 @@ internal sealed partial class ChartView : DockPanel
             ymin.Text = config["ymin"].Display();
             xTickStep.Text=config["x_tick_step"].Display();yTickStep.Text=config["y_tick_step"].Display();
             ymax.Text = config["ymax"].Display();
+            violinResolution.SelectedIndex = config.N("violin_resolution", 96) switch
+            {
+                <= 48 => 0,
+                <= 64 => 1,
+                <= 96 => 2,
+                <= 128 => 3,
+                _ => 4,
+            };
+            violinBandwidth.Text = config.N("violin_bandwidth", 1).ToString(CultureInfo.CurrentCulture);
+            violinBins.Text = config.N("violin_bins", 12).ToString(CultureInfo.CurrentCulture);
+            violinOutlierRule.SelectedIndex = config.N("violin_outlier_iqr", 1.5) switch
+            {
+                <= 1.5 => 0,
+                <= 2 => 1,
+                _ => 2,
+            };
             var definitions = metadata["models"]!.AsArray();
             int selectedModel = config.S("model_id").Length > 0
                 ? definitions.ToList().FindIndex(d => d.S("id") == config.S("model_id"))
@@ -457,7 +554,6 @@ internal sealed partial class ChartView : DockPanel
             RefreshModelOptions(selectedDefinition?.S("id"), selectedModel);
             width.Text = config.N("width", 1600).ToString();
             height.Text = config.N("height", 1000).ToString();
-            lastData = r.AsObject();
         }
         finally
         {
@@ -509,9 +605,18 @@ internal sealed partial class ChartView : DockPanel
         var c = config.DeepClone().AsObject();
         c["x"] = x.SelectedItem?.ToString();
         int variableCount = compareModels.IsChecked == true
-            ? AvailableModels().Select(m => (int)m.N("predictors", 1)).DefaultIfEmpty(1).Max()
+            ? SelectedComparePredictors().DefaultIfEmpty(1).Max()
             : predictorCount.SelectedIndex + 1;
         c["predictor_count"] = variableCount;
+        c["fit_predictor_scope"] = comparePredictors.SelectedIndex < 0 ? 0 : comparePredictors.SelectedIndex;
+        c["fit_predictors"] = compareModels.IsChecked == true
+            ? new JsonArray(SelectedComparePredictors().Select(n => (JsonNode?)JsonValue.Create(n)).ToArray())
+            : null;
+        if (fitting)
+        {
+            c["show_current_curve"] = showCurrentCurve.IsChecked == true;
+            c["current_curve_source"] = Math.Max(0, currentCurveSource.SelectedIndex);
+        }
         var xVariables = new JsonArray(x.SelectedItem?.ToString());
         if (variableCount >= 2)
         {
@@ -540,6 +645,28 @@ internal sealed partial class ChartView : DockPanel
         c["y_label"] = string.IsNullOrWhiteSpace(ylabel.Text) ? c.S("y") : ylabel.Text;
         c["point_size"] = Ui.Number(size.Text);
         c["point_alpha"] = Ui.Number(pointAlpha.Text);
+        double bandwidth = Ui.Number(violinBandwidth.Text);
+        if (!double.IsFinite(bandwidth) || bandwidth < 0.25 || bandwidth > 4)
+            throw new InvalidDataException("A suavização do violino deve ficar entre 0,25 e 4.");
+        c["violin_bandwidth"] = bandwidth;
+        double binCount = Ui.Number(violinBins.Text);
+        if (!double.IsFinite(binCount) || binCount < 2 || binCount > 100 || binCount != Math.Truncate(binCount))
+            throw new InvalidDataException("O número de bins do violino deve ser um inteiro entre 2 e 100.");
+        c["violin_bins"] = (int)binCount;
+        c["violin_resolution"] = violinResolution.SelectedIndex switch
+        {
+            0 => 48,
+            1 => 64,
+            3 => 128,
+            4 => 192,
+            _ => 96,
+        };
+        c["violin_outlier_iqr"] = violinOutlierRule.SelectedIndex switch
+        {
+            1 => 2,
+            2 => 3,
+            _ => 1.5,
+        };
         foreach(var tick in new[]{("x_tick_step",xTickStep),("y_tick_step",yTickStep)})
         {
             if(string.IsNullOrWhiteSpace(tick.Item2.Text))c.Remove(tick.Item1);
@@ -632,7 +759,7 @@ internal sealed partial class ChartView : DockPanel
     }
 
     private string GraphLabel(JsonObject chart) =>
-        $"{chart.S("title", "Gráfico sem título")} · {session.ContentName(chart.S("path"))} / {chart.S("sheet")}";
+        $"{session.ContentName(chart.S("path"), chart)} · {session.ContentName(chart.S("path"))} / {chart.S("sheet")}";
 
     private string SourceLabel(string path)
     {
@@ -708,7 +835,7 @@ internal sealed partial class ChartView : DockPanel
         var c = Collect();
         if (!fitting && operation == "fit")
             throw new InvalidOperationException(
-                "Ajustes de modelo ficam na ferramenta Regressões."
+                "Ajustes de modelo ficam na ferramenta Ajuste de regressão."
             );
         if (operation == "fit")
         {
@@ -746,23 +873,44 @@ internal sealed partial class ChartView : DockPanel
             fitCurrentGraph.IsEnabled = true;
             fitCurrentGraph.ToolTip = "Abrir regressão usando este gráfico atualizado.";
         }
-        var validPoints = data["points"]!.AsArray().Where(p => !p!.B("excluded")).ToArray();
-        var distinctX = validPoints.Select(p => Math.Round(p!.N("x"), 10)).Distinct().Take(2).Count();
+        int keptPoints, removedPoints, distinctXCount;
+        if (ChartPointView.IsPacked(data))
+        {
+            keptPoints = (int)data.N("point_kept_count");
+            removedPoints = (int)data.N("point_count") - keptPoints;
+            distinctXCount = (int)data.N("point_distinct_x");
+        }
+        else
+        {
+            keptPoints = removedPoints = 0;
+            var distinctX = new HashSet<double>();
+            foreach (var point in ChartPointView.Open(data, config).Points())
+            {
+                if (point.Excluded) { removedPoints++; continue; }
+                keptPoints++;
+                if (distinctX.Count < 2) distinctX.Add(Math.Round(point.X, 10));
+            }
+            distinctXCount = distinctX.Count;
+        }
         status.Text =
-            $"{data["points"]!.AsArray().Count(p => !p.B("excluded")):N0} mantidos · {data["points"]!.AsArray().Count(p => p.B("excluded")):N0} removidos · {data.N("invalid"):N0} linhas inválidas."
+            $"{keptPoints:N0} mantidos · {removedPoints:N0} removidos · {data.N("invalid"):N0} linhas inválidas."
             + (
                 config["frontier_points"] is JsonArray envelope && envelope.Count > 0
                     ? $"\nFronteira calculada: {envelope.Count} pontos."
                     : ""
             )
-            + (!fitting && validPoints.Length > 1 && distinctX < 2
+            + (!fitting && keptPoints > 1 && distinctXCount < 2
                 ? "\nAviso: X tem apenas um valor distinto; confira os eixos antes de ajustar uma regressão."
-                : "");
+                : "")
+            + (currentCurveMessage.Length > 0 ? "\n" + currentCurveMessage : "");
     }
 
     private void Render(JsonObject data)
     {
         var saved = config.DeepClone().AsObject();
+        currentCurveMessage = fitting && saved.B("show_current_curve")
+            ? CurrentCurveOverlay.Add(session.Data!, saved, data, session.ContentName(saved.S("path"), saved))
+            : "";
         var plot = new ScatterPlot
         {
             Config = saved,
@@ -772,9 +920,9 @@ internal sealed partial class ChartView : DockPanel
         currentPlot = plot;
         ToggleRemoval();
         plot.ToolTip = fitting
-            ? "Clique ou desenhe um contorno para selecionar. Ctrl acrescenta pontos; Delete remove selecionados; Esc cancela."
+            ? "Selecione por clique ou contorno. Shift restringe o arraste a uma linha horizontal ou vertical; Ctrl acrescenta; Delete remove; Esc limpa. A seleção sincroniza com o violino."
             : null;
-        var regressionMenu = new MenuItem { Header = "Regressões…" };
+        var regressionMenu = new MenuItem { Header = "Ajuste de regressão…" };
         regressionMenu.Click += async (_, e) =>
         {
             e.Handled = true;
@@ -783,14 +931,94 @@ internal sealed partial class ChartView : DockPanel
         plot.ContextMenu = new ContextMenu();
         plot.ContextMenu.Items.Add(regressionMenu);
         var body = new System.Windows.Controls.Grid();
-        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var topPanel=new StackPanel();topPanel.Children.Add(PlotLegend.Create(saved,data));body.Children.Add(topPanel);
-        body.RowDefinitions.Add(
-            new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }
-        );
-        FrameworkElement? modelsPanel = null;
+        var graphTabs = new TabControl();
+        var scatterBody = new System.Windows.Controls.Grid();
+        scatterBody.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var topPanel = new StackPanel();
+        topPanel.Children.Add(PlotLegend.Create(saved, data));
+        scatterBody.Children.Add(topPanel);
+        scatterBody.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         System.Windows.Controls.Grid.SetRow(plot, 1);
-        body.Children.Add(plot);
+        scatterBody.Children.Add(plot);
+        graphTabs.Items.Add(new TabItem { Header = "Dispersão", Content = scatterBody });
+        var violinPlot = new ViolinPlot { Config = saved, Data = data, RemoveEnabled = fitting };
+        violinPlot.ToolTip = fitting
+            ? "Clique ou arraste para selecionar observações. Segure Shift para traçar uma linha horizontal ou vertical; Ctrl acrescenta à seleção."
+            : null;
+        currentViolinPlot = violinPlot;
+        plot.SelectionChanged += rows => violinPlot.SynchronizeSelection(rows);
+        // Route violin-originated selections through the plot's public selection
+        // path so toolbar actions, including Remove selection, update their state.
+        violinPlot.SelectionChanged += rows => plot.SelectRows(rows);
+        var violinSummary = new TextBlock
+        {
+            Text = "Distribuição de Y dentro de cada intervalo de X. Pontos destacados são possíveis outliers.",
+            Margin = new Thickness(12, 7, 8, 7),
+            Foreground = new SolidColorBrush(Color.FromRgb(73, 93, 112)),
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var selectOutliers = Ui.Button("Selecionar possíveis outliers na dispersão", () =>
+        {
+            if (violinPlot.SelectOutliers() > 0)
+                graphTabs.SelectedIndex = 0;
+        });
+        selectOutliers.Margin = new Thickness(6, 4, 10, 4);
+        selectOutliers.ToolTip = "Seleciona no gráfico de dispersão todas as linhas marcadas em vermelho como possíveis outliers.";
+        selectOutliers.IsEnabled = false;
+        ToolTipService.SetShowOnDisabled(selectOutliers, true);
+        var violinBody = new DockPanel();
+        var violinHeader = new Grid();
+        violinHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        violinHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        violinHeader.Children.Add(violinSummary);
+        Grid.SetColumn(selectOutliers, 1);
+        violinHeader.Children.Add(selectOutliers);
+        DockPanel.SetDock(violinHeader, Dock.Top);
+        violinPlot.SummaryChanged += summary =>
+        {
+            violinSummary.Text = summary;
+            selectOutliers.IsEnabled = violinPlot.OutlierCount > 0;
+        };
+        violinBody.Children.Add(violinHeader);
+        violinBody.Children.Add(new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = violinPlot,
+        });
+        graphTabs.Items.Add(new TabItem { Header = "Violino e outliers", Content = violinBody });
+        ChartWorkspace? workspace = null;
+        var graphSurface = new DockPanel();
+        var graphToolbar = new DockPanel { LastChildFill = true, Background = Brushes.White };
+        Button fullScreenButton = null!;
+        void UpdateFullScreenButton(bool isFullScreen)
+        {
+            if (workspace != null && owner.IsActiveChartWorkspace(workspace))
+                workspace.SetGraphFullScreen(isFullScreen);
+            fullScreenButton.Content = new CommandIcon
+            {
+                Kind = isFullScreen ? CommandIconKind.ExitFullScreen : CommandIconKind.FullScreen,
+                Width = 18, Height = 18,
+            };
+            fullScreenButton.ToolTip = isFullScreen
+                ? "Sair da tela cheia (Esc)"
+                : "Tela cheia · Ctrl+Alt ou Ctrl+Shift + → próximo gráfico / ← anterior";
+            System.Windows.Automation.AutomationProperties.SetName(fullScreenButton,
+                isFullScreen ? "Sair da tela cheia" : "Exibir gráfico em tela cheia");
+        }
+        void ToggleFullScreen() => owner.ToggleChartFullScreen();
+        owner.ChartFullScreenChanged += UpdateFullScreenButton;
+        fullScreenButton = Ui.IconButton("Tela cheia · Ctrl+Alt ou Ctrl+Shift + → próximo gráfico / ← anterior", CommandIconKind.FullScreen, ToggleFullScreen);
+        UpdateFullScreenButton(owner.IsChartFullScreen);
+        fullScreenButton.HorizontalAlignment = HorizontalAlignment.Right;
+        DockPanel.SetDock(fullScreenButton, Dock.Right);
+        graphToolbar.Children.Add(fullScreenButton);
+        DockPanel.SetDock(graphToolbar, Dock.Top);
+        graphSurface.Children.Add(graphToolbar);
+        graphSurface.Children.Add(graphTabs);
+        body.Children.Add(graphSurface);
+        FrameworkElement? modelsPanel = null;
         CheckBox? showRemovedToggle = null;
         if (fitting)
         {
@@ -897,8 +1125,20 @@ internal sealed partial class ChartView : DockPanel
                 Header = "Cadastrar em Crescimento e produção…",
                 Icon = new CommandIcon { Kind = CommandIconKind.Growth, Width = 16, Height = 16 },
             };
+            var saveRegression = new MenuItem
+            {
+                Header = "Salvar regressão para aplicação…",
+                Icon = new CommandIcon { Kind = CommandIconKind.Regression, Width = 16, Height = 16 },
+            };
+            var saveSiteIndexModel = new MenuItem
+            {
+                Header = "Salvar como curva-guia de índice de sítio…",
+                Icon = new CommandIcon { Kind = CommandIconKind.SiteIndex, Width = 16, Height = 16 },
+            };
             var fitMenu = new ContextMenu();
             fitMenu.Items.Add(registerGrowth);
+            fitMenu.Items.Add(saveRegression);
+            fitMenu.Items.Add(saveSiteIndexModel);
             table.ContextMenu = fitMenu;
             table.PreviewMouseRightButtonDown += (_, e) =>
             {
@@ -914,6 +1154,10 @@ internal sealed partial class ChartView : DockPanel
             {
                 registerGrowth.IsEnabled = table.SelectedItem is System.Data.DataRowView selectedRow
                     && GrowthFitRegistration.CanRegister(fits[(int)selectedRow["fit_index"]]!.AsObject());
+                saveRegression.IsEnabled = table.SelectedItem is System.Data.DataRowView selectedSaveRow
+                    && RegressionFitRegistration.CanRegister(fits[(int)selectedSaveRow["fit_index"]]!.AsObject());
+                saveSiteIndexModel.IsEnabled = table.SelectedItem is System.Data.DataRowView selectedSiteRow
+                    && SiteIndexFitRegistration.CanRegister(saved, fits[(int)selectedSiteRow["fit_index"]]!.AsObject());
             };
             registerGrowth.Click += async (_, e) =>
             {
@@ -921,6 +1165,20 @@ internal sealed partial class ChartView : DockPanel
                 if (table.SelectedItem is not System.Data.DataRowView selectedRow) return;
                 int index = (int)selectedRow["fit_index"];
                 await owner.Execute(() => GrowthFitRegistration.Open(owner, session, saved, fits[index]!.AsObject()));
+            };
+            saveRegression.Click += async (_, e) =>
+            {
+                e.Handled = true;
+                if (table.SelectedItem is not System.Data.DataRowView selectedRow) return;
+                int index = (int)selectedRow["fit_index"];
+                await owner.Execute(() => RegressionFitRegistration.Open(owner, session, saved, fits[index]!.AsObject()));
+            };
+            saveSiteIndexModel.Click += async (_, e) =>
+            {
+                e.Handled = true;
+                if (table.SelectedItem is not System.Data.DataRowView selectedSiteRow) return;
+                int index = (int)selectedSiteRow["fit_index"];
+                await owner.Execute(() => SiteIndexFitRegistration.Open(owner, session, saved, fits[index]!.AsObject()));
             };
             var restore =
                 saved["selected_fits"] is JsonArray selectedFits
@@ -959,12 +1217,11 @@ internal sealed partial class ChartView : DockPanel
             tablePanel.Children.Add(table);
             modelsPanel = tablePanel;
         }
-        ChartWorkspace? workspace = null;
-        plot.RemoveRequested += rows =>
+        void RemoveSelectedRows(int[] rows)
         {
             _ = owner.Execute(async () =>
             {
-                owner.SetTool(this);
+                owner.SetTool(this, reveal: !owner.IsChartFullScreen);
                 if (Identity(config) != Identity(saved))
                 {
                     await Load(saved.S("path"), saved);
@@ -973,15 +1230,29 @@ internal sealed partial class ChartView : DockPanel
                 await RemoveRows(rows);
                 saved["excluded"] = config["excluded"]?.DeepClone();
             });
-        };
+        }
+        plot.RemoveRequested += RemoveSelectedRows;
+        violinPlot.RemoveRequested += RemoveSelectedRows;
         var dataPanel = fitting ? AddRegressionTable(saved,plot,showRemovedToggle!) : null;
         FrameworkElement content = modelsPanel == null && dataPanel == null ? body : workspace = new ChartWorkspace(owner, body, modelsPanel, dataPanel);
+        if (workspace != null)
+            workspace.PreviewKeyDown += (_, e) =>
+            {
+                if (e.Key != Key.Delete || Keyboard.Modifiers != ModifierKeys.Control || plot.SelectedRows.Length == 0) return;
+                e.Handled = true;
+                plot.ConfirmRemoval();
+            };
         var document=owner.Document(
             Identity(saved),
             session.ContentName(saved.S("path"), saved),
             content,
             () => ActivatePlot(saved, plot)
         );
+        document.Closing += (_, _) =>
+        {
+            if (owner.IsChartFullScreen) owner.ExitChartFullScreen();
+            owner.ChartFullScreenChanged -= UpdateFullScreenButton;
+        };
         if (workspace != null) chartWorkspaces[Identity(saved)] = workspace;
         if(fitting)document.Closing+=(_,_)=>
         {
@@ -1011,7 +1282,7 @@ internal sealed partial class ChartView : DockPanel
 
     private async Task ActivateSavedGraph(JsonObject saved, ScatterPlot plot)
     {
-        owner.SetTool(this);
+        owner.SetTool(this, reveal: !owner.IsChartFullScreen);
         if (Identity(config) != Identity(saved))
         {
             undo.Clear();
@@ -1023,11 +1294,15 @@ internal sealed partial class ChartView : DockPanel
 
     private void ToggleRemoval()
     {
+        if (currentViolinPlot != null) currentViolinPlot.RemoveEnabled = fitting;
         if (currentPlot != null)
         {
             currentPlot.RemoveEnabled = fitting;
             if (!currentPlot.RemoveEnabled)
+            {
                 currentPlot.ClearSelection();
+                currentViolinPlot?.ClearSelection();
+            }
             currentPlot.Cursor = currentPlot.RemoveEnabled
                 ? System.Windows.Input.Cursors.Cross
                 : System.Windows.Input.Cursors.Arrow;
@@ -1084,22 +1359,34 @@ internal sealed partial class ChartView : DockPanel
     private async Task RefreshExclusionState(ScatterPlot plot, ChartWorkspace? workspace)
     {
         var excluded = config.Arr("excluded").Select(n => (int)JsonExtensions.Number(n)).ToHashSet();
-        var points = plot.Data["points"] as JsonArray ?? [];
-        foreach (var point in points.OfType<JsonObject>())
+        var points = ChartPointView.Open(plot.Data, config);
+        if (!ChartPointView.IsPacked(plot.Data))
+        foreach (var point in (plot.Data["points"] as JsonArray ?? []).OfType<JsonObject>())
         {
             int row = (int)point.N("row", -1);
             point["excluded"] = excluded.Contains(row);
         }
         plot.Config = config.DeepClone().AsObject();
         plot.Data = plot.Data.DeepClone().AsObject();
+        if (currentViolinPlot != null)
+        {
+            currentViolinPlot.Config = config.DeepClone().AsObject();
+            currentViolinPlot.Data = plot.Data;
+        }
         plot.ClearSelection();
         session.StoreChart(config);
         workspace?.RemoveModels();
-        int removed = points.Count(p => p.B("excluded"));
-        status.Text = $"{points.Count - removed:N0} mantidos · {removed:N0} removidos · {plot.Data.N("invalid"):N0} linhas inválidas.";
+        var counts = await Task.Run(() =>
+        {
+            int removed = 0, kept = 0;
+            foreach (var point in points.Points()) if (point.Excluded) removed++; else kept++;
+            return (kept, removed);
+        });
+        int kept = counts.kept, removed = counts.removed;
+        status.Text = $"{kept:N0} mantidos · {removed:N0} removidos · {plot.Data.N("invalid"):N0} linhas inválidas.";
         await RegressionDataReady;
         if (dataRowFilters.TryGetValue(Identity(config), out var updateRows))
-            await updateRows(points.OfType<JsonObject>().Where(p => !p.B("excluded")).Select(p => (int)p.N("row")));
+            await updateRows(points.Points().Where(point => !point.Excluded).Select(point => point.Row));
     }
 
     private void ClearFits()

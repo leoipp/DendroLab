@@ -7,6 +7,48 @@ namespace Dendro.Core.Processing;
 
 public static class FeaturePreparation
 {
+    private sealed class RowValueResolver
+    {
+        private readonly DataTable table;
+        private readonly IReadOnlyDictionary<string, int> symbols;
+        public RowValueResolver(DataTable table, IReadOnlyDictionary<string, int> symbols)
+        {
+            this.table = table;
+            this.symbols = symbols;
+            Resolve = ResolveValue;
+        }
+
+        public int Row { get; set; }
+        public Func<string, double> Resolve { get; }
+
+        private double ResolveValue(string symbol) => table.Number(Row, symbols[symbol]);
+    }
+
+    private sealed class GroupValueResolver(
+        DataTable table,
+        IReadOnlyDictionary<string, int> symbols,
+        IReadOnlyList<int> rows
+    ) : IReadOnlyList<Func<string, double>>
+    {
+        private readonly RowValueResolver rowValues = new(table, symbols);
+        public int Count => rows.Count;
+        public Func<string, double> this[int index]
+        {
+            get
+            {
+                rowValues.Row = rows[index];
+                return rowValues.Resolve;
+            }
+        }
+
+        public IEnumerator<Func<string, double>> GetEnumerator()
+        {
+            for (int i = 0; i < Count; i++) yield return this[i];
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     public static Dictionary<string, int> RegistryIndex(DataTable registry, string key)
     {
         int c = registry.Require(key);
@@ -22,17 +64,17 @@ public static class FeaturePreparation
         return index;
     }
 
-    public static void Join(DataTable input, DataTable registry, JsonObject config)
+    public static void Join(DataTable input, DataTable registry, JsonObject config, IReadOnlySet<string>? neededRegistryColumns = null)
     {
         RegistryAgeFallback.Apply(input, registry, config);
         int key = input.Require(config["arquivo_entrada"].S("chave", "Talhão"));
         var index = RegistryIndex(registry, config["cadastro"].S("chave", "Talhão"));
-        var map = Enumerable
-            .Range(0, registry.Width)
-            .Select(c =>
-                input.Column(registry.Text(0, c)) < 0 ? input.Ensure(registry.Text(0, c)) : -1
-            )
-            .ToArray();
+        var map = Enumerable.Range(0, registry.Width).Select(c =>
+        {
+            string name = registry.Text(0, c);
+            return input.Column(name) < 0 && (neededRegistryColumns == null || neededRegistryColumns.Contains(name))
+                ? input.Ensure(name) : -1;
+        }).ToArray();
         for (int r = 1; r < input.Count; r++)
         {
             if (!index.TryGetValue(input.Text(r, key), out int rr))
@@ -45,13 +87,49 @@ public static class FeaturePreparation
         }
     }
 
-    public static void Prepare(DataTable t, DataTable registry, JsonObject cfg)
+    public static void Prepare(DataTable t, DataTable registry, JsonObject cfg, IReadOnlySet<string>? modelFeatures = null)
     {
         var identification = new InventoryIdentity(t, cfg);
-        Join(t, registry, cfg);
         var cols = cfg["arquivo_entrada"]?["colunas"];
         var cc = cfg["cadastro"]?["colunas"];
         var h = cfg["ajuste_altura"]!;
+        var stats = h["estatisticas_parcela"] as JsonArray ?? [];
+        var customVariables = h["variaveis_customizadas"] as JsonArray ?? [];
+        HashSet<string>? neededRegistryColumns = modelFeatures == null ? null : new(modelFeatures, StringComparer.Ordinal);
+        if (neededRegistryColumns != null)
+        {
+            neededRegistryColumns.Add(cc.S("data_plantio", "Data de Plantio"));
+            foreach (var entry in stats.OfType<JsonObject>())
+                if (entry.S("coluna").Length > 0) neededRegistryColumns.Add(entry.S("coluna"));
+            foreach (var variable in customVariables.OfType<JsonObject>())
+            {
+                if (variable.S("fonte") == "cadastro")
+                    neededRegistryColumns.Add(variable.S("coluna", variable.S("nome")));
+                if (variable.S("tipo").StartsWith("data_diff_", StringComparison.Ordinal))
+                    neededRegistryColumns.Add(cc.S(variable.S("col_data2")));
+            }
+            string[] generated = stats.OfType<JsonObject>().Select(entry => entry.S("nome"))
+                .Concat(customVariables.OfType<JsonObject>().Select(entry => entry.S("nome")))
+                .Where(name => name.Length > 0).ToArray();
+            string[] availableSymbols = t.Rows[0].Select(value => value?.ToString() ?? "")
+                .Concat(registry.Rows[0].Select(value => value?.ToString() ?? ""))
+                .Concat(generated).Distinct(StringComparer.Ordinal).ToArray();
+            foreach (var entry in stats.OfType<JsonObject>().Concat(customVariables.OfType<JsonObject>()))
+            {
+                string expression = entry.S("formula");
+                if (expression.Length == 0) continue;
+                var textSource = Regex.Match(expression, @"^\s*(?:np\.where\(np\.isin\()?([^\[\]]+)\[\d+:\d+\]");
+                if (textSource.Success)
+                {
+                    string column = textSource.Groups[1].Value.Trim();
+                    if (registry.Column(column) >= 0) neededRegistryColumns.Add(column);
+                    continue;
+                }
+                foreach (string dependency in new Formula(expression, availableSymbols).Dependencies)
+                    if (registry.Column(dependency) >= 0) neededRegistryColumns.Add(dependency);
+            }
+        }
+        Join(t, registry, cfg, neededRegistryColumns);
         int dc = t.Require(cols.S("data_medicao", "Data")),
             pc = t.Require(cc.S("data_plantio", "Data de Plantio")),
             age = t.Ensure("Idade_anos"),
@@ -65,12 +143,21 @@ public static class FeaturePreparation
         int stand = t.Require(cols.S("talhao", "Talhão")),
             plot = t.Require(cols.S("parcela", "Parcela"));
         bool temporal = cfg["estatisticas"].B("chave_temporal_ativa");
-        var groups = Enumerable
-            .Range(1, t.Count - 1)
-            .GroupBy(identification.PlotKey)
-            .Select(g => g.ToArray())
-            .ToArray();
-        var stats = h["estatisticas_parcela"] as JsonArray ?? [];
+        Dictionary<string, List<int>>? groups = null;
+        IEnumerable<List<int>> GetGroups()
+        {
+            if (groups == null)
+            {
+                groups = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+                for (int row = 1; row < t.Count; row++)
+                {
+                    string key = identification.PlotKey(row);
+                    if (!groups.TryGetValue(key, out var rows)) groups.Add(key, rows = []);
+                    rows.Add(row);
+                }
+            }
+            return groups.Values;
+        }
         foreach (var entry in stats)
         {
             if (entry.S("formula").Length > 0)
@@ -79,7 +166,7 @@ public static class FeaturePreparation
             int from = t.Require(entry.S("coluna")),
                 dest = t.Ensure(name);
             Guard(dest, name);
-            foreach (var group in groups)
+            foreach (var group in GetGroups())
             {
                 double value = InventoryMath.Aggregate(
                     group.Select(r => t.Number(r, from)).Where(x => Filter(x, entry.S("filtro"))),
@@ -146,13 +233,25 @@ public static class FeaturePreparation
                 .Where(c => c != dest)
                 .ToDictionary(c => t.Text(0, c), c => c, StringComparer.Ordinal);
             var formula = new Formula(expression, symbols.Keys);
-            foreach (var group in groups)
+            if (!formula.UsesGroupRows)
             {
-                var rows = group
-                    .Select(r => (Func<string, double>)(s => t.Number(r, symbols[s])))
-                    .ToArray();
+                var rowValues = new RowValueResolver(t, symbols);
+                for (int r = 1; r < t.Count; r++)
+                {
+                    rowValues.Row = r;
+                    t.Set(r, dest, formula.Evaluate(rowValues.Resolve));
+                }
+                continue;
+            }
+            foreach (var group in GetGroups())
+            {
+                var rows = new GroupValueResolver(t, symbols, group);
+                var rowValues = new RowValueResolver(t, symbols);
                 foreach (int r in group)
-                    t.Set(r, dest, formula.Evaluate(s => t.Number(r, symbols[s]), rows));
+                {
+                    rowValues.Row = r;
+                    t.Set(r, dest, formula.Evaluate(rowValues.Resolve, rows));
+                }
             }
         }
         void Guard(int dest, string name)

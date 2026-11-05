@@ -12,6 +12,7 @@ public enum CommandIconKind
     Settings,
     Volume,
     Growth,
+    SiteIndex,
     Contents,
     Tools,
     History,
@@ -53,6 +54,15 @@ public enum CommandIconKind
     Restore,
     Map,
     Activate,
+    PairedMeasurements,
+    ApplyRegression,
+    NeuralNetwork,
+    RandomForest,
+    GradientBoosting,
+    SupportVectorMachine,
+    ModelValidation,
+    FullScreen,
+    ExitFullScreen,
 }
 
 public sealed class CommandIcon : FrameworkElement
@@ -99,6 +109,7 @@ public sealed class CommandIcon : FrameworkElement
         [CommandIconKind.Settings] = ["M5 3 V21 M12 3 V21 M19 3 V21", "M3 7 H7 V11 H3 Z M10 14 H14 V18 H10 Z M17 6 H21 V10 H17 Z"],
         [CommandIconKind.Volume] = ["M4 8 L12 4 20 8 V17 L12 21 4 17 Z M4 8 L12 12 20 8 M12 12 V21", "M8 6 L16 10 M16 10 V14"],
         [CommandIconKind.Growth] = ["M4 20 H21 M7 20 V13 M12 20 V8 M17 20 V4", "M4 11 L10 6 14 7 20 2 M16.5 2 H20 V5.5"],
+        [CommandIconKind.SiteIndex] = ["M4 20 H21 M6 19 V14 M11 19 V9 M16 19 V4", "M4 14 C8 14 8 9 12 9 C16 9 16 4 21 4 M17 4 H21 V8"],
         [CommandIconKind.Contents] = ["M4 3.5 H20 V20.5 H4 Z M4 8.5 H20", "M7.5 12 H9 M12 12 H17 M7.5 16.5 H9 M12 16.5 H17"],
         [CommandIconKind.Tools] = ["M3 9 H21 V21 H3 Z M8 9 V5 H16 V9 M3 13 H21 M10 13 V15 H14 V13", "M7 18 H10 M14 18 H17"],
         [CommandIconKind.History] = ["M4 8 A9 9 0 1 1 4 17 M3 3 V9 H9", "M12 7 V12 L16 14"],
@@ -138,6 +149,15 @@ public sealed class CommandIcon : FrameworkElement
         [CommandIconKind.Restore] = ["M4 12 A8 8 0 1 0 7 5", "M4 3 V8 H9"],
         [CommandIconKind.Activate] = ["M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z", "M7.5 12 L10.5 15 16.5 9"],
         [CommandIconKind.Map] = ["M3 5 L9 3 15 5 21 3 V19 L15 21 9 19 3 21 Z M9 3 V19 M15 5 V21", "M6 9 H6.1 M12 11 H12.1 M18 8 H18.1"],
+        [CommandIconKind.PairedMeasurements] = ["M4 5 H9 V10 H4 Z M15 14 H20 V19 H15 Z", "M9 7 H13 A4 4 0 0 1 17 11 V14 M14 11 L17 14 20 11 M15 17 H11 A4 4 0 0 1 7 13 V10 M10 13 L7 10 4 13"],
+        [CommandIconKind.ApplyRegression] = ["M4 20 H21 M5 18 L10 13 14 15 20 5", "M16 5 H20 V9 M8 7 H12 M8 10 H11"],
+        [CommandIconKind.NeuralNetwork] = ["M5 5 A2 2 0 1 0 5 9 A2 2 0 1 0 5 5 M5 15 A2 2 0 1 0 5 19 A2 2 0 1 0 5 15 M18 10 A2 2 0 1 0 18 14 A2 2 0 1 0 18 10", "M7 7 L16 11 M7 17 L16 13 M5 9 V15 M18 5 V9 M18 15 V19"],
+        [CommandIconKind.RandomForest] = ["M5 20 V11 M5 14 L2 11 M5 15 L8 12 M12 20 V8 M12 12 L9 9 M12 13 L15 10 M19 20 V11 M19 14 L16 11 M19 14 L22 11", "M12 8 C6 8 7 3 7 3 C11 3 12 5 12 8 M12 8 C13 3 18 3 18 3 C18 7 15 8 12 8"],
+        [CommandIconKind.GradientBoosting] = ["M4 20 H21 M5 17 L10 13 14 10 20 5", "M16 5 H20 V9 M5 8 L9 5 M5 11 L9 8 M5 14 L9 11"],
+        [CommandIconKind.SupportVectorMachine] = ["M3 20 H21 M4 17 L8 13 12 14 19 5", "M5 6 L7 8 M11 4 L13 6 M17 11 L19 13 M7 16 L9 18 M14 14 L16 16"],
+        [CommandIconKind.ModelValidation] = ["M4 20 H21 M5 18 L10 12 14 14 20 5", "M5 5 H10 V10 H5 Z M15 15 H20 V20 H15 Z"],
+        [CommandIconKind.FullScreen] = ["M3 9 V3 H9 M3 3 L9 9 M15 3 H21 V9 M15 9 L21 3 M3 15 V21 H9 M3 21 L9 15 M15 21 H21 V15 M15 15 L21 21"],
+        [CommandIconKind.ExitFullScreen] = ["M9 3 V9 H3 M15 3 V9 H21 M9 21 V15 H3 M15 21 V15 H21"],
     };
     private static readonly Dictionary<CommandIconKind, Geometry[]> Shapes = Paths.ToDictionary(
         pair => pair.Key,

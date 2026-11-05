@@ -13,7 +13,7 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
     public bool IsOpen => Data != null;
     public string Caption =>
         IsOpen
-            ? $"{Data!.Obj("_dendro").S("name", "Projeto")}{(IsDirty ? " *" : "")} — DendroLab"
+            ? $"{(FilePath.Length > 0 ? Path.GetFileNameWithoutExtension(FilePath) : Data!.Obj("_dendro").S("name", "Projeto"))}{(IsDirty ? " *" : "")} — DendroLab"
             : "DendroLab";
     public JsonObject Meta =>
         Data?.Obj("_dendro") ?? throw new InvalidOperationException("Abra ou crie um projeto.");
@@ -78,7 +78,9 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
         var r = await WorkspaceOperations.Run(new() { ["op"] = "open", ["path"] = path });
         pendingBankRemovals.Clear();
         FilePath = Path.GetFullPath(path);
-        Replace(r["project"]!.AsObject(), false);
+        var project = r["project"]!.AsObject();
+        project.Obj("_dendro")["name"] = Path.GetFileNameWithoutExtension(FilePath);
+        Replace(project, false);
         historyRevision = -1;
         await RefreshHistory(true);
     }
@@ -233,14 +235,38 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
     {
         ProjectWorkFolder();
         var batch = results.ToArray();
-        await Task.Run(() => Dendro.Core.Tabular.CompactBankFile.Import(Resolve(Meta.S("database_path")),
-            batch.Select(r => (r.Path, Path.GetFileName(r.Path))).ToArray()));
+        string bankPath = Resolve(Meta.S("database_path"));
+        var usedDatasets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (File.Exists(bankPath))
+        {
+            using var reader = new Dendro.Core.Tabular.CompactBankReader(bankPath);
+            foreach (var table in reader.Catalog.Tables)
+                usedDatasets.Add(table.Dataset);
+        }
+        foreach (string existing in Files.Where(IsManagedTable))
+            usedDatasets.Add(Path.GetFileName(existing));
+
+        var prepared = new List<(Dendro.Core.Tabular.TableResult Result, string Path, string Dataset)>();
+        foreach (var result in batch)
+        {
+            string originalName = Path.GetFileName(result.Path);
+            string stem = Path.GetFileNameWithoutExtension(originalName);
+            string extension = Path.GetExtension(originalName);
+            string dataset = originalName;
+            for (int suffix = 2; !usedDatasets.Add(dataset); suffix++)
+                dataset = stem + "_" + suffix + extension;
+            prepared.Add((result, Path.Combine(Meta.S("database_path"), dataset), dataset));
+        }
+
+        await Task.Run(() => Dendro.Core.Tabular.CompactBankFile.Import(bankPath,
+            prepared.Select(item => (item.Result.Path, item.Dataset)).ToArray()));
         var files = Meta.Arr("files");
         var known = Files.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var options = Meta.Arr("file_options");
-        foreach (var result in batch)
+        foreach (var item in prepared)
         {
-            string path = Path.Combine(Meta.S("database_path"), Path.GetFileName(result.Path));
+            var result = item.Result;
+            string path = item.Path;
             if (known.Add(path)) files.Add(path);
             var previous = options.OfType<JsonObject>().FirstOrDefault(o => string.Equals(o.S("path"), path, StringComparison.OrdinalIgnoreCase));
             if (previous != null) options.Remove(previous);

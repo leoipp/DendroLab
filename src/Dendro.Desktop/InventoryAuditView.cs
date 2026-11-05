@@ -21,6 +21,7 @@ internal sealed class InventoryAuditView : ScrollViewer
     private readonly TextBox volume=Ui.Input("1000"), height=Ui.Input("50"), dap=Ui.Input("80"), density=Ui.Input("2000"),
         age=Ui.Input("5"), minimum=Ui.Input("8"), iqr=Ui.Input("3"), limit=Ui.Input("200"), decline=Ui.Input("0");
     private string[] paths=[];
+    private JsonObject[]? resultRuns;
     private bool loading;
     internal InventoryAuditView(MainWindow owner,ProjectSession session)
     {
@@ -58,6 +59,7 @@ internal sealed class InventoryAuditView : ScrollViewer
     internal async Task Initialize(string? path=null,string? sheet=null)
     {
         loading=true;
+        resultRuns=SortedResults();
         paths=session.Files.Where(session.IsTabular).ToArray();
         result.ItemsSource=paths.Select(p=>ResultLabel(p)).ToArray();
         origin.ItemsSource=paths.Select(p=>session.ContentName(p)).ToArray();
@@ -69,9 +71,10 @@ internal sealed class InventoryAuditView : ScrollViewer
         if(result.SelectedIndex>=0)await SelectResult(sheet);
     }
     private bool SamePath(string a,string b) => a.Length>0 && b.Length>0 && string.Equals(session.Resolve(a),session.Resolve(b),StringComparison.OrdinalIgnoreCase);
-    private IEnumerable<JsonObject> Results()=>session.Meta.Arr("processing_results").OfType<JsonObject>()
+    private JsonObject[] SortedResults()=>session.Meta.Arr("processing_results").OfType<JsonObject>()
         .Where(r=>r.Arr("sheets").Any(s=>s.Display() is "DIRETO - PARCELAS" or ProcessingHistory.Plots))
-        .OrderByDescending(r=>DateTimeOffset.TryParse(r.S("created"),out var date)?date:DateTimeOffset.MinValue);
+        .OrderByDescending(r=>DateTimeOffset.TryParse(r.S("created"),out var date)?date:DateTimeOffset.MinValue).ToArray();
+    private IEnumerable<JsonObject> Results()=>resultRuns ??= SortedResults();
     private string ResultLabel(string path)
     {
         var run=Results().FirstOrDefault(r=>SamePath(r.S("path"),path));

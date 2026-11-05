@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Dendro.Core.Configuration;
 using Dendro.Core.Mathematics;
 using Dendro.Core.Spreadsheets;
+using Dendro.Core.Tabular;
 
 namespace Dendro.Core.Processing;
 
@@ -22,7 +23,15 @@ public static class InventoryReport
         ProcessingResult result,
         bool compact = false,
         Action<int, string>? progress = null,
-        CancellationToken cancellation = default
+        CancellationToken cancellation = default,
+        int? keepFileFilledHeightCount = null,
+        CompactBankReader? adjustedSourceReader = null,
+        CompactTable? adjustedSourceTable = null,
+        string[]? adjustedSourceColumns = null,
+        int[]? originalSourceRows = null,
+        CompactBankReader? calculationSourceReader = null,
+        CompactTable? calculationSourceTable = null,
+        IReadOnlySet<string>? appliedEquationCodes = null
     )
     {
         bool debug = cfg["ajuste_altura"].B("debug"),
@@ -31,15 +40,20 @@ public static class InventoryReport
                 (cfg["curvas_crescimento"]?["equacoes"] as JsonArray)?.Count > 0
                 && cfg["comparativo_ifc"].B("ativo", true);
         cancellation.ThrowIfCancellationRequested();
-        var adjusted = new DataTable();
+        // Reuse the prepared table when the adjusted sheet needs either all
+        // columns (DLB) or only the original columns (Excel). This avoids cloning
+        // every cell of a potentially multi-million-row inventory. History keeps
+        // its original input snapshot, so that mode still gets its own table.
+        DataTable adjusted = !debug && !ProcessingHistory.Enabled(cfg) ? input : new DataTable();
         int adjustedWidth = compact || debug ? input.Width : original;
-        for (int r = 0; r < input.Count; r++)
-            adjusted.Add(
-                Enumerable
-                    .Range(0, adjustedWidth)
-                    .Select(c => input.Value(r, c))
-                    .ToArray()
-            );
+        if (!ReferenceEquals(adjusted, input))
+            for (int r = 0; r < input.Count; r++)
+                adjusted.Add(
+                    Enumerable
+                        .Range(0, adjustedWidth)
+                        .Select(c => input.Value(r, c))
+                        .ToArray()
+                );
         if (debug)
             foreach (
                 string name in new[]
@@ -64,17 +78,19 @@ public static class InventoryReport
             }
         var byplot = Summary(plots, false, temporal, curves, debug);
         var bystand = Summary(stands, true, temporal, curves, debug);
-        var height = Height(input, cfg);
+        bool includeHeight = ProcessingHistory.Enabled(cfg) || cfg.At("saida.sheets").B("h_ajuste", true);
+        var height = includeHeight ? Height(input, cfg, keepFileFilledHeightCount) : new DataTable();
         var stats = new DataTable();
         Statistics(stats, plots, cfg, true);
         Statistics(stats, plots, cfg, false);
         stats.Add(
             "n = parcelas; IC = média ± t × erro padrão. Área efetiva deduplicada por talhão. Versões das curvas são escolhidas pelo usuário."
         );
-        var graphs = new DataTable(["DAP", "H", "VTCC"]);
-        for (int r = 1; r < calc.Count; r++)
-            if (At(calc, r, "DAP") > 0)
-                graphs.Add(At(calc, r, "DAP"), At(calc, r, "H"), At(calc, r, "VTCC"));
+        DataTable? graphs = compact ? null : new DataTable(["DAP", "H", "VTCC"]);
+        if (graphs != null)
+            for (int r = 1; r < calc.Count; r++)
+                if (At(calc, r, "DAP") > 0)
+                    graphs.Add(At(calc, r, "DAP"), At(calc, r, "H"), At(calc, r, "VTCC"));
         var audit = new DataTable([
             "Tipo",
             "ID",
@@ -100,11 +116,9 @@ public static class InventoryReport
                 if (type == 0 && eq.S("tipo_volume", "VTCC") != "VTCC") continue;
                 var source = type == 0 ? calc : plots;
                 string key = type == 0 ? "EQ_COD" : "CURVA_COD";
-                if (
-                    !Enumerable
-                        .Range(1, source.Count - 1)
-                        .Any(r => Text(source, r, key) == eq.S("codigo"))
-                )
+                if (appliedEquationCodes?.Contains(eq.S("codigo")) == false
+                    || appliedEquationCodes == null && !Enumerable.Range(1, source.Count - 1)
+                        .Any(r => Text(source, r, key) == eq.S("codigo")))
                     continue;
                 bool growth = type == 1;
                 audit.Add(
@@ -146,6 +160,19 @@ public static class InventoryReport
         );
         info.Add("Árvores", (double)result.Trees);
         info.Add("DAPd e Hd", $"Média das {cfg.At("processador").N("n_dominantes_parcela", 5):N0} árvores com maior DAP em cada parcela; Hd usa as mesmas árvores. Níveis superiores ponderam pela área das parcelas.");
+        if (cfg.At("processador").B("calcular_is"))
+        {
+            info.Add("Índice de sítio (IS)", "A equação vigente é escolhida pelo CURVA_COD de cada parcela. IS = Y × f(idade-base) / f(idade da parcela); Y é DAPd ou Hd conforme a equação. Níveis acima ponderam IS pela área da parcela.");
+            foreach (string code in Enumerable.Range(1, plots.Count - 1)
+                .Select(row => Text(plots, row, "CURVA_COD"))
+                .Where(code => code.Length > 0).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+            {
+                var siteModel = (cfg.At("_dendro.site_index_models") as JsonArray ?? [])
+                    .OfType<JsonObject>().FirstOrDefault(model => model.S("codigo") == code && model.B("vigente", true));
+                if (siteModel != null)
+                    info.Add("IS · " + code, $"{siteModel.S("source_y")} · base {siteModel.N("reference_age"):G6} {siteModel.S("age_unit")} · {siteModel.S("formula")}");
+            }
+        }
         info.Add("Fator volumétrico", ProcessingHistory.Enabled(cfg) && cfg.At("processador.execucao").N("number") > 1
             ? "Por " + cfg.At("processador.execucao").S("factor_scope") + "; consulte FATORES APLICADOS e os resultados por árvore/parcela."
             : cfg["volume"].N("fator", 1));
@@ -183,23 +210,104 @@ public static class InventoryReport
         Add("resumo_byplot", "RESUMO - BYPLOT", byplot);
         Add("resumo_bytalhao", "RESUMO - BYTALHAO", bystand);
         Add("estatisticas_inv", "ESTATISTICAS INV", stats);
-        if (!compact) Add("graficos", "Graficos", graphs);
+        if (graphs != null) Add("graficos", "Graficos", graphs);
         Add("modelos_aplicados", "MODELOS APLICADOS", audit);
         Add("informacoes", "INFORMACOES", info);
         if (debug)
             Add("calculos", "CALCULOS", calc);
         ProcessingHistory.AddCanonicalSheets(sheets, cfg, input, original, calc, plots, stands);
+        if (!compact && ReferenceEquals(adjusted, input))
+            input.TrimWidth(original);
         if (compact)
         {
             using var writer = new Dendro.Core.Tabular.CompactBankWriter(path);
-            long totalRows = sheets.Sum(s => (long)Math.Max(0, s.Table.Count - 1)), written = 0;
+            long totalRows = sheets.Sum(s => (long)Math.Max(0, s.Table.Count - 1))
+                + (calculationSourceTable?.Rows ?? 0), written = 0;
             foreach (var sheet in sheets)
             {
                 cancellation.ThrowIfCancellationRequested();
                 var table = sheet.Table;
-                int width = table.Width;
-                var columns = Enumerable.Range(0, width).Select(c => table.Text(0, c)).ToArray();
+                bool streamOriginal = sheet.Name == "AJUSTADO"
+                    && adjustedSourceReader != null
+                    && adjustedSourceTable != null
+                    && adjustedSourceColumns != null;
+                bool streamCalculation = sheet.Name == "RESULTADO - ARVORES"
+                    && calculationSourceReader != null
+                    && calculationSourceTable != null;
+                int width;
+                string[] columns;
+                if (streamOriginal)
+                {
+                    columns = adjustedSourceColumns!
+                        .Concat(Enumerable.Range(0, table.Width).Select(c => table.Text(0, c)))
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray();
+                    width = columns.Length;
+                    if (adjustedSourceTable!.Columns.Length != adjustedSourceColumns!.Length
+                        || !adjustedSourceTable.Columns.SequenceEqual(adjustedSourceColumns, StringComparer.Ordinal))
+                        throw new InvalidDataException("As colunas de origem do AJUSTADO mudaram durante o processamento.");
+                    if (originalSourceRows != null && originalSourceRows.Length != table.Count)
+                        throw new InvalidDataException("O mapeamento de linhas do AJUSTADO está inconsistente.");
+                }
+                else
+                {
+                    width = table.Width;
+                    columns = Enumerable.Range(0, width).Select(c => table.Text(0, c)).ToArray();
+                }
                 string id = writer.AddTable(columns, sheet.Name);
+                if (streamCalculation)
+                {
+                    if (!columns.SequenceEqual(calculationSourceTable!.Columns, StringComparer.Ordinal))
+                        throw new InvalidDataException("As colunas do resultado por árvore mudaram durante o processamento.");
+                    long calculationRow = 0;
+                    foreach (var cells in calculationSourceReader!.Rows(calculationSourceTable))
+                    {
+                        if ((calculationRow++ & 2047) == 0)
+                        {
+                            cancellation.ThrowIfCancellationRequested();
+                            progress?.Invoke(85 + (int)(13 * written / Math.Max(1, totalRows)),
+                                $"Gravando RESULTADO - ARVORES: {written:N0} de {totalRows:N0} linhas…");
+                        }
+                        writer.AddOwned(id, cells);
+                        written++;
+                    }
+                    if (calculationRow != calculationSourceTable.Rows)
+                        throw new InvalidDataException("A contagem do resultado por árvore mudou durante a gravação.");
+                    continue;
+                }
+                if (streamOriginal)
+                {
+                    int[] overlayColumns = columns.Select(table.Column).ToArray();
+                    int processedRow = 1;
+                    long sourceRow = 0;
+                    foreach (var sourceCells in adjustedSourceReader!.Rows(adjustedSourceTable!))
+                    {
+                        sourceRow++;
+                        if ((sourceRow & 2047) == 1)
+                        {
+                            cancellation.ThrowIfCancellationRequested();
+                            progress?.Invoke(85 + (int)(13 * written / Math.Max(1, totalRows)),
+                                $"Gravando AJUSTADO: {written:N0} de {totalRows:N0} linhas…");
+                        }
+                        int expectedSourceRow = originalSourceRows == null
+                            ? checked((int)sourceRow)
+                            : processedRow < originalSourceRows.Length ? originalSourceRows[processedRow] : int.MaxValue;
+                        if (sourceRow < expectedSourceRow) continue;
+                        if (sourceRow > expectedSourceRow)
+                            throw new InvalidDataException("Não foi possível alinhar as linhas originais com o resultado AJUSTADO.");
+                        var cells = new object?[width];
+                        Array.Copy(sourceCells, cells, Math.Min(sourceCells.Length, adjustedSourceColumns!.Length));
+                        for (int column = 0; column < overlayColumns.Length; column++)
+                            if (overlayColumns[column] >= 0)
+                                cells[column] = table.Value(processedRow, overlayColumns[column]);
+                        writer.AddOwned(id, cells);
+                        written++;
+                        processedRow++;
+                    }
+                    if (processedRow != table.Count)
+                        throw new InvalidDataException("O resultado AJUSTADO não corresponde às linhas da base original.");
+                    continue;
+                }
                 for (int r = 1; r < table.Count; r++)
                 {
                     if ((r - 1) % 2048 == 0)
@@ -209,7 +317,7 @@ public static class InventoryReport
                     }
                     var cells = new object?[width];
                     for (int c = 0; c < width; c++) cells[c] = table.Value(r, c);
-                    writer.Add(id, cells);
+                    writer.AddOwned(id, cells);
                     written++;
                 }
             }
@@ -259,6 +367,7 @@ public static class InventoryReport
                 "Vol_Esperado_ha",
                 "Dif_IFC_pct",
                 "IcV",
+                "IS",
             ]
             :
             [
@@ -282,11 +391,14 @@ public static class InventoryReport
                 "Vol_Esperado_ha",
                 "Dif_IFC_pct",
                 "IcV",
+                "IS",
             ];
         var columns = names
             .Where(
                 (name, i) =>
-                    (temporal || name != "Ano_Medicao") && (curves || i < (stand ? 12 : 17))
+                    (temporal || name != "Ano_Medicao")
+                    && (curves || i < (stand ? 12 : 17) || name == "IS")
+                    && (name != "IS" || source.Column("IS") >= 0)
             )
             .ToList();
         if (debug && !stand)
@@ -304,20 +416,32 @@ public static class InventoryReport
         return output;
     }
 
-    private static DataTable Height(DataTable input, JsonObject cfg)
+    private static DataTable Height(DataTable input, JsonObject cfg, int? keepFileFilledHeightCount = null)
     {
         var output = new DataTable();
         output.Add("ESTATÍSTICAS DO AJUSTE DE ALTURA (H) - RNA POR LOTE");
         output.Add();
         output.Add("ESTATÍSTICAS GERAIS (TODOS OS LOTES)");
         output.Add("Métrica", "Valor", "Unidade");
-        var rows = Enumerable.Range(1, input.Count - 1).ToArray();
-        var pairs = rows.Where(r =>
-                At(input, r, "H_obs") > 0 && double.IsFinite(At(input, r, "H_est"))
-            )
-            .ToArray();
-        int filled = rows.Count(r => !(At(input, r, "H_obs") > 0) && At(input, r, "H_final") > 0);
-        double[] metrics = HeightMetrics(input, pairs);
+        if (cfg["ajuste_altura"].S("h_mode", "KEEP_FILE") == "KEEP_FILE" && keepFileFilledHeightCount.HasValue)
+        {
+            string[] keepNames = ["R²", "RMSE", "MAE", "Bias", "Resíduo médio", "Desvio padrão resíduos", "N observações com predição", "N valores preenchidos"];
+            string[] keepUnits = ["-", "m", "m", "m", "%", "%", "", ""];
+            for (int i = 0; i < keepNames.Length; i++)
+                output.Add(keepNames[i], i < 6 ? 0d : i == 6 ? 0d : (double)keepFileFilledHeightCount.Value, keepUnits[i]);
+            output.Add("Modo", "KEEP_FILE");
+            output.Add();
+            output.Add("H_obs", "H_est", "Resíduo (%)", "Lote", "Parcela", "Método");
+            return output;
+        }
+        var pairs = new List<int>();
+        int filled = 0;
+        for (int row = 1; row < input.Count; row++)
+        {
+            if (At(input, row, "H_obs") > 0 && double.IsFinite(At(input, row, "H_est"))) pairs.Add(row);
+            if (!(At(input, row, "H_obs") > 0) && At(input, row, "H_final") > 0) filled++;
+        }
+        double[] metrics = HeightMetrics(input, pairs.ToArray());
         string[] names =
 
             [
@@ -335,7 +459,7 @@ public static class InventoryReport
             output.Add(
                 names[i],
                 i < 6 ? metrics[i]
-                    : i == 6 ? (double)pairs.Length
+                    : i == 6 ? (double)pairs.Count
                     : (double)filled,
                 units[i]
             );
@@ -367,7 +491,7 @@ public static class InventoryReport
                 "Desvio padrão resíduos (%)"
             );
             foreach (
-                var group in rows.GroupBy(r => (Lot: Text(input, r, lot), Scope: identification.Context(r)))
+                var group in Enumerable.Range(1, input.Count - 1).GroupBy(r => (Lot: Text(input, r, lot), Scope: identification.Context(r)))
                     .OrderBy(g => g.Key.Lot, StringComparer.Ordinal)
             )
             {
@@ -454,10 +578,10 @@ public static class InventoryReport
         if (scopeColumn < 0) { StatisticsSection(output, plots, cfg, byLot); return; }
         foreach (var scope in Enumerable.Range(1, plots.Count - 1).GroupBy(r => plots.Text(r, scopeColumn)))
         {
-            var subset = new DataTable(); subset.Rows.Add(plots.Rows[0]);
-            foreach (int row in scope) subset.Rows.Add(plots.Rows[row]);
+            var subset = new DataTable(); subset.Add(plots.Rows[0]);
+            foreach (int row in scope) subset.Add(plots.Rows[row]);
             var section = new DataTable(); StatisticsSection(section, subset, cfg, byLot);
-            int firstRow = scope.First(), extra = section.Rows[1].Count;
+            int firstRow = scope.First(), extra = section.Rows[1].Length;
             string origin = Text(plots, firstRow, "Base_Origem"), type = Text(plots, firstRow, "Tipo_Inventario");
             string label = string.Join(" · ", new[] { origin, type }.Where(t => t.Length > 0));
             section.Set(0, 0, section.Text(0, 0) + " · " + label);
@@ -470,7 +594,7 @@ public static class InventoryReport
                 section.Set(row, extra + 1, header ? "Tipo_Inventario" : type);
                 section.Set(row, extra + 2, header ? "Contexto_ID" : scope.Key);
             }
-            foreach (var row in section.Rows) output.Rows.Add(row);
+            foreach (var row in section.Rows) output.Add(row);
         }
     }
 

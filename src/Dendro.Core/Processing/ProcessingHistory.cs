@@ -28,7 +28,8 @@ public static class ProcessingHistory
         foreach (var pair in cfg.Where(p => p.Key != "_dendro")) frozen[pair.Key] = pair.Value?.DeepClone();
         frozen["_dendro"] = new JsonObject { ["format"] = "DENDRO_PROJECT", ["version"] = 1,
             ["name"] = cfg["_dendro"].S("name"), ["files"] = new JsonArray(),
-            ["file_options"] = cfg["_dendro"]?["file_options"]?.DeepClone() ?? new JsonArray() };
+            ["file_options"] = cfg["_dendro"]?["file_options"]?.DeepClone() ?? new JsonArray(),
+            ["site_index_models"] = cfg["_dendro"]?["site_index_models"]?.DeepClone() ?? new JsonArray() };
         return frozen;
     }
 

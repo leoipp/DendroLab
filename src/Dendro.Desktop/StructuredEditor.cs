@@ -2,6 +2,7 @@
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Text.RegularExpressions;
 
 namespace Dendro.Desktop;
 
@@ -29,6 +30,7 @@ internal sealed class StructuredEditor : ScrollViewer
         ["inventory_type"] = "Tipo de inventário",
         ["factor_scope"] = "Aplicar fatores por",
         ["n_dominantes_parcela"] = "Árvores dominantes por parcela (N)",
+        ["calcular_is"] = "Calcular índice de sítio (IS) no processamento",
         ["remover_duplicadas"] = "Remover árvores duplicadas (manter a primeira ocorrência)",
         ["talhao"] = "Talhão",
         ["dap"] = "DAP",
@@ -140,6 +142,7 @@ internal sealed class StructuredEditor : ScrollViewer
             {
                 if (!obj.ContainsKey("inventory_type")) obj["inventory_type"] = "";
                 if (!obj.ContainsKey("factor_scope")) obj["factor_scope"] = "talhao";
+                if (!obj.ContainsKey("calcular_is")) obj["calcular_is"] = false;
             }
             if (fieldName == "colunas")
             {
@@ -167,11 +170,35 @@ internal sealed class StructuredEditor : ScrollViewer
 
     private void BuildObject(Panel form, JsonObject obj)
     {
+        if (fieldName == "variaveis_customizadas")
+        {
+            BuildCustomVariable(form, obj);
+            return;
+        }
+        if (fieldName == "estatisticas_parcela")
+        {
+            BuildPlotStatistic(form, obj);
+            return;
+        }
         foreach (var entry in obj.ToArray())
         {
             string key = entry.Key;
             if(fieldName=="processador"&&key=="colunas_direto")continue;
             var v = entry.Value;
+            if (fieldName == "ajuste_altura" && key == "features" && v is JsonArray selectedFeatures)
+            {
+                BuildFeatureSelector(form, obj, selectedFeatures);
+                continue;
+            }
+            if (fieldName == "ajuste_altura" && key == "modelo_geral" && v is JsonObject generalModel)
+            {
+                var section = InlineSection(Label(key));
+                var editor = new StructuredEditor(generalModel.DeepClone(), "modelo_geral", growthInputs);
+                section.Children.Add(editor);
+                form.Children.Add(section);
+                commit.Add(() => obj[key] = editor.Read());
+                continue;
+            }
             if (fieldName == "comparativo_ifc" && key == "ativo")
             {
                 obj[key] = true;
@@ -197,6 +224,8 @@ internal sealed class StructuredEditor : ScrollViewer
                     Ui.AddHelp(form, "Inventário com revisão e aprovação: guarda o original sem fator e permite corrigir, aprovar e exportar. Resumo direto: gera as tabelas dos níveis selecionados.");
                 if (fieldName == "processador" && key == "factor_scope")
                     Ui.AddHelp(form, "Define se cada fator de correção será informado por talhão ou por lote na revisão do inventário.");
+                if (fieldName == "processador" && key == "remover_duplicadas")
+                    Ui.AddHelp(form, "Quando ativado, mantém a primeira ocorrência para cada chave de árvore definida em Identificação. Quando desativado, as linhas repetidas permanecem e entram nas somas do processamento.");
                 commit.Add(() =>
                 {
                     if (combo.SelectedIndex < 0) throw new InvalidOperationException($"Selecione uma opção válida em {Label(key)}.");
@@ -287,6 +316,8 @@ internal sealed class StructuredEditor : ScrollViewer
                     fieldName + "." + key
                 );
                 form.Children.Add(check);
+                if (fieldName == "processador" && key == "calcular_is")
+                    Ui.AddHelp(form, "Ao processar, usa o CURVA_COD da parcela para localizar a equação vigente no catálogo Índice de sítio. O Y da equação determina se usa DAPd ou Hd; talhão, lote e projeto recebem a média ponderada pela área das parcelas.");
                 commit.Add(() => obj[key] = check.IsChecked == true);
                 continue;
             }
@@ -365,6 +396,170 @@ internal sealed class StructuredEditor : ScrollViewer
         }
     }
 
+    private static StackPanel InlineSection(string title)
+    {
+        var section = new StackPanel();
+        var heading = Ui.Text(title, 14);
+        heading.FontWeight = FontWeights.SemiBold;
+        section.Children.Add(heading);
+        return section;
+    }
+
+    private void BuildFeatureSelector(Panel form, JsonObject parent, JsonArray selectedFeatures)
+    {
+        var section = InlineSection("Variáveis utilizadas pela RNA");
+        Ui.AddHelp(section, "Escolha uma variável sugerida ou digite o nome de uma coluna ou variável derivada. A variável precisa existir após o processamento.");
+        var features = selectedFeatures.Select(n => n?.Display() ?? "").Where(s => s.Length > 0).ToList();
+        var suggestions = features
+            .Concat((parent["estatisticas_parcela"] as JsonArray ?? []).OfType<JsonObject>().Select(s => s.S("nome")))
+            .Concat((parent["variaveis_customizadas"] as JsonArray ?? []).OfType<JsonObject>().Select(s => s.S("nome")))
+            .Concat(["DAP", "H", "Talhão", "Parcela", "Lote", "Ano_Medicao", "Idade_anos"])
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+        var list = new ListBox { ItemsSource = features.ToArray(), MinHeight = 86, MaxHeight = 150 };
+        var input = Ui.Combo(suggestions);
+        input.IsEditable = true;
+        input.IsTextSearchEnabled = true;
+        input.ToolTip = "Selecione uma sugestão ou digite o nome de uma variável.";
+        var add = Ui.Button("Adicionar variável", () =>
+        {
+            string name = input.Text.Trim();
+            if (name.Length == 0 || features.Contains(name, StringComparer.OrdinalIgnoreCase)) return;
+            features.Add(name);
+            list.ItemsSource = features.ToArray();
+            list.SelectedIndex = features.Count - 1;
+            input.Text = "";
+        });
+        input.KeyDown += (_, e) =>
+        {
+            if (e.Key != System.Windows.Input.Key.Enter) return;
+            add.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            e.Handled = true;
+        };
+        var remove = Ui.Button("Remover selecionada", () =>
+        {
+            if (list.SelectedIndex < 0) return;
+            int index = list.SelectedIndex;
+            features.RemoveAt(index);
+            list.ItemsSource = features.ToArray();
+            if (features.Count > 0) list.SelectedIndex = Math.Min(index, features.Count - 1);
+        });
+        var row = new DockPanel();
+        add.Margin = new Thickness(6, 0, 0, 0);
+        DockPanel.SetDock(add, Dock.Right);
+        row.Children.Add(add);
+        row.Children.Add(input);
+        section.Children.Add(row);
+        section.Children.Add(list);
+        section.Children.Add(remove);
+        form.Children.Add(section);
+        commit.Add(() => parent["features"] = new JsonArray(features.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
+    }
+
+    private void BuildCustomVariable(Panel form, JsonObject obj)
+    {
+        foreach (string key in new[] { "nome", "tipo", "formula", "col_data1", "col_data2" })
+            if (!obj.ContainsKey(key)) obj[key] = key == "tipo" ? "formula" : "";
+        var name = Ui.Input(obj.S("nome"));
+        Ui.Field(form, "Nome da variável", name);
+        var type = Ui.Combo(["Fórmula", "Diferença entre datas (anos)", "Diferença entre datas (meses)", "Diferença entre datas (dias)"]);
+        type.SelectedIndex = obj.S("tipo") switch { "data_diff_anos" => 1, "data_diff_meses" => 2, "data_diff_dias" => 3, _ => 0 };
+        Ui.Field(form, "Tipo de variável", type);
+        var formula = Ui.Input(obj.S("formula"));
+        var col1 = Ui.Input(obj.S("col_data1"));
+        var col2 = Ui.Input(obj.S("col_data2"));
+        var formulaField = Ui.Field(form, "Fórmula", formula);
+        var date1Field = Ui.Field(form, "Data inicial · coluna do inventário", col1);
+        var date2Field = Ui.Field(form, "Data final · coluna do cadastro", col2);
+        Ui.AddHelp(form, "Na opção DataDiff, informe as duas colunas de data. Em Fórmula, use uma expressão aceita pelo processador, como DAP / Média de DAP.");
+        void UpdateTypeFields()
+        {
+            bool isFormula = type.SelectedIndex == 0;
+            formulaField.Visibility = isFormula ? Visibility.Visible : Visibility.Collapsed;
+            date1Field.Visibility = isFormula ? Visibility.Collapsed : Visibility.Visible;
+            date2Field.Visibility = isFormula ? Visibility.Collapsed : Visibility.Visible;
+        }
+        type.SelectionChanged += (_, _) => UpdateTypeFields();
+        UpdateTypeFields();
+        commit.Add(() =>
+        {
+            if (type.SelectedIndex < 0) throw new InvalidOperationException("Selecione o tipo da variável.");
+            obj["nome"] = name.Text.Trim();
+            obj["tipo"] = type.SelectedIndex switch { 1 => "data_diff_anos", 2 => "data_diff_meses", 3 => "data_diff_dias", _ => "formula" };
+            obj["formula"] = type.SelectedIndex == 0 ? formula.Text.Trim() : "";
+            obj["col_data1"] = type.SelectedIndex == 0 ? "" : col1.Text.Trim();
+            obj["col_data2"] = type.SelectedIndex == 0 ? "" : col2.Text.Trim();
+        });
+    }
+
+    private void BuildPlotStatistic(Panel form, JsonObject obj)
+    {
+        foreach (string key in new[] { "nome", "coluna", "funcao", "formula", "filtro" })
+            if (!obj.ContainsKey(key)) obj[key] = key == "funcao" ? "mean" : "";
+        var name = Ui.Input(obj.S("nome"));
+        Ui.Field(form, "Nome da variável", name);
+        var calculation = Ui.Combo(["Estatística por parcela", "Fórmula"]);
+        calculation.SelectedIndex = obj.S("formula").Length > 0 ? 1 : 0;
+        Ui.Field(form, "Cálculo", calculation);
+        var column = Ui.Combo(["DAP", "H", "AS", "G", "Volume", "Idade_anos"]);
+        column.IsEditable = true;
+        column.Text = obj.S("coluna");
+        Ui.Field(form, "Coluna de entrada", column);
+        var functions = new (string Code, string Label)[]
+        {
+            ("mean", "Média"), ("sum", "Soma"), ("min", "Mínimo"), ("max", "Máximo"),
+            ("count", "Contagem"), ("median", "Mediana"), ("std", "Desvio padrão"),
+            ("gini", "Gini"), ("first", "Primeiro valor"), ("last", "Último valor"),
+        };
+        var function = Ui.Combo(functions.Select(f => f.Label));
+        int functionIndex = Array.FindIndex(functions, f => f.Code == obj.S("funcao", "mean"));
+        function.SelectedIndex = functionIndex < 0 ? 0 : functionIndex;
+        Ui.Field(form, "Função estatística", function);
+        var op = Ui.Combo(["Sem filtro", ">", ">=", "<", "<=", "=", "≠"]);
+        var threshold = Ui.Input();
+        var match = Regex.Match(obj.S("filtro"), @"^\s*(>=|<=|==|!=|>|<)\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$");
+        op.SelectedItem = match.Success ? match.Groups[1].Value switch { "==" => "=", "!=" => "≠", var s => s } : "Sem filtro";
+        threshold.Text = match.Success ? match.Groups[2].Value : "";
+        var filterControls = new DockPanel();
+        op.Width = 110;
+        DockPanel.SetDock(op, Dock.Left);
+        filterControls.Children.Add(op);
+        filterControls.Children.Add(threshold);
+        var filterField = Ui.Field(form, "Filtro dos valores de entrada", filterControls);
+        var formulaInput = Ui.Input(obj.S("formula"));
+        var formulaField = Ui.Field(form, "Fórmula", formulaInput);
+        Ui.AddHelp(form, "Use o filtro para incluir somente valores que atendam à condição, por exemplo DAP > 0. Selecione Sem filtro para considerar todos. Fórmulas usam o mesmo avaliador do processador.");
+        void UpdateMode()
+        {
+            bool useFormula = calculation.SelectedIndex == 1;
+            column.Visibility = useFormula ? Visibility.Collapsed : Visibility.Visible;
+            function.Visibility = useFormula ? Visibility.Collapsed : Visibility.Visible;
+            filterField.Visibility = useFormula ? Visibility.Collapsed : Visibility.Visible;
+            formulaField.Visibility = useFormula ? Visibility.Visible : Visibility.Collapsed;
+        }
+        calculation.SelectionChanged += (_, _) => UpdateMode();
+        UpdateMode();
+        commit.Add(() =>
+        {
+            bool useFormula = calculation.SelectedIndex == 1;
+            obj["nome"] = name.Text.Trim();
+            obj["formula"] = useFormula ? formulaInput.Text.Trim() : "";
+            obj["coluna"] = useFormula ? "" : column.Text.Trim();
+            obj["funcao"] = useFormula ? "mean" : functions[function.SelectedIndex < 0 ? 0 : function.SelectedIndex].Code;
+            string selectedOperator = op.SelectedItem?.ToString() ?? "Sem filtro";
+            if (!useFormula && selectedOperator != "Sem filtro")
+            {
+                double limit = Ui.Number(threshold.Text);
+                if (!double.IsFinite(limit)) throw new InvalidOperationException("Informe um limite numérico para o filtro.");
+                string invariantLimit = limit.ToString("R", CultureInfo.InvariantCulture);
+                obj["filtro"] = (selectedOperator switch { "=" => "==", "≠" => "!=", var s => s }) + " " + invariantLimit;
+            }
+            else obj["filtro"] = "";
+        });
+    }
+
     private void BuildArray(Panel form, JsonArray a)
     {
         var list = new ListBox { MinHeight = 180, MaxHeight = 420 };
@@ -415,7 +610,7 @@ internal sealed class StructuredEditor : ScrollViewer
                         o[k.Key] = "";
             if (template is JsonObject)
             {
-                var editor = new StructuredEditor(template, growthInputs: growthInputs);
+                var editor = new StructuredEditor(template, fieldName, growthInputs);
                 var apply = Ui.Button("Aplicar", () => { });
                 var window = Ui.Dialog(
                     add ? "Adicionar item" : "Editar item",

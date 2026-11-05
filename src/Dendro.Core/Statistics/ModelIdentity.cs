@@ -163,8 +163,8 @@ public static class ModelIdentity
         );
     }
 
-    private static string TableCursorText(List<object?> row, int column) =>
-        Dendro.Core.Tabular.TableCursor.Text(column < row.Count ? row[column] : null);
+    private static string TableCursorText(object?[] row, int column) =>
+        Dendro.Core.Tabular.TableCursor.Text(column < row.Length ? row[column] : null);
 
     private static void CheckRank(
         IEnumerable<ChartPoint> points,

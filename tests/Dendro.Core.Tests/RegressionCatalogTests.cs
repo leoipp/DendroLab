@@ -47,7 +47,7 @@ public class RegressionCatalogTests
             -2
         );
         var fit = Assert.Single(result.Chart["fits"]!.AsArray());
-        Assert.Equal("Reta local", fit.S("model"));
+        Assert.Equal("Reta local · 1P", fit.S("model"));
         Assert.Equal("Reta local", fit.S("model_id"));
         Assert.Equal(2, fit.N("b0"), 8);
         Assert.Equal(3, fit.N("b1"), 8);

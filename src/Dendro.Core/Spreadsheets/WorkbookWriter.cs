@@ -83,7 +83,7 @@ public static class WorkbookWriter
                     header = r;
                 var row = new Row { RowIndex = (uint)r + 1 };
                 data.Append(row);
-                for (int c = 0; c < table.Rows[r].Count; c++)
+                for (int c = 0; c < table.Rows[r].Length; c++)
                 {
                     var value = table.Value(r, c);
                     if (value is null || (value is double d && !double.IsFinite(d)))
@@ -202,7 +202,7 @@ public static class WorkbookWriter
             }
             if (report && entry.Name == "H Ajuste")
             {
-                int raw = table.Rows.FindIndex(r => r.Count > 0 && r[0]?.ToString() == "H_obs");
+                int raw = table.Rows.FindIndex(r => r.Length > 0 && r[0]?.ToString() == "H_obs");
                 if (raw >= 0 && raw < table.Count - 1)
                 {
                     AddScatter(

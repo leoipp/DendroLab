@@ -26,7 +26,7 @@ public static class TableRowEditor
                 long count = 0;
                 foreach (var row in reader.Rows(current))
                 {
-                    cancellation.ThrowIfCancellationRequested(); writer.Add(id, mapping.Select(i => row[i]).ToArray()); count++;
+                    cancellation.ThrowIfCancellationRequested(); writer.AddOwned(id, mapping.Select(i => row[i]).ToArray()); count++;
                     if ((count & 2047) == 0) updates.Report(85d * count / Math.Max(1, expected.Rows), $"Removendo colunas: {count:N0} linhas preservadas", count);
                 }
                 cancellation.ThrowIfCancellationRequested(); writer.Complete();
@@ -76,7 +76,7 @@ public static class TableRowEditor
                         hasNext = rowsToDelete.MoveNext();
                         if (hasNext) target = rowsToDelete.Current;
                     }
-                    else { writer.Add(id, row); remaining++; }
+                    else { writer.AddOwned(id, row); remaining++; }
                     if ((rowNumber & 2047) == 0) updates.Report(85d * (rowNumber - 1) / Math.Max(1, expected.Rows),
                         $"Preparando exclusão: {removed:N0} removidas · {remaining:N0} preservadas", rowNumber - 1);
                 }

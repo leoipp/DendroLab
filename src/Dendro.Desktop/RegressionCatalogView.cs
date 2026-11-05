@@ -9,6 +9,7 @@ namespace Dendro.Desktop;
 internal sealed class RegressionCatalogView : ScrollViewer
 {
     private readonly JsonObject project;
+    private readonly Action? changed;
     private readonly TabControl groups = new();
     private readonly DataGrid[] grids = new DataGrid[3];
     private readonly TextBox id = Ui.Input(),
@@ -24,9 +25,10 @@ internal sealed class RegressionCatalogView : ScrollViewer
     private JsonArray Models => project.Obj("regressoes").Arr("modelos");
     private int Predictors => Math.Max(0, groups.SelectedIndex) + 1;
 
-    public RegressionCatalogView(JsonObject project)
+    public RegressionCatalogView(JsonObject project, Action? changed = null)
     {
         this.project = project;
+        this.changed = changed;
         RegressionCatalog.Ensure(project);
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
         Foreground = System.Windows.Media.Brushes.DarkSlateGray;
@@ -100,6 +102,7 @@ internal sealed class RegressionCatalogView : ScrollViewer
                     if (editing != null)
                     {
                         Models.Remove(editing);
+                        changed?.Invoke();
                         Refresh();
                         New();
                     }
@@ -236,6 +239,7 @@ internal sealed class RegressionCatalogView : ScrollViewer
             Models[index] = model;
         else
             Models.Add(model);
+        changed?.Invoke();
         Refresh();
         Load(model);
     }

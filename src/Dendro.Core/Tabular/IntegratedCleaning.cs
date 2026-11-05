@@ -46,7 +46,7 @@ public sealed class IntegratedCleaning : IDisposable
                 string table = writer.AddTable(cursor.Columns,"Dados");
                 foreach(var row in cursor.Rows())
                 {
-                    cancellation.ThrowIfCancellationRequested();line=checked(line+1);writer.Add(table,row);
+                    cancellation.ThrowIfCancellationRequested();line=checked(line+1);writer.AddOwned(table,row);
                     for(int i=0;i<configs.Length;i++)
                     {
                         var c=configs[i];var f=fields[i];string group=f.Group<0?"Global":TableCursor.Text(row[f.Group]);

@@ -10,7 +10,9 @@ public sealed record PairedMeasurementOptions(
     string[] TreeKeys,
     string[] PlotKeys,
     string[] Levels,
-    string Aggregation
+    string Aggregation,
+    string Format = "wide",
+    string Pairing = "sequential"
 );
 
 public sealed record PairedMeasurementsResult(
@@ -21,7 +23,7 @@ public sealed record PairedMeasurementsResult(
     long DuplicateKeyYears
 );
 
-/// <summary>Reshapes repeated long-form measurements into one row per configured key and year columns.</summary>
+/// <summary>Pairs repeated measurements in wide or pairwise longitudinal form.</summary>
 public static class PairedMeasurements
 {
     private sealed class Cell
@@ -63,6 +65,10 @@ public static class PairedMeasurements
             throw new InvalidDataException("Selecione árvore, parcela ou ambos os níveis.");
         if (options.Aggregation is not ("sum" or "mean" or "max" or "min" or "unique"))
             throw new InvalidDataException("Selecione uma regra válida para valores repetidos.");
+        if (options.Format is not ("wide" or "longitudinal"))
+            throw new InvalidDataException("Selecione o formato amplo ou longitudinal.");
+        if (options.Pairing is not ("sequential" or "all"))
+            throw new InvalidDataException("Selecione medições sequenciais ou todos os pares.");
         if (options.ValueColumns.Length == 0 || options.ValueColumns.Distinct(StringComparer.Ordinal).Count() != options.ValueColumns.Length)
             throw new InvalidDataException("Selecione um ou mais campos únicos para comparar ao longo do tempo.");
         using var cursor = new TableCursor(source);
@@ -161,49 +167,88 @@ public static class PairedMeasurements
             {
                 cancellation.ThrowIfCancellationRequested();
                 string label = level.Name == "arvore" ? "Árvores" : "Parcelas";
-                string tableName = TableTools.SuggestedName($"{cleanName} · {label}");
-                string[] columns = [
-                    .. level.KeyNames,
-                    .. years.SelectMany(year => new[] { $"N_{year}" }.Concat(options.ValueColumns.Select(field => $"{field}_{year}")))
-                ];
-                if (columns.Distinct(StringComparer.Ordinal).Count() != columns.Length)
-                    throw new InvalidDataException("Uma coluna de identificação tem o mesmo nome de uma coluna anual gerada.");
+                string tableName = TableTools.SuggestedName($"{cleanName} · {label}"
+                    + (options.Format == "longitudinal" ? " · Longitudinal" : ""));
+                string[] keyNames = level.KeyNames.Select((field, index) =>
+                    VisibleHeader(field, $"Chave_{index + 1}")).ToArray();
+                string[] valueNames = options.ValueColumns.Select((field, index) =>
+                    VisibleHeader(field, $"Valor_{index + 1}")).ToArray();
+                string[] columns = options.Format == "wide"
+                    ? [.. keyNames,
+                        .. years.SelectMany(year => new[] { $"N_{year}" }.Concat(valueNames.Select(field => $"{field}_{year}")))]
+                    : [.. keyNames, "N_individuo",
+                        "Ano_i1", "N_i1", .. valueNames.Select(field => $"{field}_i1"),
+                        "Ano_i2", "N_i2", .. valueNames.Select(field => $"{field}_i2")];
+                columns = EnsureUniqueHeaders(columns);
                 string output = Path.Combine(folder, $"{Guid.NewGuid():N}.dlb");
                 createdFiles.Add(output);
+                long outputRows = 0;
                 using (var writer = new CompactBankWriter(output))
                 {
                     string table = writer.AddTable(columns, tableName);
                     foreach (var entity in level.Entities.Values)
                     {
                         cancellation.ThrowIfCancellationRequested();
-                        var values = new object?[columns.Length];
-                        Array.Copy(entity.Keys, values, entity.Keys.Length);
-                        int index = level.KeyNames.Length;
-                        foreach (int year in years)
-                        {
-                            entity.Years.TryGetValue(year, out var yearData);
-                            values[index++] = yearData?.Rows ?? 0;
-                            for (int field = 0; field < options.ValueColumns.Length; field++)
+                        object? Value(Cell? cell) => cell is { Values: > 0 }
+                            ? options.Aggregation switch
                             {
-                                var cell = yearData?.Values[field];
-                                if (cell is { Values: > 0 })
-                                    values[index] = options.Aggregation switch
-                                    {
-                                        "unique" => cell.First,
-                                        "sum" => cell.Sum,
-                                        "mean" => cell.Sum / cell.Values,
-                                        "max" => cell.Maximum,
-                                        "min" => cell.Minimum,
-                                        _ => null,
-                                    };
-                                index++;
+                                "unique" => cell.First,
+                                "sum" => cell.Sum,
+                                "mean" => cell.Sum / cell.Values,
+                                "max" => cell.Maximum,
+                                "min" => cell.Minimum,
+                                _ => null,
                             }
+                            : null;
+                        if (options.Format == "wide")
+                        {
+                            var values = new object?[columns.Length];
+                            Array.Copy(entity.Keys, values, entity.Keys.Length);
+                            int index = level.KeyNames.Length;
+                            foreach (int year in years)
+                            {
+                                entity.Years.TryGetValue(year, out var yearData);
+                                values[index++] = yearData?.Rows ?? 0;
+                                for (int field = 0; field < options.ValueColumns.Length; field++)
+                                    values[index++] = Value(yearData?.Values[field]);
+                            }
+                            writer.AddOwned(table, values);
+                            outputRows++;
+                            continue;
                         }
-                        writer.Add(table, values);
+
+                        int[] entityYears = entity.Years.Keys.Order().ToArray();
+                        int totalN = entity.Years.Values.Sum(data => data.Rows);
+                        var pairs = options.Pairing == "sequential"
+                            ? Enumerable.Range(0, Math.Max(0, entityYears.Length - 1)).Select(i => (First: i, Second: i + 1))
+                            : (from first in Enumerable.Range(0, entityYears.Length)
+                               from second in Enumerable.Range(first + 1, entityYears.Length - first - 1)
+                               select (First: first, Second: second));
+                        foreach (var pair in pairs)
+                        {
+                            var firstYear = entityYears[pair.First];
+                            var secondYear = entityYears[pair.Second];
+                            var firstData = entity.Years[firstYear];
+                            var secondData = entity.Years[secondYear];
+                            var values = new object?[columns.Length];
+                            Array.Copy(entity.Keys, values, entity.Keys.Length);
+                            int index = entity.Keys.Length;
+                            values[index++] = totalN;
+                            values[index++] = firstYear;
+                            values[index++] = firstData.Rows;
+                            foreach (var cell in firstData.Values) values[index++] = Value(cell);
+                            values[index++] = secondYear;
+                            values[index++] = secondData.Rows;
+                            foreach (var cell in secondData.Values) values[index++] = Value(cell);
+                            writer.AddOwned(table, values);
+                            outputRows++;
+                        }
                     }
                     writer.Complete();
                 }
-                results.Add(new(output, tableName, level.Entities.Count));
+                if (options.Format == "longitudinal" && outputRows == 0)
+                    throw new InvalidDataException($"Nenhuma chave do nível {label} possui pelo menos duas ocasiões válidas para formar pares.");
+                results.Add(new(output, tableName, outputRows));
             }
         }
         catch
@@ -222,6 +267,30 @@ public static class PairedMeasurements
         value == null || string.IsNullOrWhiteSpace(TableCursor.Text(value))
             ? ""
             : TableTools.Key(value);
+
+    private static string VisibleHeader(string? value, string fallback)
+    {
+        string visible = new(value?.Where(character =>
+        {
+            var category = char.GetUnicodeCategory(character);
+            return !char.IsControl(character) && category != UnicodeCategory.Format;
+        }).ToArray() ?? []);
+        visible = visible.Trim();
+        return visible.Length > 0 ? visible : fallback;
+    }
+
+    private static string[] EnsureUniqueHeaders(string[] columns)
+    {
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return columns.Select((column, index) =>
+        {
+            string visible = VisibleHeader(column, $"Campo_{index + 1}");
+            string candidate = visible;
+            for (int suffix = 2; !used.Add(candidate); suffix++)
+                candidate = $"{visible}_{suffix}";
+            return candidate;
+        }).ToArray();
+    }
 
     private static bool TryNumber(object value, out double number)
     {

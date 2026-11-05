@@ -113,6 +113,22 @@
                   Style="{StaticResource RibbonCommand}"
                   Tag="Growth"
                 />
+                <Button
+                  x:Name="SiteIndexButton"
+                  Content="Índice de sítio"
+                  Click="SiteIndexClick"
+                  Style="{StaticResource RibbonCommand}"
+                  Tag="SiteIndex"
+                  ToolTip="Abrir o catálogo de curvas-base para modelos de índice de sítio."
+                />
+                <Button
+                  x:Name="SavedRegressionsButton"
+                  Content="Regressões salvas"
+                  Click="SavedRegressionsClick"
+                  Style="{StaticResource RibbonCommand}"
+                  Tag="Regression"
+                  ToolTip="Abrir o catálogo geral de regressões ajustadas e aplicá-las a uma base."
+                />
               </WrapPanel>
               <TextBlock Text="Modelagem florestal" Style="{StaticResource RibbonGroupLabel}" />
             </StackPanel>
@@ -171,7 +187,7 @@
         </TabControl>
       </DockPanel>
     </Border>
-    <Border DockPanel.Dock="Bottom" Height="38" Background="#F5F8FB" BorderBrush="#DBE3EC" BorderThickness="0,1,0,0" Padding="12,0">
+    <Border x:Name="StatusBarHost" DockPanel.Dock="Bottom" Height="38" Background="#F5F8FB" BorderBrush="#DBE3EC" BorderThickness="0,1,0,0" Padding="12,0">
       <Grid HorizontalAlignment="Stretch">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*" />

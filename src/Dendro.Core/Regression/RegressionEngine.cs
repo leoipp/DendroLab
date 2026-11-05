@@ -1,21 +1,34 @@
 using System.Text;
+using System.Buffers.Binary;
 using System.Text.Json.Nodes;
 using Dendro.Core.Mathematics;
 using Dendro.Core.Spreadsheets;
+using Dendro.Core.Tabular;
 
 namespace Dendro.Core.Regression;
 
 public sealed record RegressionFamily(string Name, string Formula, int Parameters, string Id = "", int Predictors = 1);
 
-public sealed record ChartPoint(
+public readonly record struct ChartPoint(
     double X,
     double Y,
     int Row,
     string Group,
     bool Excluded = false,
     int Side = 0,
-    double[]? Inputs = null
-);
+    double X2 = double.NaN,
+    double X3 = double.NaN,
+    int InputCount = 1
+)
+{
+    public double Input(int index) => index switch
+    {
+        0 => X,
+        1 when InputCount > 1 => X2,
+        2 when InputCount > 2 => X3,
+        _ => 0,
+    };
+}
 
 public sealed record ChartResult(
     JsonObject Chart,
@@ -48,6 +61,9 @@ public sealed class RegressionEngine
     ];
 
     public ChartResult Generate(DataTable table, JsonObject source, int? model = null)
+        => Generate(table.Rows[0].Select(value => value?.ToString() ?? "").ToArray(), table.Rows.Skip(1), source, model);
+
+    public ChartResult Generate(string[] columns, IEnumerable<object?[]> rows, JsonObject source, int? model = null)
     {
         var chart = source.DeepClone().AsObject();
         string[] predictors = chart["x_variables"] is JsonArray configuredPredictors
@@ -55,37 +71,45 @@ public sealed class RegressionEngine
             : [chart.S("x")];
         if (predictors.Length is < 1 or > 3 || predictors.Any(string.IsNullOrWhiteSpace))
             throw new InvalidDataException("Selecione de 1 a 3 variáveis explicativas.");
-        int[] xcs = predictors.Select(table.Require).ToArray();
-        int xc = xcs[0],
-            yc = table.Require(chart.S("y")),
-            gc = chart.S("stratum").Length > 0 ? table.Require(chart.S("stratum")) : -1,
+        int[] xcs = predictors.Select(RequireColumn).ToArray();
+        int yc = RequireColumn(chart.S("y")),
+            gc = chart.S("stratum").Length > 0 ? RequireColumn(chart.S("stratum")) : -1,
             invalid = 0;
         var excluded = (chart["excluded"] as JsonArray ?? [])
             .Select(n => (int)JsonExtensions.Number(n))
             .ToHashSet();
         var points = new List<ChartPoint>();
-        for (int row = 1; row < table.Count; row++)
+        int row = 1;
+        foreach (var values in rows)
         {
-            string group = gc >= 0 ? table.Text(row, gc) : "Global";
+            string group = gc >= 0 ? TableCursor.Text(Cell(values, gc)) : "Global";
             if (
                 (chart.B("group_selected") || chart.S("group").Length > 0)
                 && chart.S("group") != group
             )
+            {
+                row++;
                 continue;
-            double[] inputs = xcs.Select(c => table.Number(row, c)).ToArray();
-            double x = inputs[0],
-                y = table.Number(row, yc);
+            }
+            double x = Number(values, xcs[0]),
+                x2 = xcs.Length > 1 ? Number(values, xcs[1]) : double.NaN,
+                x3 = xcs.Length > 2 ? Number(values, xcs[2]) : double.NaN,
+                y = Number(values, yc);
             if (
-                inputs.Any(v => !double.IsFinite(v))
+                !double.IsFinite(x)
+                || (xcs.Length > 1 && !double.IsFinite(x2))
+                || (xcs.Length > 2 && !double.IsFinite(x3))
                 || !double.IsFinite(y)
                 || (chart.B("log_x") && x <= 0)
                 || (chart.B("log_y") && y <= 0)
             )
             {
                 invalid++;
+                row++;
                 continue;
             }
-            points.Add(new(x, y, row, group, excluded.Contains(row), Inputs: inputs));
+            points.Add(new(x, y, row, group, excluded.Contains(row), X2: x2, X3: x3, InputCount: xcs.Length));
+            row++;
         }
         if (points.Count == 0)
             throw new InvalidDataException(
@@ -132,6 +156,26 @@ public sealed class RegressionEngine
                 );
             var fits = new List<JsonObject>();
             var envelope = new JsonArray();
+            int[]? predictorFilter = chart["fit_predictors"] is JsonArray configuredCounts
+                ? configuredCounts.Select(n => (int)JsonExtensions.Number(n)).Where(n => n is >= 1 and <= 3).Distinct().ToArray()
+                : null;
+            var comparisonFamilies = model == -2 && predictorFilter is { Length: > 0 }
+                ? families.Where(f => predictorFilter.Contains(f.Predictors)).ToArray()
+                : families.ToArray();
+            if (model == -2 && chart["fit_model_ids"] is JsonArray selectedModelIds)
+            {
+                var ids = selectedModelIds.Select(n => n?.GetValue<string>() ?? "")
+                    .Where(id => id.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
+                if (ids.Length == 0)
+                    throw new InvalidDataException("Selecione ao menos um modelo para o ajuste em lote.");
+                var available = comparisonFamilies.Select(f => f.Id).ToHashSet(StringComparer.Ordinal);
+                if (ids.Any(id => !available.Contains(id)))
+                    throw new InvalidDataException("Um dos modelos selecionados não está disponível neste projeto.");
+                var selected = ids.ToHashSet(StringComparer.Ordinal);
+                comparisonFamilies = comparisonFamilies.Where(f => selected.Contains(f.Id)).ToArray();
+            }
+            if (model == -2 && comparisonFamilies.Length == 0)
+                throw new InvalidDataException("Não há modelos cadastrados nos grupos selecionados.");
             var kept = points
                 .Where(p => !p.Excluded)
                 .OrderBy(p => p.Group, StringComparer.Ordinal)
@@ -195,7 +239,7 @@ public sealed class RegressionEngine
                     }
                     if (model == -2)
                     {
-                        foreach (var definition in families)
+                        foreach (var definition in comparisonFamilies)
                             fits.Add(Fit(data, definition, side));
                         if (custom)
                             fits.Add(Fit(data, new("Personalizado", chart.S("formula"), k), side));
@@ -257,11 +301,31 @@ public sealed class RegressionEngine
             })
             .ToArray();
         return new(chart, points.ToArray(), curves, invalid);
+
+        int RequireColumn(string name)
+        {
+            int index = Array.FindIndex(columns, column => string.Equals(column, name, StringComparison.Ordinal));
+            return index >= 0 ? index : throw new InvalidDataException($"Coluna obrigatória ausente: {name}.");
+        }
+
+        static object? Cell(object?[] values, int column) => column >= 0 && column < values.Length ? values[column] : null;
+
+        static double Number(object?[] values, int column)
+        {
+            object? cell = Cell(values, column);
+            if (cell is double d) return d;
+            if (cell is int i) return i;
+            if (cell is long l) return l;
+            return double.TryParse(TableCursor.Text(cell).Trim().Replace(',', '.'),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out double number) ? number : double.NaN;
+        }
     }
 
     private static string Signature(IEnumerable<ChartPoint> points)
     {
         ulong hash = 14695981039346656037;
+        var groupBytes = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         void Bytes(byte[] data)
         {
             foreach (byte b in data)
@@ -272,15 +336,30 @@ public sealed class RegressionEngine
         }
         foreach (var p in points)
         {
-            Bytes(BitConverter.GetBytes(p.X));
-            foreach (double input in p.Inputs ?? [p.X])
-                Bytes(BitConverter.GetBytes(input));
-            Bytes(BitConverter.GetBytes(p.Y));
-            Bytes(BitConverter.GetBytes((ulong)p.Row));
-            Bytes(Encoding.UTF8.GetBytes(p.Group + "\0"));
-            Bytes([p.Excluded ? (byte)1 : (byte)0]);
+            AddLong((ulong)BitConverter.DoubleToInt64Bits(p.X));
+            // Preserve the existing signature layout: X is also predictor 1.
+            AddLong((ulong)BitConverter.DoubleToInt64Bits(p.X));
+            if (p.InputCount > 1) AddLong((ulong)BitConverter.DoubleToInt64Bits(p.X2));
+            if (p.InputCount > 2) AddLong((ulong)BitConverter.DoubleToInt64Bits(p.X3));
+            AddLong((ulong)BitConverter.DoubleToInt64Bits(p.Y));
+            AddLong((uint)p.Row);
+            if (!groupBytes.TryGetValue(p.Group, out var encodedGroup))
+                groupBytes.Add(p.Group, encodedGroup = Encoding.UTF8.GetBytes(p.Group + "\0"));
+            Bytes(encodedGroup);
+            hash ^= p.Excluded ? (byte)1 : (byte)0;
+            hash *= 1099511628211;
         }
         return hash.ToString("x16");
+
+        void AddLong(ulong value)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                hash ^= (byte)value;
+                hash *= 1099511628211;
+                value >>= 8;
+            }
+        }
     }
 
     private static JsonObject Fit(ChartPoint[] points, RegressionFamily definition, int side)
@@ -330,7 +409,7 @@ public sealed class RegressionEngine
         int predictorCount = definition.Predictors;
         result["predictor_count"] = predictorCount;
         for (int i = 1; i < predictorCount; i++)
-            result[$"x{i + 1}_mean"] = points.Average(p => p.Inputs?[i] ?? 0);
+            result[$"x{i + 1}_mean"] = points.Average(p => p.Input(i));
         if (!(xmax > xmin))
         {
             result["status"] = "X sem variação";
@@ -340,9 +419,9 @@ public sealed class RegressionEngine
         double Predict(double[] b, ChartPoint point) =>
             formula.Evaluate(s => s switch
             {
-                "x" or "x1" or "t" => point.Inputs?[0] ?? point.X,
-                "x2" => point.Inputs?.ElementAtOrDefault(1) ?? 0,
-                "x3" => point.Inputs?.ElementAtOrDefault(2) ?? 0,
+                "x" or "x1" or "t" => point.X,
+                "x2" => point.Input(1),
+                "x3" => point.Input(2),
                 _ => b[s[1] - '0'],
             });
         double Score(double[] b)
@@ -594,25 +673,11 @@ public sealed class RegressionEngine
         return result;
     }
 
-    public static JsonObject ToJson(ChartResult result) =>
-        new()
+    public static JsonObject ToJson(ChartResult result)
+    {
+        var output = new JsonObject
         {
             ["chart"] = result.Chart.DeepClone(),
-            ["points"] = new JsonArray(
-                result
-                    .Points.Select(p =>
-                        (JsonNode?)
-                            new JsonObject
-                            {
-                                ["x"] = p.X,
-                                ["y"] = p.Y,
-                                ["row"] = p.Row,
-                                ["group"] = p.Group,
-                                ["excluded"] = p.Excluded,
-                            }
-                    )
-                    .ToArray()
-            ),
             ["curves"] = new JsonArray(
                 result
                     .Curves.Select(line =>
@@ -625,4 +690,47 @@ public sealed class RegressionEngine
             ),
             ["invalid"] = result.Invalid,
         };
+        if (result.Points.Length <= 30_000)
+        {
+            output["points"] = new JsonArray(result.Points.Select(point => (JsonNode?)new JsonObject
+            {
+                ["x"] = point.X,
+                ["y"] = point.Y,
+                ["row"] = point.Row,
+                ["group"] = point.Group,
+                ["excluded"] = point.Excluded,
+            }).ToArray());
+            return output;
+        }
+
+        string[] groups = result.Points.Select(point => point.Group).Distinct(StringComparer.Ordinal).ToArray();
+        var groupIds = groups.Select((name, id) => (name, id)).ToDictionary(item => item.name, item => item.id, StringComparer.Ordinal);
+        var visibleGroups = new HashSet<string>(StringComparer.Ordinal);
+        var distinctX = new HashSet<double>();
+        int kept = 0;
+        byte[] packed = new byte[checked(result.Points.Length * ChartPointView.PackedRecordBytes)];
+        for (int index = 0; index < result.Points.Length; index++)
+        {
+            int offset = index * ChartPointView.PackedRecordBytes;
+            var point = result.Points[index];
+            BinaryPrimitives.WriteInt32LittleEndian(packed.AsSpan(offset, 4), point.Row);
+            BinaryPrimitives.WriteInt64LittleEndian(packed.AsSpan(offset + 4, 8), BitConverter.DoubleToInt64Bits(point.X));
+            BinaryPrimitives.WriteInt64LittleEndian(packed.AsSpan(offset + 12, 8), BitConverter.DoubleToInt64Bits(point.Y));
+            BinaryPrimitives.WriteInt32LittleEndian(packed.AsSpan(offset + 20, 4), groupIds[point.Group]);
+            if (!point.Excluded)
+            {
+                kept++;
+                visibleGroups.Add(point.Group);
+                if (distinctX.Count < 2) distinctX.Add(Math.Round(point.X, 10));
+            }
+        }
+        output["point_format"] = ChartPointView.PackedFormat;
+        output["point_count"] = result.Points.Length;
+        output["point_kept_count"] = kept;
+        output["point_distinct_x"] = distinctX.Count;
+        output["point_groups"] = new JsonArray(groups.Select(group => (JsonNode?)JsonValue.Create(group)).ToArray());
+        output["point_groups_visible"] = new JsonArray(visibleGroups.Order(StringComparer.Ordinal).Select(group => (JsonNode?)JsonValue.Create(group)).ToArray());
+        output["point_blob"] = Convert.ToBase64String(packed);
+        return output;
+    }
 }

@@ -118,6 +118,120 @@ public sealed class InventoryIdentityTests : IDisposable
         static JsonObject ConfigDirect() { var c = Config(); c.Obj("processador")["modo"] = "resumo_direto"; return c; }
     }
 
+    [Fact]
+    public void DirectProcessingAfterDeletingSourceRowsStillDeduplicatesAndMatchesSingleTreeVolume()
+    {
+        var cfg = Config();
+        cfg.Obj("processador")["modo"] = "resumo_direto";
+        cfg.Obj("processador")["remover_duplicadas"] = true;
+        cfg.Obj("processador").Obj("saidas")["arvore"] = true;
+        var input = Input();
+        input.Add(input.Rows[1].ToArray()); // duplicate IFC tree
+        input.Add(input.Rows[2].ToArray()); // duplicate IFPC tree
+        string editedSource = Save("edited-source", input);
+        var source = new TableSource(editedSource, "Dados");
+        var deletion = TableRowEditor.Delete(source, TableRowEditor.Version(source), [3, 5]);
+        Assert.Equal(2, deletion.Removed);
+        Assert.Equal(2, deletion.Remaining);
+
+        var registry = new DataTable(["Talhão", "Data de Plantio", "Área efetiva (ha)"]);
+        registry.Add("T1", new DateTime(2015, 1, 1).ToOADate(), 10d);
+        string config = Path.Combine(folder, "edited-direct-config.dendro");
+        File.WriteAllText(config, cfg.ToJsonString());
+        string registryPath = Save("edited-registry", registry);
+        string output = Path.Combine(folder, "edited-direct-output.dlb");
+        new InventoryProcessor().Process(new(editedSource, config, registryPath, output, "Dados"));
+
+        var trees = TableStore.Read(new(output, "DIRETO - ARVORES"));
+        Assert.Equal(2, trees.Count); // one remaining IFC tree plus header
+        Assert.Equal("IFC", trees.Text(1, trees.Require("Tipo_Inventario")));
+        var info = TableStore.Read(new(output, "INFORMACOES"));
+        Assert.Contains(info.Rows.Skip(1), row =>
+            row[0]?.ToString()?.StartsWith("Linhas duplicadas removidas") == true
+            && Convert.ToDouble(row[1]) == 1
+        );
+
+        var expectedInput = new DataTable(input.Rows[0].Select(cell => cell?.ToString() ?? "").ToArray());
+        expectedInput.Add(input.Rows[1].ToArray());
+        cfg.Obj("processador")["remover_duplicadas"] = false;
+        var expected = Process(cfg, expectedInput, "edited-direct-expected");
+        var actualPlots = TableStore.Read(new(output, "DIRETO - PARCELAS"));
+        var expectedPlots = TableStore.Read(new(expected.Path, "DIRETO - PARCELAS"));
+        Assert.Equal(expectedPlots.Number(1, expectedPlots.Require("Volume_m3_ha")),
+            actualPlots.Number(1, actualPlots.Require("Volume_m3_ha")), 10);
+    }
+
+    [Fact]
+    public void DuplicateRemovalRejectsConflictingPlotAreaInsteadOfInflatingPerHectareVolume()
+    {
+        var cfg = Config();
+        cfg.Obj("processador")["modo"] = "resumo_direto";
+        cfg.Obj("processador")["remover_duplicadas"] = true;
+        var input = Input();
+        input.Add(input.Rows[1].ToArray());
+        input.Set(3, input.Require("Compr"), 2d);
+        string config = Path.Combine(folder, "conflicting-duplicate-config.dlb");
+        File.WriteAllText(config, cfg.ToJsonString());
+        string source = Save("conflicting-duplicate-input", input);
+        var registryTable = new DataTable(["Talhão", "Data de Plantio", "Área efetiva (ha)"]);
+        registryTable.Add("T1", new DateTime(2015, 1, 1).ToOADate(), 10d);
+        string registry = Save("conflicting-duplicate-registry", registryTable);
+        var error = Assert.Throws<InvalidDataException>(() => new InventoryProcessor().Process(new(
+            source, config, registry, Path.Combine(folder, "conflicting-duplicate-output.dlb"), "Dados")));
+        Assert.Contains("dados conflitantes", error.Message);
+        Assert.Contains("área da parcela diferente", error.Message);
+        Assert.Contains("linhas 2 e 4", error.Message);
+        Assert.Contains("área 100 m²", error.Message);
+        Assert.Contains("área 2 m²", error.Message);
+    }
+
+    [Fact]
+    public void DirectSummaryRejectsDifferentMeasurementsCollapsedByConfiguredPlotKey()
+    {
+        var cfg = Config();
+        cfg.Obj("processador")["modo"] = "resumo_direto";
+        string output = Path.Combine(folder, "mixed-measurements.dlb");
+        using var summary = new DirectInventorySummary(output, cfg);
+        summary.Add("T1", "1", "L1", 2024, 2, 10, 1, true, 100, 10, "", "",
+            plotId: "same-configured-key", measurement: "2024-01-01");
+        var error = Assert.Throws<InvalidDataException>(() => summary.Add(
+            "T1", "1", "L1", 2025, 3, 11, 1, true, 100, 10, "", "",
+            plotId: "same-configured-key", measurement: "2025-01-01"));
+        Assert.Contains("medições diferentes", error.Message);
+        Assert.Contains("Configurações > Identificação", error.Message);
+    }
+
+    [Fact]
+    public void DirectSummaryExplainsWhenConfiguredPlotKeyOmitsLot()
+    {
+        var cfg = Config();
+        cfg.Obj("processador")["modo"] = "resumo_direto";
+        string output = Path.Combine(folder, "mixed-lots.dlb");
+        using var summary = new DirectInventorySummary(output, cfg);
+        summary.Add("T1", "1", "Lote A", 2024, 2, 10, 1, true, 100, 10, "", "",
+            plotId: "same-configured-key", measurement: "2024-01-01");
+        var error = Assert.Throws<InvalidDataException>(() => summary.Add(
+            "T1", "1", "Lote B", 2024, 3, 11, 1, true, 100, 10, "", "",
+            plotId: "same-configured-key", measurement: "2024-01-01"));
+        Assert.Contains("lotes diferentes", error.Message);
+        Assert.Contains("Lote A e Lote B", error.Message);
+        Assert.Contains("Inclua a coluna Lote", error.Message);
+    }
+
+    [Fact]
+    public void DirectSummaryKeepsSamePlotNumberSeparateWhenConfiguredKeyIncludesLot()
+    {
+        var cfg = Config();
+        cfg.Obj("processador")["modo"] = "resumo_direto";
+        string output = Path.Combine(folder, "separate-lots.dlb");
+        using var summary = new DirectInventorySummary(output, cfg);
+        summary.Add("T1", "1", "Lote A", 2024, 2, 10, 1, true, 100, 10, "", "",
+            plotId: "key-lot-a", measurement: "2024-01-01");
+        summary.Add("T1", "1", "Lote B", 2024, 3, 11, 1, true, 100, 10, "", "",
+            plotId: "key-lot-b", measurement: "2024-01-01");
+        Assert.Equal(2, summary.Complete().Plots);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

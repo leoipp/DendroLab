@@ -38,7 +38,7 @@ public sealed class FilteredTable : IDisposable
             {
                 cancellation.ThrowIfCancellationRequested(); scanned++;
                 if ((includedSourceRows == null || includedSourceRows.Contains(source.HeaderRow + scanned)) && matches(row))
-                { writer.Add(id, row); index.Write(source.HeaderRow + scanned); matched++; }
+                { writer.AddOwned(id, row); index.Write(source.HeaderRow + scanned); matched++; }
                 if ((scanned & 2047) == 0)
                     updates.Report(cursor.TotalRows > 0 ? 95d * scanned / cursor.TotalRows : null,
                         $"Filtrando: {scanned:N0} linhas verificadas · {matched:N0} encontradas", scanned);

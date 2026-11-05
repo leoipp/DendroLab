@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 using Dendro.Core.Configuration;
 
 namespace Dendro.Core.Tabular;
@@ -10,9 +9,15 @@ public static class CompactBankFile
     public static bool IsCompactBank(string path)
     {
         if (!File.Exists(path)) return false;
-        using var stream = File.OpenRead(path);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Write | FileShare.Delete);
         Span<byte> magic = stackalloc byte[8];
-        try { stream.ReadExactly(magic); return magic.SequenceEqual(CompactBankReader.Magic); }
+        try
+        {
+            stream.ReadExactly(magic);
+            return magic.SequenceEqual(CompactBankFormat.LegacyMagic)
+                || magic.SequenceEqual(CompactBankFormat.PreviousMagic)
+                || magic.SequenceEqual(CompactBankFormat.Magic);
+        }
         catch (EndOfStreamException) { return false; }
     }
 
@@ -79,6 +84,82 @@ public static class CompactBankFile
         return RemoveTables(location.File, table => removed.Contains(table.Dataset));
     }
 
+    public static (long FileBytes, long ActiveBlockBytes) StorageUsage(string path)
+    {
+        string bank = Location(path).File;
+        using var reader = new CompactBankReader(bank);
+        long activeBytes = reader.Catalog.Tables.Sum(table => table.Blocks.Sum(block => (long)block.Bytes));
+        return (new FileInfo(bank).Length, activeBytes);
+    }
+
+    /// <summary>Rewrites only live blocks into a fresh v4 bank and atomically replaces the old file.</summary>
+    public static void Compact(string path, CancellationToken cancellation = default, Action<long, long>? progress = null)
+    {
+        string bank = Location(path).File;
+        using var lease = SharedFileLock.Acquire(bank + ".write.lock", cancellation);
+        CompactLocked(bank, cancellation, progress);
+    }
+
+    private static void CompactLocked(string bank, CancellationToken cancellation, Action<long, long>? progress)
+    {
+        CompactTable[] tables;
+        using (var reader = new CompactBankReader(bank)) tables = reader.Catalog.Tables;
+        string temporary = bank + ".compact-" + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            long total = tables.Sum(table => table.Blocks.Sum(block => (long)block.Bytes));
+            long copied = 0;
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            using (var input = new FileStream(bank, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Write | FileShare.Delete))
+            using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+            {
+                CompactBankFormat.WriteHeader(output);
+                byte[] buffer = new byte[65536];
+                var rewritten = new List<CompactTable>(tables.Length);
+                foreach (var table in tables)
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    var blocks = new List<CompactBlock>(table.Blocks.Length);
+                    foreach (var block in table.Blocks)
+                    {
+                        input.Position = block.Offset;
+                        long offset = output.Position;
+                        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+                            System.Security.Cryptography.HashAlgorithmName.SHA256);
+                        int remaining = block.Bytes;
+                        while (remaining > 0)
+                        {
+                            cancellation.ThrowIfCancellationRequested();
+                            int count = input.Read(buffer, 0, Math.Min(buffer.Length, remaining));
+                            if (count == 0) throw new EndOfStreamException("Bloco incompleto no banco.");
+                            hash.AppendData(buffer, 0, count);
+                            output.Write(buffer, 0, count);
+                            remaining -= count;
+                            copied += count;
+                            if (watch.ElapsedMilliseconds >= 150)
+                            {
+                                progress?.Invoke(copied, total);
+                                watch.Restart();
+                            }
+                        }
+                        if (Convert.ToHexString(hash.GetHashAndReset()) != block.Hash)
+                            throw new InvalidDataException("Bloco corrompido no banco do projeto.");
+                        blocks.Add(block with { Offset = offset });
+                    }
+                    rewritten.Add(table with { Blocks = blocks.ToArray() });
+                }
+                cancellation.ThrowIfCancellationRequested();
+                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, rewritten.ToArray()));
+            }
+            cancellation.ThrowIfCancellationRequested();
+            File.Move(temporary, bank, true);
+            CompactBankReader.InvalidateCatalog(bank);
+            progress?.Invoke(total, total);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     public static bool RemoveTable(TableSource source, IReadOnlyCollection<string>? descendantDatasets = null)
     {
         CompactTable selected;
@@ -101,8 +182,12 @@ public static class CompactBankFile
         using var lease = SharedFileLock.Acquire(location.File + ".write.lock");
 
         CompactTable[] sourceTables;
+        long generation;
         using (var reader = new CompactBankReader(location.File))
+        {
             sourceTables = reader.Catalog.Tables;
+            generation = reader.Generation;
+        }
         var tables = sourceTables.ToList();
         int originalCount = tables.Count;
         tables.RemoveAll(remove);
@@ -113,13 +198,18 @@ public static class CompactBankFile
             return true;
         }
 
+        if (CompactBankFormat.IsAppendable(location.File))
+        {
+            AppendCatalog(location.File, new CompactCatalog(2, tables.ToArray()), generation + 1);
+            return true;
+        }
+
         string temporary = location.File + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
             using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                output.Write(CompactBankReader.Magic);
-                output.Write(new byte[8]);
+                CompactBankFormat.WriteHeader(output);
                 var rewritten = new List<CompactTable>(tables.Count);
                 using var data = File.OpenRead(location.File);
                 byte[] buffer = new byte[65536];
@@ -148,17 +238,10 @@ public static class CompactBankFile
                     }
                     rewritten.Add(table with { Blocks = blocks.ToArray() });
                 }
-                long index = output.Position;
-                byte[] catalog = JsonSerializer.SerializeToUtf8Bytes(new CompactCatalog(2, rewritten.ToArray()));
-                if (catalog.Length > 32 * 1024 * 1024) throw new InvalidDataException("Catálogo acima de 32 MB.");
-                using var writer = new BinaryWriter(output, Encoding.UTF8, true);
-                writer.Write(catalog.Length);
-                writer.Write(catalog);
-                output.Position = 8;
-                writer.Write(index);
-                output.Flush(true);
+                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, rewritten.ToArray()));
             }
             File.Move(temporary, location.File, true);
+            CompactBankReader.InvalidateCatalog(location.File);
             return true;
         }
         finally
@@ -184,11 +267,45 @@ public static class CompactBankFile
 
     internal static bool SameVersion(CompactTable first, CompactTable second) => first.Id == second.Id && first.Name == second.Name
         && first.Dataset == second.Dataset && first.Rows == second.Rows && first.Columns.SequenceEqual(second.Columns)
-        && first.Blocks.Select(b => (b.Bytes, b.FirstRow, b.Rows, b.Hash)).SequenceEqual(second.Blocks.Select(b => (b.Bytes, b.FirstRow, b.Rows, b.Hash)));
+        && first.Blocks.Length == second.Blocks.Length
+        && first.Blocks.Zip(second.Blocks).All(pair => SameBlock(pair.First, pair.Second));
+
+    private static bool SameBlock(CompactBlock first, CompactBlock second)
+    {
+        if ((first.Bytes, first.FirstRow, first.Rows, first.Hash) != (second.Bytes, second.FirstRow, second.Rows, second.Hash))
+            return false;
+        if (first.Segments == null || second.Segments == null)
+            return first.Segments == null && second.Segments == null;
+        return first.Segments.Select(segment => (segment.FirstColumn, segment.ColumnCount, segment.Offset, segment.Bytes, segment.Hash))
+            .SequenceEqual(second.Segments.Select(segment => (segment.FirstColumn, segment.ColumnCount, segment.Offset, segment.Bytes, segment.Hash)));
+    }
 
     public static void Import(string destination, IReadOnlyList<(string Source, string Dataset)> incoming, bool replace = false,
         CancellationToken cancellation = default, Action<long, long>? progress = null)
         => ImportCore(destination, incoming, replace, null, cancellation, progress);
+
+    private static void AppendCatalog(string path, CompactCatalog catalog, long generation)
+    {
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read | FileShare.Write | FileShare.Delete))
+            CompactBankFormat.PublishAppend(stream, generation, catalog);
+        CompactBankReader.InvalidateCatalog(path);
+        CompactIfWasteful(path);
+    }
+
+    // Append-only writes keep old blocks so a crash can never leave the active catalog half-written.
+    // Reclaim that space once it is materially larger than the live data, rather than rewriting
+    // large project banks after every small edit.
+    private static void CompactIfWasteful(string path)
+    {
+        long fileBytes = new FileInfo(path).Length;
+        long liveBytes;
+        using (var reader = new CompactBankReader(path))
+            liveBytes = reader.Catalog.Tables.Sum(table => table.Blocks.Sum(block => (long)block.Bytes));
+
+        long reclaimable = Math.Max(0, fileBytes - liveBytes - CompactBankFormat.HeaderBytes);
+        if (reclaimable < 8L * 1024 * 1024 || reclaimable < fileBytes / 10) return;
+        CompactLocked(path, CancellationToken.None, null);
+    }
 
     private static void ImportCore(string destination, IReadOnlyList<(string Source, string Dataset)> incoming, bool replace, CompactTable? replacedTable,
         CancellationToken cancellation = default, Action<long, long>? progress = null, IReadOnlyCollection<string>? removeDatasets = null, bool lockHeld = false)
@@ -199,6 +316,11 @@ public static class CompactBankFile
         if (incoming.Any(i => (string.IsNullOrWhiteSpace(i.Dataset) && replacedTable == null) || Path.GetFileName(i.Dataset) != i.Dataset)
             || incoming.Select(i => i.Dataset).Distinct(StringComparer.Ordinal).Count() != incoming.Count)
             throw new InvalidDataException("Identificadores de tabelas inválidos ou repetidos.");
+        if (CompactBankFormat.IsAppendable(destination))
+        {
+            AppendImport(destination, incoming, replace, replacedTable, cancellation, progress, removeDatasets);
+            return;
+        }
         string temp = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
@@ -217,7 +339,7 @@ public static class CompactBankFile
             }
             using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                output.Write(CompactBankReader.Magic); output.Write(new byte[8]);
+                CompactBankFormat.WriteHeader(output);
                 var tables = new List<CompactTable>();
                 var usedIds = new HashSet<string>(StringComparer.Ordinal);
                 var removedDatasets = (removeDatasets ?? []).ToHashSet(StringComparer.Ordinal);
@@ -280,15 +402,117 @@ public static class CompactBankFile
                 if (File.Exists(destination)) Copy(destination, null);
                 foreach (var item in incoming) Copy(item.Source, item.Dataset);
                 cancellation.ThrowIfCancellationRequested();
-                long index = output.Position;
-                byte[] catalog = JsonSerializer.SerializeToUtf8Bytes(new CompactCatalog(2, tables.ToArray()));
-                if (catalog.Length > 32 * 1024 * 1024) throw new InvalidDataException("Catálogo acima de 32 MB.");
-                using var writer = new BinaryWriter(output, Encoding.UTF8, true);
-                writer.Write(catalog.Length); writer.Write(catalog); output.Position = 8; writer.Write(index); output.Flush(true);
+                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, tables.ToArray()));
             }
             cancellation.ThrowIfCancellationRequested();
             File.Move(temp, destination, true);
+            CompactBankReader.InvalidateCatalog(destination);
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
+    private static void AppendImport(string destination, IReadOnlyList<(string Source, string Dataset)> incoming,
+        bool replace, CompactTable? replacedTable, CancellationToken cancellation, Action<long, long>? progress,
+        IReadOnlyCollection<string>? removeDatasets)
+    {
+        CompactTable[] existing;
+        long generation;
+        using (var reader = new CompactBankReader(destination))
+        {
+            existing = reader.Catalog.Tables;
+            generation = reader.Generation;
+        }
+        var incomingDatasets = incoming.Select(item => item.Dataset).ToHashSet(StringComparer.Ordinal);
+        if (replacedTable == null && !replace && existing.Any(table => incomingDatasets.Contains(table.Dataset)))
+            throw new IOException("Já existe uma tabela com esse nome no banco do projeto.");
+        if (replacedTable != null && !existing.Any(table => SameVersion(table, replacedTable)))
+            throw new InvalidOperationException("A tabela foi alterada por outro usuário. Atualize antes de gravar.");
+
+        var ids = existing.Select(table => table.Id).ToHashSet(StringComparer.Ordinal);
+        int nextId = 0;
+        string NewId()
+        {
+            while (ids.Contains("t" + nextId)) nextId++;
+            string id = "t" + nextId++;
+            ids.Add(id);
+            return id;
+        }
+        var removedDatasets = (removeDatasets ?? []).ToHashSet(StringComparer.Ordinal);
+        var tables = existing.Where(table =>
+        {
+            if (removedDatasets.Contains(table.Dataset)) return false;
+            if (replacedTable != null) return table.Id != replacedTable.Id;
+            return !replace || !incomingDatasets.Contains(table.Dataset);
+        }).ToList();
+
+        var sourceCatalogs = new List<(string Source, string Dataset, CompactTable[] Tables)>();
+        long totalBytes = 0;
+        foreach (var item in incoming)
+        {
+            using var reader = new CompactBankReader(item.Source);
+            var selected = reader.Catalog.Tables;
+            sourceCatalogs.Add((item.Source, item.Dataset, selected));
+            totalBytes += selected.Sum(table => table.Blocks.Sum(block => (long)block.Bytes));
+        }
+        progress?.Invoke(0, totalBytes);
+
+        using var output = new FileStream(destination, FileMode.Open, FileAccess.ReadWrite,
+            FileShare.Read | FileShare.Write | FileShare.Delete);
+        output.Position = output.Length;
+        byte[] buffer = new byte[65536];
+        long copied = 0;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        foreach (var item in sourceCatalogs)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var location = Location(item.Source);
+            using var source = new FileStream(location.File, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Write | FileShare.Delete);
+            foreach (var table in item.Tables)
+            {
+                var blocks = new List<CompactBlock>(table.Blocks.Length);
+                foreach (var block in table.Blocks)
+                {
+                    source.Position = block.Offset;
+                    long offset = output.Position;
+                    using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+                        System.Security.Cryptography.HashAlgorithmName.SHA256);
+                    int remaining = block.Bytes;
+                    while (remaining > 0)
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        int read = source.Read(buffer, 0, Math.Min(buffer.Length, remaining));
+                        if (read == 0) throw new EndOfStreamException("Bloco incompleto no banco.");
+                        hash.AppendData(buffer, 0, read);
+                        output.Write(buffer, 0, read);
+                        remaining -= read;
+                        copied += read;
+                        if (watch.ElapsedMilliseconds >= 150)
+                        {
+                            progress?.Invoke(copied, totalBytes);
+                            watch.Restart();
+                        }
+                    }
+                    if (Convert.ToHexString(hash.GetHashAndReset()) != block.Hash)
+                        throw new InvalidDataException("Bloco corrompido no banco de origem.");
+                    blocks.Add(block with { Offset = offset });
+                }
+                string id = replacedTable != null ? replacedTable.Id : NewId();
+                tables.Add(table with
+                {
+                    Id = id,
+                    Dataset = item.Dataset,
+                    Name = replacedTable != null ? replacedTable.Name : table.Name,
+                    Blocks = blocks.ToArray(),
+                });
+            }
+        }
+        cancellation.ThrowIfCancellationRequested();
+        output.Flush(true);
+        CompactBankFormat.PublishAppend(output, generation + 1, new CompactCatalog(2, tables.ToArray()));
+        output.Dispose();
+        CompactBankReader.InvalidateCatalog(destination);
+        progress?.Invoke(totalBytes, totalBytes);
+        CompactIfWasteful(destination);
     }
 }

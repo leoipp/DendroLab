@@ -11,12 +11,17 @@ public sealed class Formula
         double
     > evaluate;
 
+    public string[] Dependencies { get; }
+    public bool UsesGroupRows { get; }
+
     public Formula(string expression, IEnumerable<string> symbols)
     {
         if (string.IsNullOrWhiteSpace(expression) || expression.Length > 4096)
             throw new InvalidDataException("Fórmula vazia ou acima do limite.");
         var parser = new Parser(expression, symbols);
         evaluate = parser.Parse();
+        Dependencies = parser.Dependencies.Order(StringComparer.Ordinal).ToArray();
+        UsesGroupRows = parser.UsesGroupRows;
     }
 
     public double Evaluate(
@@ -33,6 +38,8 @@ public sealed class Formula
     {
         private int pos,
             depth;
+        public HashSet<string> Dependencies { get; } = new(StringComparer.Ordinal);
+        public bool UsesGroupRows { get; private set; }
         private readonly string[] names = symbols
             .Distinct()
             .OrderByDescending(s => s.Length)
@@ -197,15 +204,24 @@ public sealed class Formula
                         _ => throw Bad(),
                     };
                 if (name is "sum" or "soma" or "mean")
+                {
+                    UsesGroupRows = true;
                     return (v, g) =>
                     {
-                        var values = g is null
-                            ? new[] { a(v, null) }
-                            : g.Select(row => a(row, null)).Where(double.IsFinite).ToArray();
-                        return name == "mean"
-                            ? (values.Length > 0 ? values.Average() : double.NaN)
-                            : values.Sum();
+                        if (g is null) return a(v, null);
+                        double sum = 0;
+                        int count = 0;
+                        for (int i = 0; i < g.Count; i++)
+                        {
+                            var row = g[i];
+                            double value = a(row, null);
+                            if (!double.IsFinite(value)) continue;
+                            sum += value;
+                            count++;
+                        }
+                        return name == "mean" ? (count > 0 ? sum / count : double.NaN) : sum;
                     };
+                }
                 Func<double, double> f = name switch
                 {
                     "ln" or "log" => Math.Log,
@@ -235,6 +251,7 @@ public sealed class Formula
                 )
                 {
                     pos += symbol.Length;
+                    Dependencies.Add(symbol);
                     return (v, _) => v(symbol);
                 }
             if (Take("pi"))

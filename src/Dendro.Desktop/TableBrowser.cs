@@ -17,7 +17,7 @@ internal sealed class TableBrowser : DockPanel, IDisposable
     private sealed record Clause(TableFilter Filter, string Label);
     private static readonly (string Label, FilterOperator Operator)[] Operators = [
         ("Igual a", FilterOperator.Equal), ("Diferente de", FilterOperator.NotEqual), ("Contém", FilterOperator.Contains),
-        ("Começa com", FilterOperator.StartsWith), ("Maior que", FilterOperator.Greater), ("Maior ou igual a", FilterOperator.GreaterOrEqual),
+        ("Começa com", FilterOperator.StartsWith), ("Termina com", FilterOperator.EndsWith), ("Maior que", FilterOperator.Greater), ("Maior ou igual a", FilterOperator.GreaterOrEqual),
         ("Menor que", FilterOperator.Less), ("Menor ou igual a", FilterOperator.LessOrEqual), ("Está vazio", FilterOperator.Empty), ("Não está vazio", FilterOperator.NotEmpty)];
     private readonly ObservableCollection<Clause> clauses = new();
     private readonly Button export;
@@ -28,10 +28,15 @@ internal sealed class TableBrowser : DockPanel, IDisposable
     private bool syncingSelection;
     private long[] linkedSelection=[];
     internal IEnumerable<long> ViewSourceRows()=>filtered?.SourceRowNumbers()??Enumerable.Range(0,checked((int)Total)).Select(i=>(long)source.HeaderRow+i+1);
-    internal Task SetIncludedSourceRows(IEnumerable<long> rows)
+    internal async Task SetIncludedSourceRows(IEnumerable<long> rows)
     {
-        includedSourceRows = rows.ToHashSet();
-        return ApplyFilters(clauses.ToArray());
+        var included = await Task.Run(() => rows.ToHashSet());
+        var update = Dispatcher.InvokeAsync(() =>
+        {
+            includedSourceRows = included;
+            return ApplyFilters(clauses.ToArray());
+        });
+        await await update.Task;
     }
     internal void SelectSourceRows(IEnumerable<long> rows)
     {
@@ -263,6 +268,9 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         Offset = page.Offset;
         Total = page.Total;
         var table = Ui.Grid(page.Data.ToJson());
+        // Each header contains a filter button and Popup. Recycling those header visuals
+        // during horizontal column virtualization can detach/rebind the wrong header.
+        table.EnableColumnVirtualization = false;
         table.SelectionMode = DataGridSelectionMode.Extended;
         table.SelectionUnit = DataGridSelectionUnit.FullRow;
         table.CanUserDeleteRows = false;
@@ -297,7 +305,20 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         };
         table.AutoGeneratingColumn += (_, e) =>
         {
+            int columnIndex = e.PropertyName.StartsWith('c')
+                && int.TryParse(e.PropertyName[1..], out int parsedIndex) ? parsedIndex : -1;
             string name = e.Column.Header?.ToString() ?? "";
+            if (columnIndex >= 0 && columnIndex < page.Data.Width)
+            {
+                string raw = page.Data.Text(0, columnIndex);
+                string visible = new string(raw.Where(character =>
+                {
+                    var category = char.GetUnicodeCategory(character);
+                    return !char.IsControl(character) && category != System.Globalization.UnicodeCategory.Format;
+                }).ToArray()).Trim();
+                name = visible.Length > 0 ? visible : $"Coluna {columnIndex + 1}";
+            }
+            e.Column.MinWidth = Math.Max(e.Column.MinWidth, Math.Clamp(name.Length * 7.0 + 36, 84, 190));
             ColumnFormat format = ColumnFormatting(name);
             if (e.Column is DataGridTextColumn textColumn)
                 textColumn.Binding = new Binding(e.PropertyName) { Converter = new TableCellFormatting(format), StringFormat = "{0:G6}" };

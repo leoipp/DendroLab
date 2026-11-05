@@ -43,7 +43,7 @@ public static class SpreadsheetReader
                         bool b => b ? "TRUE" : "FALSE",
                         var value => value,
                     };
-                result.Add(row);
+                result.AddOwned(row);
             }
             while (result.Count > 0 && result.Rows[^1].All(v => v is null))
                 result.Rows.RemoveAt(result.Count - 1);

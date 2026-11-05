@@ -580,9 +580,14 @@ internal static partial class DesktopTests
                 Check(directResult.Arr("sheets").Select(n => n.Display()).SequenceEqual(new[] { "DIRETO - PROJETO", "INFORMACOES" }), "modo direto publica somente nível escolhido e informações");
                 Capture(window, Path.Combine(root, "processor-direct-wpf.png"));
                 int processingCount = window.Session.Meta.Arr("processing_results").Count;
+                string[] previousResultPaths = window.Session.Meta.Arr("processing_results").OfType<JsonObject>()
+                    .Select(result => result.S("path")).ToArray();
                 await directProcessor.Process();
-                Check(window.Session.Meta.Arr("processing_results").Count == processingCount,
-                    "reprocessar atualiza resultados existentes sem criar outro banco ou duplicar registros");
+                var resultsAfterReprocess = window.Session.Meta.Arr("processing_results").OfType<JsonObject>().ToArray();
+                Check(resultsAfterReprocess.Length == processingCount + 1
+                    && resultsAfterReprocess.Take(processingCount).Select(result => result.S("path")).SequenceEqual(previousResultPaths)
+                    && resultsAfterReprocess[^1].S("path") != directResult.S("path"),
+                    "reprocessar cria um novo resultado e preserva todos os bancos anteriores");
                 foreach (var inputPath in new[] { input, legacy }) {
                     var inputTree = LogicalControls<TreeViewItem>(window.ContentsTree).Single(n => n.Tag as string == inputPath);
                     var resultKeys = LogicalControls<TreeViewItem>(inputTree).Where(n => n.Tag is MainWindow.ResultSheetReference)
@@ -626,12 +631,12 @@ internal static partial class DesktopTests
             Check(
                 !inputNode
                     .ContextMenu!.Items.OfType<MenuItem>()
-                    .Any(m => m.Header?.ToString() == "Regressões…")
+                    .Any(m => m.Header?.ToString() == "Ajuste de regressão…")
                     && inputNode
                         .Items.OfType<TreeViewItem>()
                         .Any(n =>
                             n.ContextMenu!.Items.OfType<MenuItem>()
-                                .Any(m => m.Header?.ToString() == "Regressões…")
+                                .Any(m => m.Header?.ToString() == "Ajuste de regressão…")
                         ),
                 "menu Regressões aparece no gráfico, sem aparecer na planilha"
             );
@@ -646,6 +651,12 @@ internal static partial class DesktopTests
                 chartView.CurrentConfig["excluded"]!.AsArray().Count == 0,
                 "desfazer remoção no gráfico WPF"
             );
+            var x2Input = LogicalControls<ComboBox>(chartView)
+                .Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "Chart.X2");
+            var x3Input = LogicalControls<ComboBox>(chartView)
+                .Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "Chart.X3");
+            x2Input.SelectedItem = "H";
+            x3Input.SelectedItem = "Parcela";
             await chartView.Generate("fit", true);
             Check(
                 chartView.CurrentConfig["fits"]!.AsArray().Count == 12,
@@ -1109,7 +1120,7 @@ internal static partial class DesktopTests
         );
         var toolCards = ((ListBox)window.ToolContent.Content).Items.OfType<ListBoxItem>().Where(i => i.Tag is string).ToArray();
         var toolIcons = toolCards.Select(ShellVisuals.GetIcon).ToArray();
-        Check(toolCards.Length == 15 && toolIcons.Distinct().Count() == toolCards.Length,
+        Check(toolCards.Length == 22 && toolIcons.Distinct().Count() == toolCards.Length,
             "cada ferramenta possui um ícone próprio");
         Check(!Controls<Image>(window.Ribbon.Parent as DependencyObject ?? window).Any(i => i.Source?.ToString()?.Contains("logo.png") == true),
             "logo removido do canto superior direito da faixa de opções");
@@ -1495,6 +1506,12 @@ internal static partial class DesktopTests
         var tool = new ChartView(window, window.Session, true);
         window.SetTool(tool);
         await tool.Load(origin.S("path"), origin);
+        LogicalControls<ComboBox>(tool)
+            .Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "Chart.ComparePredictors")
+            .SelectedIndex = 1;
+        LogicalControls<CheckBox>(tool)
+            .Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "Chart.CompareModels")
+            .IsChecked = true;
         await tool.Generate("fit", true);
         Check(
             tool.CurrentConfig["fits"]!.AsArray().Count == 13,
@@ -1717,7 +1734,7 @@ internal static partial class DesktopTests
             .Single(b => b.Content?.ToString() == "Listar estratos")
             .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
-        var groups = LogicalControls<DataGrid>(stratify)
+        var groups = LogicalControls<ListBox>(stratify)
             .Single(g =>
                 g.ItemsSource
                 is System.Collections.ObjectModel.ObservableCollection<TableToolsView.GroupRow>

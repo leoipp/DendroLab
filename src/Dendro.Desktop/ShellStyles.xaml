@@ -14,6 +14,7 @@
     <Border Background="{Binding curve_color}" Height="3" Width="25" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="1" />
   </DataTemplate>
   <DataTemplate x:Key="ContentsItemHeader">
+    <Border x:Name="SelectionBackground" Background="Transparent" CornerRadius="4" Padding="2,1">
     <DockPanel LastChildFill="True" Margin="0,1">
       <local:CommandIcon
         Kind="{Binding Path=(local:ShellVisuals.Icon), RelativeSource={RelativeSource AncestorType=TreeViewItem}}"
@@ -30,7 +31,11 @@
       </Border>
       <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
     </DockPanel>
+    </Border>
     <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Path=(local:ShellVisuals.MultiSelected), RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
+        <Setter TargetName="SelectionBackground" Property="Background" Value="#DFEAF5" />
+      </DataTrigger>
       <DataTrigger Binding="{Binding Path=(local:ShellVisuals.Missing), RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
         <Setter TargetName="MissingBadge" Property="Visibility" Value="Visible" />
       </DataTrigger>
@@ -287,12 +292,24 @@
           Value="Explorar dados em gráficos de dispersão"
         />
       </DataTrigger>
-      <DataTrigger Binding="{Binding}" Value="Regressões">
+      <DataTrigger Binding="{Binding}" Value="Ajuste de regressão">
         <Setter
           TargetName="Description"
           Property="Text"
           Value="Ajustar e comparar modelos em um gráfico"
         />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Ajustar rede neural">
+        <Setter TargetName="Description" Property="Text" Value="Treinar uma rede neural para usar no Processador" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Ajustar Random Forest">
+        <Setter TargetName="Description" Property="Text" Value="Treinar um Random Forest para usar no Processador" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Ajustar Gradient Boosting">
+        <Setter TargetName="Description" Property="Text" Value="Treinar um Gradient Boosting para usar no Processador" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding}" Value="Ajustar SVR">
+        <Setter TargetName="Description" Property="Text" Value="Treinar um SVR para usar no Processador" />
       </DataTrigger>
       <DataTrigger Binding="{Binding}" Value="Juntar tabelas">
         <Setter TargetName="Description" Property="Text" Value="Reunir dados de várias tabelas" />

@@ -35,7 +35,13 @@ public static class StatisticalAnalysis
     )
     {
         HypothesisTests.ValidateAlpha(request.Alpha);
-        using var cursor = new TableCursor(source);
+        bool paired = request.Test == StatisticalTest.PairedT;
+        bool grouped = !paired && request.GroupColumn.Length > 0;
+        var requestedColumns = new List<string> { request.ValueColumn };
+        if (grouped) requestedColumns.Add(request.GroupColumn);
+        else requestedColumns.Add(request.SecondColumn);
+        if (request.Test == StatisticalTest.Identity) requestedColumns.Add(request.XColumn);
+        using var cursor = TableCursor.Projected(source, requestedColumns);
         int Require(string name)
         {
             int index = Array.IndexOf(cursor.Columns, name);
@@ -44,8 +50,6 @@ public static class StatisticalAnalysis
                 : throw new InvalidDataException($"Selecione uma coluna válida: {name}.");
         }
         int valueColumn = Require(request.ValueColumn);
-        bool paired = request.Test == StatisticalTest.PairedT;
-        bool grouped = !paired && request.GroupColumn.Length > 0;
         if (
             request.Test
                 is StatisticalTest.Identity

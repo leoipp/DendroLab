@@ -41,4 +41,13 @@ public static class ShellVisuals
 
     public static void SetMissing(DependencyObject element, bool value) =>
         element.SetValue(MissingProperty, value);
+
+    public static readonly DependencyProperty MultiSelectedProperty = DependencyProperty.RegisterAttached(
+        "MultiSelected", typeof(bool), typeof(ShellVisuals), new PropertyMetadata(false));
+
+    public static bool GetMultiSelected(DependencyObject element) =>
+        (bool)element.GetValue(MultiSelectedProperty);
+
+    public static void SetMultiSelected(DependencyObject element, bool value) =>
+        element.SetValue(MultiSelectedProperty, value);
 }

@@ -51,9 +51,22 @@ public sealed class HelpIcon : Border
         ToolTipService.SetInitialShowDelay(this, 250);
         ToolTipService.SetShowDuration(this, 60000);
         AutomationProperties.SetName(this, "Ajuda");
-        GotKeyboardFocus += (_, _) => popup.IsOpen = true;
+        // Receiving focus is common when a tool opens or the user tabs through a form;
+        // it must not pin a help popup open. Hover remains the normal interaction.
         LostKeyboardFocus += (_, _) => popup.IsOpen = false;
-        MouseLeftButtonUp += (_, _) => popup.IsOpen = !popup.IsOpen;
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key is Key.Enter or Key.Space)
+            {
+                popup.IsOpen = true;
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape && popup.IsOpen)
+            {
+                popup.IsOpen = false;
+                e.Handled = true;
+            }
+        };
         Text = text;
         UpdateText(text);
     }

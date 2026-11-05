@@ -151,10 +151,17 @@ internal sealed class StatisticalTestsView : ScrollViewer
         Visible(model, identity);
         help.Text =
             identity
-                ? "Teste estatístico de regressão: compara uma equação comum com equações ajustadas por grupo, usando a mesma família de modelo. Para modelos não lineares, o F é aproximado. Não use observações dependentes como se fossem réplicas independentes."
+                ? "Use para perguntar se dois ou mais grupos podem compartilhar a mesma equação de regressão. Selecione X, Y, a coluna que identifica os grupos e uma família de modelo 1P; clique em Listar grupos e mantenha pelo menos dois marcados. O teste compara uma equação comum com ajustes separados por grupo. Não é um teste de médias e não compara colunas estimadas. Para modelos não lineares, F é uma aproximação."
             : paired
-                ? "Cada linha forma um par A/B. As duas colunas precisam representar as mesmas unidades nas duas condições. Linhas incompletas são omitidas em conjunto."
-            : "Informe amostras independentes. Welch compara médias; F e Brown–Forsythe comparam variâncias; ANOVA compara médias de vários grupos. Confira os pressupostos apresentados no resultado.";
+                ? "Use quando as duas medições pertencem à mesma unidade: cada linha deve conter A e B da mesma parcela, árvore ou indivíduo. Selecione as duas colunas; o teste verifica se a diferença média A − B é zero. Pares incompletos são descartados juntos."
+            : test.SelectedIndex switch
+            {
+                1 => "t de Welch compara a média de Y entre duas amostras independentes e não exige variâncias iguais. Use Valores separados por grupo, escolha a coluna de grupos, clique em Listar grupos e marque exatamente dois; ou use Duas colunas da mesma tabela se cada amostra estiver em uma coluna. Não use para medições repetidas das mesmas unidades.",
+                3 => "F de variâncias compara a variância de duas amostras independentes. Selecione exatamente dois grupos ou duas colunas. É sensível a desvios de normalidade; para dados menos normais, prefira Brown–Forsythe.",
+                4 => "ANOVA de um fator compara as médias de três ou mais grupos independentes em uma coluna Y. Selecione a coluna de grupos, clique em Listar grupos e marque os grupos. Um resultado significativo indica que pelo menos uma média difere, mas não identifica qual par.",
+                5 => "Brown–Forsythe compara variâncias de dois ou mais grupos usando desvios em relação à mediana; costuma ser mais robusto que o teste F quando os dados não são normais. Selecione Y e a coluna de grupos, liste os grupos e marque pelo menos dois.",
+                _ => "Escolha o teste conforme a pergunta e a estrutura da amostra. Os testes de médias e variâncias exigem grupos independentes; confira os pressupostos e observações do resultado.",
+            };
     }
 
     private string CurrentPath =>

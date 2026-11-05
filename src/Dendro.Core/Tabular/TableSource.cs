@@ -21,28 +21,41 @@ public sealed class TableCursor : IDisposable
     private readonly BankTable? table;
     private readonly CompactBankReader? compact;
     private readonly CompactTable? compactTable;
+    private readonly int[]? compactColumns;
     private readonly int compactHeaderSkip;
     public string[] Columns { get; }
     public long? TotalRows { get; }
 
-    public TableCursor(TableSource source)
+    public TableCursor(TableSource source, IReadOnlyList<int>? selectedColumns = null)
     {
         if (System.IO.Path.GetExtension(source.Path).Equals(CompactBankReader.Extension, StringComparison.OrdinalIgnoreCase))
         {
             compact = new CompactBankReader(source.Path);
             try {
                 compactTable = compact.Table(source.Table);
-                Columns = compactTable.Columns;
+                if (selectedColumns != null)
+                {
+                    compactColumns = selectedColumns.ToArray();
+                    if (compactColumns.Length == 0 || compactColumns.Any(index => index < 0 || index >= compactTable.Columns.Length)
+                        || compactColumns.Distinct().Count() != compactColumns.Length)
+                        throw new InvalidDataException("Projeção de colunas inválida para a tabela.");
+                    Columns = compactColumns.Select(index => compactTable.Columns[index]).ToArray();
+                }
+                else Columns = compactTable.Columns;
                 if (source.HeaderRow < 1 || source.HeaderRow > compactTable.Rows + 1)
                     throw new InvalidDataException("Linha de cabeçalho ausente no banco.");
                 compactHeaderSkip = source.HeaderRow - 1;
                 if (compactHeaderSkip > 0)
-                    Columns = compact.Rows(compactTable, compactHeaderSkip - 1, 1).First().Select(Text).ToArray();
+                {
+                    var header = compact.Rows(compactTable, compactHeaderSkip - 1, 1).First().Select(Text).ToArray();
+                    Columns = compactColumns == null ? header : compactColumns.Select(index => header[index]).ToArray();
+                }
                 TotalRows = compactTable.Rows - compactHeaderSkip;
             } catch { compact.Dispose(); throw; }
         }
         else if (TableStore.IsBank(source.Path))
         {
+            if (selectedColumns != null) throw new NotSupportedException("A projeção de colunas está disponível para bancos DLB.");
             bank = TableStore.OpenBank(source.Path);
             try
             {
@@ -66,6 +79,7 @@ public sealed class TableCursor : IDisposable
         }
         else
         {
+            if (selectedColumns != null) throw new NotSupportedException("A projeção de colunas está disponível para bancos DLB.");
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             var stream = File.Open(
                 source.Path,
@@ -85,10 +99,10 @@ public sealed class TableCursor : IDisposable
             try
             {
                 if (source.Table.Length > 0)
-                    while (excel.Name != source.Table)
+                    while (!string.Equals(excel.Name, source.Table, StringComparison.OrdinalIgnoreCase))
                         if (!excel.NextResult())
                             throw new InvalidDataException(
-                                $"Worksheet não encontrada: {source.Table}."
+                                $"Worksheet '{source.Table}' não encontrada na fonte '{source.Path}'."
                             );
                 if (source.HeaderRow < 1 || source.HeaderRow > 1048576)
                     throw new InvalidDataException("Cabeçalho inválido.");
@@ -108,13 +122,25 @@ public sealed class TableCursor : IDisposable
         }
     }
 
+    public static TableCursor Projected(TableSource source, IReadOnlyList<string> selectedColumns)
+    {
+        if (!CompactBankFile.IsCompactBank(source.Path) || selectedColumns.Count == 0)
+            return new TableCursor(source);
+        using var schema = new TableCursor(source);
+        string[] names = selectedColumns.Distinct(StringComparer.Ordinal).ToArray();
+        int[] indexes = names.Select(name => Array.IndexOf(schema.Columns, name)).ToArray();
+        // Let the caller's established validation produce its normal missing-column message.
+        if (indexes.Any(index => index < 0)) return new TableCursor(source);
+        return new TableCursor(source, indexes);
+    }
+
     public IEnumerable<object?[]> Rows(long offset = 0, int? limit = null)
     {
         if (offset < 0)
             throw new ArgumentOutOfRangeException(nameof(offset));
         if (compact != null)
         {
-            foreach (var row in compact.Rows(compactTable!, offset + compactHeaderSkip, limit)) yield return row;
+            foreach (var row in compact.ProjectedRows(compactTable!, compactColumns, offset + compactHeaderSkip, limit)) yield return row;
         }
         else if (bank != null)
         {
@@ -175,7 +201,7 @@ public sealed class TableCursor : IDisposable
                 if (row != null) row[c] = value;
             }
             if (blank) continue;
-            if (row != null) page.Add(row);
+            if (row != null) page.AddOwned(row);
             total++;
         }
         return new(page, total, offset);
@@ -285,7 +311,7 @@ public static class TableStore
         }
         var data = new DataTable(cursor.Columns);
         foreach (var row in cursor.Rows(offset, limit))
-            data.Add(row);
+            data.AddOwned(row);
         return new(data, total, offset);
     }
 
@@ -301,7 +327,7 @@ public static class TableStore
         using var cursor = new TableCursor(source);
         var result = new DataTable(cursor.Columns);
         foreach (var row in cursor.Rows())
-            result.Add(row);
+            result.AddOwned(row);
         return result;
     }
 }

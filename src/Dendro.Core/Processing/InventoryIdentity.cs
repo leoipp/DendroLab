@@ -10,6 +10,29 @@ namespace Dendro.Core.Processing;
 
 public sealed record InventoryContext(string Id, string Origin, string Type);
 
+internal readonly record struct InventoryKeyFingerprint(ulong A, ulong B, ulong C, ulong D)
+{
+    public static InventoryKeyFingerprint FromHash(ReadOnlySpan<byte> hash)
+    {
+        if (hash.Length != 32) throw new ArgumentException("Fingerprint SHA-256 inválido.", nameof(hash));
+        return new(
+            System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(hash),
+            System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(hash[8..]),
+            System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(hash[16..]),
+            System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(hash[24..]));
+    }
+    public override int GetHashCode() => HashCode.Combine(A, B, C, D);
+    public string ToHexString()
+    {
+        Span<byte> bytes = stackalloc byte[32];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bytes, A);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bytes[8..], B);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bytes[16..], C);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bytes[24..], D);
+        return Convert.ToHexString(bytes);
+    }
+}
+
 public sealed class InventoryIdentity
 {
     public static JsonObject Defaults() => new() { ["arvore"] = new JsonArray("talhao", "parcela", "cova", "fuste", "fila", "data_medicao"),
@@ -36,7 +59,7 @@ public sealed class InventoryIdentity
     private readonly int dateColumn, typeColumn;
     private readonly string defaultType;
     private readonly Dictionary<(string Type, string Origin), InventoryContext> contexts = new();
-    private readonly Dictionary<string, string> plots = new(StringComparer.Ordinal);
+    private readonly Dictionary<InventoryKeyFingerprint, string> plots = new();
     private readonly Dictionary<double, string> dates = new();
     private readonly Dictionary<DataTable, (int Source, int Target)[]> copiedColumns = new();
     private static readonly InventoryContext EmptyContext = new("", "", "");
@@ -81,23 +104,36 @@ public sealed class InventoryIdentity
         if (!contexts.TryGetValue(key, out var context)) contexts[key] = context = new(Hash(JsonSerializer.Serialize(new[] { key.Item1, key.Item2 })), origin, type);
         return context;
     }
-    private string RawKey(int row, int[] columns)
+    private InventoryKeyFingerprint RawKey(int row, int[] columns)
     {
-        var values = columns.Select(c =>
+        IEnumerable<string> Values()
         {
-            if (c != dateColumn) return input.Text(row, c);
-            double date = input.Value(row, c) is double number ? number : InventoryMath.Date(input.Text(row, c));
-            if (!double.IsFinite(date)) throw new InvalidDataException($"Linha {row + 1}: data de medição inválida.");
-            if (!dates.TryGetValue(date, out string? value)) dates[date] = value = DateTime.FromOADate(date).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            return value;
-        });
-        return JsonSerializer.Serialize(new[] { Context(row).Id }.Concat(values));
+            foreach (int c in columns)
+            {
+                if (c != dateColumn) { yield return input.Text(row, c); continue; }
+                object? cell = input.Value(row, c);
+                double date = cell is double number ? number : InventoryMath.Date(input.Text(row, c));
+                if (!double.IsFinite(date))
+                {
+                    string rawDate = input.Text(row, c);
+                    string displayed = rawDate.Length <= 100 ? rawDate : rawDate[..100] + "…";
+                    throw new InvalidDataException($"Linha {row + 1}: data de medição inválida na coluna '{input.Text(0, c)}' (valor: '{displayed}').");
+                }
+                if (!dates.TryGetValue(date, out string? value)) dates[date] = value = DateTime.FromOADate(date).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                yield return value;
+            }
+        }
+        byte[] serialized = JsonSerializer.SerializeToUtf8Bytes(new[] { Context(row).Id }.Concat(Values()));
+        Span<byte> hash = stackalloc byte[32];
+        SHA256.HashData(serialized, hash);
+        return InventoryKeyFingerprint.FromHash(hash);
     }
-    public string TreeKey(int row) => Hash(RawKey(row, treeColumns));
+    internal InventoryKeyFingerprint TreeFingerprint(int row) => RawKey(row, treeColumns);
+    public string TreeKey(int row) => TreeFingerprint(row).ToHexString();
     public string PlotKey(int row)
     {
-        string key = RawKey(row, plotColumns);
-        if (!plots.TryGetValue(key, out string? stored)) plots[key] = stored = Hash(key);
+        var key = RawKey(row, plotColumns);
+        if (!plots.TryGetValue(key, out string? stored)) plots[key] = stored = key.ToHexString();
         return stored;
     }
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));

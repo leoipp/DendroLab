@@ -14,6 +14,8 @@ internal sealed class PairedMeasurementsView : ScrollViewer
     private readonly ComboBox source = Ui.Combo([]), date = Ui.Combo([]), aggregation = Ui.Combo([
         "Somar valores repetidos", "Calcular a média", "Usar o maior valor", "Usar o menor valor", "Exigir um único valor"
     ]);
+    private readonly ComboBox format = Ui.Combo(["Amplo · uma linha por chave", "Longitudinal · uma linha por par"]),
+        pairing = Ui.Combo(["Sequenciais · i1–i2, i2–i3…", "Todos os pares · i1–i2, i1–i3…"]);
     private readonly ListBox values = new() { SelectionMode = SelectionMode.Multiple, MinHeight = 100, MaxHeight = 190 };
     private readonly CheckBox trees = new() { Content = "Por árvore", IsChecked = true };
     private readonly CheckBox plots = new() { Content = "Por parcela", IsChecked = false };
@@ -49,6 +51,12 @@ internal sealed class PairedMeasurementsView : ScrollViewer
         form.Children.Add(plots);
         form.Children.Add(keySummary);
         Ui.AddHelp(form, "As chaves são usadas diretamente de Projeto > Configurações > Identificação; a data é retirada para encontrar o mesmo indivíduo ou parcela em anos diferentes. Em Ambos, são criadas tabelas separadas para árvores e parcelas.");
+        Ui.Section(form, "Formato do resultado");
+        Ui.Field(form, "Organização das medições", format);
+        Ui.Field(form, "Pares longitudinais", pairing);
+        Ui.AddHelp(form, "Amplo mantém uma linha por chave e cria colunas para cada ano. Longitudinal cria uma linha por chave e par de ocasiões, com valores de i1 e i2 lado a lado. Sequenciais compara ocasiões vizinhas; todos os pares gera todas as combinações, como i1–i2, i1–i3 e i2–i3.");
+        format.SelectionChanged += (_, _) => pairing.IsEnabled = format.SelectedIndex == 1;
+        pairing.IsEnabled = false;
         Ui.Field(form, "Quando houver mais de um registro para a mesma chave e ano", aggregation);
         Ui.AddHelp(form, "Soma é adequada a volumes por árvore quando o resultado é por parcela. Para indicadores por hectare ou valores repetidos da parcela, escolha Média. Exigir um único valor evita agregar e interrompe a operação ao encontrar duplicatas.");
         Ui.Section(form, "Resultado");
@@ -164,18 +172,21 @@ internal sealed class PairedMeasurementsView : ScrollViewer
         if (levels.Contains("parcela") && plotKeyColumns.Length == 0)
             throw new InvalidOperationException("Selecione as chaves que identificam uma parcela.");
         string baseName = TableTools.SuggestedName(outputName.Text);
-        string[] proposed = levels.Select(level => TableTools.SuggestedName(baseName + " · " + (level == "arvore" ? "Árvores" : "Parcelas"))).ToArray();
+        string formatSuffix = format.SelectedIndex == 1 ? " · Longitudinal" : "";
+        string[] proposed = levels.Select(level => TableTools.SuggestedName(baseName + " · " + (level == "arvore" ? "Árvores" : "Parcelas") + formatSuffix)).ToArray();
         string bank = session.Resolve(session.Meta.S("database_path"));
         var existing = await Task.Run(() => TableStore.Tables(bank));
         if (proposed.Any(name => existing.Contains(name, StringComparer.Ordinal)))
             throw new InvalidOperationException("Já existe uma tabela com esse nome no banco do projeto. Informe outro nome base.");
         var options = new PairedMeasurementOptions(
             dateColumn, selectedValues, treeKeyColumns, plotKeyColumns, levels,
-            new[] { "sum", "mean", "max", "min", "unique" }[aggregation.SelectedIndex < 0 ? 0 : aggregation.SelectedIndex]
+            new[] { "sum", "mean", "max", "min", "unique" }[aggregation.SelectedIndex < 0 ? 0 : aggregation.SelectedIndex],
+            format.SelectedIndex == 1 ? "longitudinal" : "wide",
+            pairing.SelectedIndex == 1 ? "all" : "sequential"
         );
         string folder = session.ProjectWorkFolder();
         var cancellation = owner.OperationCancellation;
-        var progress = owner.StartTableOperation("Pareando medições por chave e ano…");
+        var progress = owner.StartTableOperation(format.SelectedIndex == 1 ? "Organizando pares longitudinais…" : "Pareando medições por chave e ano…");
         PairedMeasurementsResult? result = null;
         try
         {
@@ -194,8 +205,11 @@ internal sealed class PairedMeasurementsView : ScrollViewer
             session.RenameContent(reference, table.Table);
             await owner.OpenTable(reference, table.Table);
         }
-        status.Text = $"{result.ReadRows:N0} linhas lidas · {result.InvalidDates:N0} datas inválidas · {result.EmptyKeys:N0} chaves vazias · {result.DuplicateKeyYears:N0} chave/ano repetidos · N incluído por ano.";
-        owner.Log($"Pareamento concluído: {string.Join("; ", result.Tables.Select(t => $"{t.Table}: {t.Rows:N0} linhas"))}. {selectedValues.Length:N0} campos comparados; N por ano incluído.");
+        string resultFormat = format.SelectedIndex == 1
+            ? pairing.SelectedIndex == 1 ? "longitudinal · todos os pares" : "longitudinal · pares sequenciais"
+            : "amplo";
+        status.Text = $"Formato {resultFormat} · {result.ReadRows:N0} linhas lidas · {result.InvalidDates:N0} datas inválidas · {result.EmptyKeys:N0} chaves vazias · {result.DuplicateKeyYears:N0} chave/ano repetidos · N por indivíduo e ocasião incluído.";
+        owner.Log($"Pareamento {resultFormat} concluído: {string.Join("; ", result.Tables.Select(t => $"{t.Table}: {t.Rows:N0} linhas"))}. {selectedValues.Length:N0} campos comparados; N por indivíduo e ocasião incluído.");
     }
 
     private static string FormatKeys(string[] keys) => keys.Length == 0 ? "não configuradas na origem" : string.Join(", ", keys);

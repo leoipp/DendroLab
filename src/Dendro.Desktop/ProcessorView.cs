@@ -2,6 +2,7 @@
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Dendro.Core.Configuration;
 using Dendro.Core.Processing;
 using Dendro.Core.Tabular;
@@ -11,7 +12,7 @@ namespace Dendro.Desktop;
 internal sealed class ProcessorView : ScrollViewer
 {
     internal bool SourcesChanged =>
-        !choices
+        choicesLoaded && !choices
             .Select(c => c.Path)
             .SequenceEqual(
                 session.Files.Where(session.IsTabular),
@@ -22,10 +23,15 @@ internal sealed class ProcessorView : ScrollViewer
     private readonly TextBox prefix,
         factor;
     private readonly Button inventory;
+    private readonly ContextMenu inventoryMenu;
+    private readonly HashSet<string> selectedInputs;
     private readonly ComboBox mode = Ui.Combo(["Inventário com revisão e aprovação", "Resumo direto por nível"]);
     private readonly ComboBox inventoryType = Ui.Combo(["IFC", "IFPC", "MISTO"]), factorScope = Ui.Combo(["Talhão", "Lote"]);
     private readonly Dictionary<string, CheckBox> summaryLevels = new();
     private readonly List<(string Path, CheckBox Box)> choices = new();
+    private bool choicesLoaded;
+    private bool suppressSelectionChange;
+    private Task? choicesPopulation;
 
     public ProcessorView(MainWindow owner, ProjectSession session)
     {
@@ -63,37 +69,27 @@ internal sealed class ProcessorView : ScrollViewer
         form.Children.Add(summaries);
         Ui.Section(form,"Inventários de entrada");
         inventory = new Button { HorizontalContentAlignment = HorizontalAlignment.Left };
-        var menu = new ContextMenu { StaysOpen = true };
-        inventory.Click += (_, _) =>
-        {
-            menu.PlacementTarget = inventory;
-            menu.IsOpen = true;
-        };
+        var menu = inventoryMenu = new ContextMenu { StaysOpen = true };
         var all = new CheckBox { Content = "Marcar todos", Margin = new Thickness(12, 7, 12, 7) };
         var allItem = new MenuItem { Header = all, StaysOpenOnClick = true };
         menu.Items.Add(allItem);
         menu.Items.Add(new Separator());
-        var selected = session
+        var selected = selectedInputs = session
             .Meta.Arr("batch_inputs")
             .Select(n => n.Display())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in session.Files.Where(session.IsTabular))
+        inventory.Click += async (_, _) =>
         {
-            var box = new CheckBox
-            {
-                Content = session.ContentName(path),
-                IsChecked = selected.Contains(path),
-                Margin = new Thickness(12, 7, 12, 7),
-            };
-            choices.Add((path, box));
-            menu.Items.Add(new MenuItem { Header = box, StaysOpenOnClick = true });
-            box.Checked += (_, _) => SelectionChanged();
-            box.Unchecked += (_, _) => SelectionChanged();
-        }
+            if (!choicesLoaded) await PopulateChoices(menu, selected);
+            menu.PlacementTarget = inventory;
+            menu.IsOpen = true;
+        };
         all.Click += (_, _) =>
         {
+            suppressSelectionChange = true;
             foreach (var choice in choices)
                 choice.Box.IsChecked = all.IsChecked;
+            suppressSelectionChange = false;
             SelectionChanged();
         };
         form.Children.Add(inventory);
@@ -116,8 +112,40 @@ internal sealed class ProcessorView : ScrollViewer
         Content = form;
     }
 
+    private Task PopulateChoices(ContextMenu menu, HashSet<string> selected)
+    {
+        if (choicesLoaded) return Task.CompletedTask;
+        return choicesPopulation ??= PopulateChoicesCore(menu, selected);
+    }
+
+    private async Task PopulateChoicesCore(ContextMenu menu, HashSet<string> selected)
+    {
+        string[] paths = session.Files.Where(session.IsTabular).ToArray();
+        for (int i = 0; i < paths.Length; i++)
+        {
+            string path = paths[i];
+            var box = new CheckBox
+            {
+                Content = session.ContentName(path),
+                IsChecked = selected.Contains(path),
+                Margin = new Thickness(12, 7, 12, 7),
+            };
+            choices.Add((path, box));
+            menu.Items.Add(new MenuItem { Header = box, StaysOpenOnClick = true });
+            box.Checked += (_, _) => { if (!suppressSelectionChange) SelectionChanged(); };
+            box.Unchecked += (_, _) => { if (!suppressSelectionChange) SelectionChanged(); };
+            if ((i + 1) % 32 == 0)
+                await Dispatcher.Yield(DispatcherPriority.Background);
+        }
+        choicesLoaded = true;
+        UpdateSummary();
+    }
+
     private void SelectionChanged()
     {
+        if (suppressSelectionChange) return;
+        selectedInputs.Clear();
+        foreach (var choice in choices.Where(c => c.Box.IsChecked == true)) selectedInputs.Add(choice.Path);
         UpdateSummary();
         session.Meta["batch_inputs"] = new JsonArray(
             choices
@@ -130,9 +158,12 @@ internal sealed class ProcessorView : ScrollViewer
 
     private void UpdateSummary()
     {
-        int count = choices.Count(c => c.Box.IsChecked == true);
+        string[] selected = choicesLoaded
+            ? choices.Where(c => c.Box.IsChecked == true).Select(c => c.Path).ToArray()
+            : session.Files.Where(session.IsTabular).Where(selectedInputs.Contains).ToArray();
+        int count = selected.Length;
         inventory.Content =
-            count == 1 ? session.ContentName(choices.First(c => c.Box.IsChecked == true).Path)
+            count == 1 ? session.ContentName(selected[0])
             : count > 0 ? $"{count} inventários selecionados  ▾"
             : "Selecionar inventários  ▾";
     }
@@ -184,6 +215,9 @@ internal sealed class ProcessorView : ScrollViewer
 
     internal async Task Process()
     {
+        // Keep execution reliable when invoked before the view receives its WPF
+        // Loaded event (for example, automation and keyboard-triggered actions).
+        await PopulateChoices(inventoryMenu, selectedInputs);
         Capture();
         bool versioned = mode.SelectedIndex == 0;
         if (versioned && session.FilePath.Length == 0) throw new InvalidOperationException("Salve o projeto antes de criar o histórico de processamento.");
@@ -261,6 +295,7 @@ internal sealed class ProcessorView : ScrollViewer
                             new() { ["op"] = "sheets", ["path"] = output }
                         )
                     )["result"]!.AsArray();
+                    bool directResult = resultSheets.Any(s => s.Display().StartsWith("DIRETO -", StringComparison.Ordinal));
                     if (run != null)
                     {
                         run["sheets"] = new JsonArray(resultSheets.Where(s => !s.Display().StartsWith(ProcessingHistory.InternalPrefix, StringComparison.Ordinal)).Select(s => s!.DeepClone()).ToArray());
@@ -282,12 +317,9 @@ internal sealed class ProcessorView : ScrollViewer
                     }
                     else
                     {
-                    bool directResult = resultSheets.Any(s => s.Display().StartsWith("DIRETO -", StringComparison.Ordinal));
-                    var previous = session.Meta.Arr("processing_results").OfType<JsonObject>().Where(p =>
-                        p.S("source_path") == path && p.Arr("sheets").Any(s => s.Display().StartsWith("DIRETO -", StringComparison.Ordinal)) == directResult).ToArray();
-                    string? previousPath = previous.LastOrDefault()?.S("path");
-                    string reference = await session.CommitBankFile(output, previousPath);
-                    foreach (var old in previous) session.Meta.Arr("processing_results").Remove(old);
+                    // Cada execução é uma versão independente. Nunca substituir o resultado
+                    // anterior da mesma origem: o histórico deve continuar acessível no projeto.
+                    string reference = await session.CommitBankFile(output);
                     session.AddFile(reference);
                     session.SetExcel(
                         reference,
@@ -310,10 +342,14 @@ internal sealed class ProcessorView : ScrollViewer
                     });
                     session.Touch();
                     owner.Log(
-                        $"{session.ContentName(path)} → tabelas no arquivo do projeto · {r["result"]!.N("trees"):N0} árvores · volume {r["result"]!.N("volume"):N3}"
+                        $"{session.ContentName(path)} → novo resultado {Path.GetFileNameWithoutExtension(reference)} · {r["result"]!.N("trees"):N0} árvores · volume {r["result"]!.N("volume"):N3}"
                     );
                     }
-                    if (r["result"]!.N("removed_duplicates") > 0)
+                    if (directResult)
+                        owner.Log(
+                            $"{session.ContentName(path)}: {r["result"]!.N("trees"):N0} linhas usadas; remoção de duplicadas {(config.At("processador").B("remover_duplicadas") ? "ativada" : "desativada")}; {r["result"]!.N("removed_duplicates"):N0} removida(s)."
+                        );
+                    else if (r["result"]!.N("removed_duplicates") > 0)
                         owner.Log($"{session.ContentName(path)}: {r["result"]!.N("removed_duplicates"):N0} registro(s) duplicado(s) removido(s); mantida a primeira ocorrência de cada chave configurada.");
                 }
                 catch (OperationCanceledException) { throw; }

@@ -17,13 +17,14 @@ public enum FilterOperator
     StartsWith,
     Empty,
     NotEmpty,
+    EndsWith,
 }
 
 public sealed record TableFilter(string Column, FilterOperator Operator, string Value = "");
 
 public sealed record Stratum(string Key, string Value, long Rows);
 
-public sealed record StratumOutput(string Key, string Name);
+public sealed record StratumOutput(string Key, string Name, string[]? MergedKeys = null);
 
 public sealed record DerivedColumn(string Name, string[] SourceColumns, string Separator = " · ", string Expression = "");
 
@@ -48,6 +49,24 @@ public static class TableTools
             );
     }
 
+    /// <summary>Repairs blank and repeated source labels without changing column order.</summary>
+    public static string[] NormalizeHeaders(string[] columns)
+    {
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new string[columns.Length];
+        for (int i = 0; i < columns.Length; i++)
+        {
+            string original = columns[i]?.Trim() ?? "";
+            string stem = original.Length == 0 ? $"Coluna {i + 1}" : original;
+            string candidate = stem;
+            for (int suffix = 2; !used.Add(candidate); suffix++)
+                candidate = $"{stem}_{suffix}";
+            result[i] = candidate;
+        }
+        Validate(result);
+        return result;
+    }
+
     public static string Key(object? value) =>
         value == null ? "null:" : (value is double ? "number:" : "text:") + TableCursor.Text(value);
 
@@ -55,7 +74,7 @@ public static class TableTools
 
     private static DerivedPlan PlanDerived(string[] sourceColumns, IReadOnlyList<DerivedColumn>? derived)
     {
-        Validate(sourceColumns);
+        sourceColumns = NormalizeHeaders(sourceColumns);
         var columns = sourceColumns.ToList();
         var calculations = new List<Func<object?[], object?>>();
         foreach (var item in derived ?? [])
@@ -122,7 +141,7 @@ public static class TableTools
             foreach (var row in cursor.Rows())
             {
                 cancellation.ThrowIfCancellationRequested(); rowNumber++;
-                try { writer.Add(id, ExpandRow(row, plan)); }
+                try { writer.AddOwned(id, ExpandRow(row, plan)); }
                 catch (InvalidDataException ex) { throw new InvalidDataException($"Linha {rowNumber}: {ex.Message}", ex); }
             }
             writer.Complete();
@@ -232,15 +251,15 @@ public static class TableTools
             updates.Report(null,
                 $"Cabeçalhos: {schemas.Count + 1}/{sources.Count} · {System.IO.Path.GetFileName(source.Path)}");
             using var cursor = new TableCursor(source);
-            Validate(cursor.Columns);
-            schemas.Add(cursor.Columns);
-            if (columns == null) columns = cursor.Columns;
+            var normalizedColumns = NormalizeHeaders(cursor.Columns);
+            schemas.Add(normalizedColumns);
+            if (columns == null) columns = normalizedColumns;
             else if (commonColumnsOnly)
             {
-                var names = cursor.Columns.ToHashSet(StringComparer.Ordinal);
+                var names = normalizedColumns.ToHashSet(StringComparer.Ordinal);
                 columns = columns.Where(names.Contains).ToArray();
             }
-            else if (columns.Length != cursor.Columns.Length || columns.Except(cursor.Columns, StringComparer.Ordinal).Any())
+            else if (columns.Length != normalizedColumns.Length || columns.Except(normalizedColumns, StringComparer.Ordinal).Any())
                 throw new InvalidDataException(
                     $"As colunas de {System.IO.Path.GetFileName(source.Path)} não correspondem às da primeira tabela. Marque a opção de usar apenas colunas comuns para juntar estruturas diferentes.");
         }
@@ -267,9 +286,10 @@ public static class TableTools
                 cancellation.ThrowIfCancellationRequested();
                 updates.Report(null, $"Abrindo tabela {i + 1}/{sources.Count} · {System.IO.Path.GetFileName(sources[i].Path)}", rows, i == 0);
                 using var cursor = new TableCursor(sources[i]);
-                if (!cursor.Columns.SequenceEqual(schemas[i], StringComparer.Ordinal))
+                var normalizedColumns = NormalizeHeaders(cursor.Columns);
+                if (!normalizedColumns.SequenceEqual(schemas[i], StringComparer.Ordinal))
                     throw new InvalidDataException("O cabeçalho de uma origem mudou durante a junção. Execute novamente.");
-                var indexes = cursor.Columns.Select((name, index) => (name, index)).ToDictionary(p => p.name, p => p.index, StringComparer.Ordinal);
+                var indexes = normalizedColumns.Select((name, index) => (name, index)).ToDictionary(p => p.name, p => p.index, StringComparer.Ordinal);
                 var mapping = columns.Select(c => indexes[c]).ToArray();
                 string sourceName = sourceNames?[i] ?? System.IO.Path.GetFileNameWithoutExtension(sources[i].Path)
                     + (sources[i].Table.Length > 0 ? " · " + sources[i].Table : "");
@@ -284,7 +304,7 @@ public static class TableTools
                     var values = new object?[mapping.Length + 1];
                     for (int c = 0; c < mapping.Length; c++) values[c] = row[mapping[c]];
                     values[^1] = sourceName;
-                    writer.Add(id, values);
+                    writer.AddOwned(id, values);
                     sourceRows++; rows++;
                     if ((sourceRows & 2047) == 0) ReportRows();
                 }
@@ -305,13 +325,13 @@ public static class TableTools
     {
         string path = System.IO.Path.Combine(folder, FileName(name) + CompactBankReader.Extension);
         using var cursor = new TableCursor(source);
-        Validate(cursor.Columns);
+        string[] columns = NormalizeHeaders(cursor.Columns);
         long rows = 0;
         Dendro.Core.Configuration.ProjectStore.AtomicWrite(path, temporary => {
             using var writer = new CompactBankWriter(temporary);
-            string id = writer.AddTable(cursor.Columns);
+            string id = writer.AddTable(columns);
             foreach (var row in cursor.Rows()) {
-                cancellation.ThrowIfCancellationRequested(); writer.Add(id, row); rows++;
+                cancellation.ThrowIfCancellationRequested(); writer.AddOwned(id, row); rows++;
             }
             writer.Complete();
         });
@@ -360,6 +380,10 @@ public static class TableTools
                         StringComparison.OrdinalIgnoreCase
                     ),
                     FilterOperator.StartsWith => text.StartsWith(
+                        f.Value,
+                        StringComparison.OrdinalIgnoreCase
+                    ),
+                    FilterOperator.EndsWith => text.EndsWith(
                         f.Value,
                         StringComparison.OrdinalIgnoreCase
                     ),
@@ -437,8 +461,11 @@ public static class TableTools
     {
         if (outputs.Count == 0)
             throw new InvalidDataException("Selecione pelo menos um estrato.");
-        if (outputs.Select(o => o.Key).Distinct().Count() != outputs.Count)
-            throw new InvalidDataException("Estratos repetidos.");
+        var outputKeys = outputs
+            .SelectMany(o => o.MergedKeys is { Length: > 0 } keys ? keys : [o.Key])
+            .ToArray();
+        if (outputKeys.Distinct(StringComparer.Ordinal).Count() != outputKeys.Length)
+            throw new InvalidDataException("Um estrato não pode pertencer a mais de um resultado.");
         if (
             outputs.Select(o => FileName(o.Name)).Distinct(StringComparer.OrdinalIgnoreCase).Count()
             != outputs.Count
@@ -456,13 +483,20 @@ public static class TableTools
         using (var writer = new CompactBankWriter(job.Stage))
         {
             foreach (var output in outputs)
-                ids.Add(output.Key, writer.AddTable(plan.Columns));
+            {
+                string id = writer.AddTable(plan.Columns);
+                var keys = output.MergedKeys is { Length: > 0 } merged ? merged : [output.Key];
+                if (!keys.Contains(output.Key, StringComparer.Ordinal))
+                    throw new InvalidDataException("A lista de estratos combinados não contém o estrato principal.");
+                foreach (var key in keys)
+                    ids.Add(key, id);
+            }
             foreach (var sourceRow in cursor.Rows())
             {
                 cancellation.ThrowIfCancellationRequested();
                 var row = ExpandRow(sourceRow, plan);
                 if (matches(row) && ids.TryGetValue(CompositeKey(row, indexes), out var id))
-                    writer.Add(id, row);
+                    writer.AddOwned(id, row);
             }
             writer.Complete();
         }
@@ -526,7 +560,7 @@ public static class TableTools
                     using var writer = new CompactBankWriter(staging);
                     string id = writer.AddTable(cursor.Columns);
                     foreach (var row in cursor.Rows()) {
-                        cancellation.ThrowIfCancellationRequested(); writer.Add(id, row);
+                        cancellation.ThrowIfCancellationRequested(); writer.AddOwned(id, row);
                     }
                     writer.Complete();
                 }

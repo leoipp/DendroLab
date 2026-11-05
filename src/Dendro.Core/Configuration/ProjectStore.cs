@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dendro.Core.Mathematics;
+using Dendro.Core.Regression;
 using Dendro.Core.Tabular;
 
 namespace Dendro.Core.Configuration;
@@ -41,6 +42,8 @@ public static class ProjectStore
         p.Obj("_dendro")["name"] = name;
         p["ajuste_altura"] = HeightDefaults;
         EnsureInputUnits(p);
+        if (p["_dendro"]?[RegressionApplication.StorageKey] is JsonArray savedRegressions)
+            RegressionApplication.ValidateCatalog(savedRegressions);
         RegressionCatalog.Ensure(p);
         EnsureRegistryFallback(p);
         Processing.DirectInventorySummary.MigrateConfiguration(p);
@@ -128,6 +131,7 @@ public static class ProjectStore
             throw new InvalidDataException("A unidade de importação da altura deve ser dm, cm ou m.");
         Processing.RegistryAgeFallback.Validate(p["cadastro"]?["fallback_idade"]);
         Processing.DirectInventorySummary.Validate(p["processador"]);
+        Processing.SiteIndexCalculator.ValidateConfiguration(p);
         RegressionCatalog.Validate(p);
         if (
             project

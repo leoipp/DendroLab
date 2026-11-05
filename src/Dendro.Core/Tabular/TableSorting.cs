@@ -41,7 +41,7 @@ internal static class TableSorting
             if(buffer.Count==0)return; cancellation.ThrowIfCancellationRequested();
             buffer.Sort((a,b)=>comparer.Compare(a.Key,b.Key));
             string path=NewRun(); using var writer=new CompactBankWriter(path); string id=writer.AddTable(columns);
-            foreach(var item in buffer){cancellation.ThrowIfCancellationRequested();writer.Add(id,item.Values);}
+            foreach(var item in buffer){cancellation.ThrowIfCancellationRequested();writer.AddOwned(id,item.Values);}
             writer.Complete();runs.Add(path);buffer.Clear();estimatedBytes=0;
         }
         void Merge(string[] inputs,string target,bool final)
@@ -61,7 +61,7 @@ internal static class TableSorting
                 while(queue.TryDequeue(out var item,out var key))
                 {
                     cancellation.ThrowIfCancellationRequested();
-                    writer.Add(id,final?item.Row[..^1]:item.Row);rowIndex?.Write(key.Row);
+                    writer.AddOwned(id,final?item.Row[..^1]:item.Row);rowIndex?.Write(key.Row);
                     var enumerator=enumerators[item.Reader]; if(enumerator.MoveNext())queue.Enqueue((item.Reader,enumerator.Current),MakeKey(enumerator.Current));
                     if((++count&2047)==0)updates.Report(final?80+19d*count/Math.Max(1,matched):null,$"Ordenando: {count:N0} linhas reunidas",count);
                 }

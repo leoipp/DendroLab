@@ -249,7 +249,7 @@ public static class InventoryAudit
         foreach(var values in cursor.Rows())
         {
             row++; if ((row & 8191)==0) { cancellation.ThrowIfCancellationRequested(); progress?.Invoke(10 + 80d*row/Math.Max(1,cursor.TotalRows ?? row),$"Conferindo origem: {row:N0} linhas…"); }
-            one.Rows[1]=values.ToList();
+            one.Rows[1]=values;
             if (!byId.TryGetValue(identities.PlotKey(1), out var p)) continue;
             var s=p.Source!; s.Rows++;
             string tree = identities.TreeKey(1), fingerprint = JsonSerializer.Serialize(new[]{ dapCol,hCol,lengthCol,widthCol,dlCol,dwCol }.Select(c=>one.Text(1,c)));

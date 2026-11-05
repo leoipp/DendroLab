@@ -134,10 +134,10 @@ internal sealed class ProcessingReportView : DockPanel
         {
             var source = level.SelectedIndex == 1 ? report.Stands : report.Lots;
             current = new DataTable();
-            if (source.Count > 0) current.Rows.Add(source.Rows[0]);
+            if (source.Count > 0) current.Add(source.Rows[0]);
             string id = scopes.ElementAtOrDefault(scope.SelectedIndex).Id ?? "";
             int index = source.Column("Contexto_ID");
-            foreach (var row in source.Rows.Skip(1)) if (index < 0 || row.ElementAtOrDefault(index)?.ToString() == id) current.Rows.Add(row);
+            foreach (var row in source.Rows.Skip(1)) if (index < 0 || row.ElementAtOrDefault(index)?.ToString() == id) current.Add(row);
             unit.ItemsSource = new[] { "Total" }.Concat(Current().Rows.Skip(1).Select(r => r[0]?.ToString() ?? "")).ToArray();
             unit.SelectedIndex = 0; Render();
         }

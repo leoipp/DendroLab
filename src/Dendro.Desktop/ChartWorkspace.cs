@@ -9,6 +9,11 @@ internal sealed class ChartWorkspace : Grid, IDisposable
 {
     private readonly MainWindow owner;
     private readonly TabControl auxiliary = new() { MinHeight = 160 };
+    private GridSplitter? splitter;
+    private GridLength graphHeight, auxiliaryHeight;
+    private double graphMinHeight, auxiliaryMinHeight;
+    private Visibility splitterVisibility, auxiliaryVisibility;
+    private bool savedNormalLayout;
     internal Grid GraphBody { get; }
     internal FrameworkElement? ModelsContent { get; }
     internal FrameworkElement? DataContent { get; }
@@ -25,7 +30,7 @@ internal sealed class ChartWorkspace : Grid, IDisposable
         {
             RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             RowDefinitions.Add(new RowDefinition { Height = new GridLength(1.15, GridUnitType.Star), MinHeight = 160 });
-            var splitter = new GridSplitter
+            splitter = new GridSplitter
             {
                 Height = 5,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -48,6 +53,40 @@ internal sealed class ChartWorkspace : Grid, IDisposable
 
     internal void ShowData() { var tab = FindTab(DataContent); if (tab != null) auxiliary.SelectedItem = tab; }
     internal void ShowModels() { var tab = FindTab(ModelsContent); if (tab != null) auxiliary.SelectedItem = tab; }
+
+    internal void SetGraphFullScreen(bool fullScreen)
+    {
+        if (RowDefinitions.Count < 3 || splitter == null) return;
+        if (fullScreen)
+        {
+            if (!savedNormalLayout)
+            {
+                graphHeight = RowDefinitions[0].Height;
+                graphMinHeight = RowDefinitions[0].MinHeight;
+                auxiliaryHeight = RowDefinitions[2].Height;
+                auxiliaryMinHeight = RowDefinitions[2].MinHeight;
+                splitterVisibility = splitter.Visibility;
+                auxiliaryVisibility = auxiliary.Visibility;
+                savedNormalLayout = true;
+            }
+            RowDefinitions[0].Height = new GridLength(1, GridUnitType.Star);
+            RowDefinitions[0].MinHeight = 0;
+            RowDefinitions[2].Height = new GridLength(0);
+            RowDefinitions[2].MinHeight = 0;
+            splitter.Visibility = Visibility.Collapsed;
+            auxiliary.Visibility = Visibility.Collapsed;
+        }
+        else if (savedNormalLayout)
+        {
+            RowDefinitions[0].Height = graphHeight;
+            RowDefinitions[0].MinHeight = graphMinHeight;
+            RowDefinitions[2].Height = auxiliaryHeight;
+            RowDefinitions[2].MinHeight = auxiliaryMinHeight;
+            splitter.Visibility = splitterVisibility;
+            auxiliary.Visibility = auxiliaryVisibility;
+            savedNormalLayout = false;
+        }
+    }
     internal void RemoveModels()
     {
         var tab = auxiliary.Items.OfType<TabItem>().FirstOrDefault(item => ReferenceEquals(item.Content, ModelsContent));

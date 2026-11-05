@@ -61,14 +61,18 @@ public static class InventoryMath
     {
         if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var serial))
             return serial;
-        return DateTime.TryParseExact(
-            text,
+        if (DateTime.TryParseExact(
+            text.Trim(),
             ["yyyy-MM-dd", "dd/MM/yyyy", "yyyy-MM-dd HH:mm:ss"],
             CultureInfo.InvariantCulture,
-            DateTimeStyles.None,
-            out var date
-        )
-            ? date.ToOADate()
+            DateTimeStyles.AllowWhiteSpaces,
+            out var exact
+        ))
+            return exact.ToOADate();
+        if (DateTime.TryParse(text, CultureInfo.GetCultureInfo("pt-BR"), DateTimeStyles.AllowWhiteSpaces, out var brazilian))
+            return brazilian.ToOADate();
+        return DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var invariant)
+            ? invariant.ToOADate()
             : double.NaN;
     }
 

@@ -2,7 +2,10 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
+using System.Windows.Media;
 using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
@@ -21,10 +24,17 @@ internal sealed class TableToolsView : UserControl
     {
         public bool Selected { get; set; } = true;
         public string Value { get; init; } = "";
+        public string[] Values { get; init; } = [];
+        public string DisplayValue => Values.Length > 1
+            ? $"{Values[0]} (+{Values.Length - 1} estrato(s))"
+            : Value;
         public string Name { get; set; } = "";
-        public long Rows { get; init; }
+        public long Rows { get; set; }
         public string Key { get; init; } = "";
+        public string[] Keys { get; init; } = [];
     }
+
+    private sealed class StratumDragHandle : TextBlock { }
 
     internal sealed class FilterRow
     {
@@ -46,6 +56,7 @@ internal sealed class TableToolsView : UserControl
     private readonly ProjectSession session;
     private readonly bool stratify;
     private readonly bool calculateColumns;
+    private readonly string? selectedPath;
     private readonly ComboBox source,
         column = Ui.Combo([]);
     private readonly ListBox stratificationColumns = new() { SelectionMode = SelectionMode.Extended, MinHeight = 100, MaxHeight = 170 };
@@ -64,10 +75,14 @@ internal sealed class TableToolsView : UserControl
     private readonly ObservableCollection<GroupRow> groups = new();
     private readonly ObservableCollection<FilterRow> filters = new();
     private readonly ObservableCollection<DerivedColumnRow> derivedColumns = new();
+    private readonly Stack<GroupRow[]> mergeUndo = new();
+    private readonly ListBox groupList;
+    private readonly Button undoMergeButton;
     private readonly DataGrid inputGrid,
-        groupGrid,
         filterGrid,
         derivedGrid;
+    private Point? groupDragStart;
+    private GroupRow? groupDragRow;
     private readonly TextBlock status = Ui.Text("");
     private string? discoveredSignature;
     private string[] sourceColumns = [];
@@ -82,6 +97,7 @@ internal sealed class TableToolsView : UserControl
         "≤",
         "Contém",
         "Começa com",
+        "Termina com",
         "Vazio",
         "Preenchido",
     ];
@@ -95,6 +111,7 @@ internal sealed class TableToolsView : UserControl
         FilterOperator.LessOrEqual,
         FilterOperator.Contains,
         FilterOperator.StartsWith,
+        FilterOperator.EndsWith,
         FilterOperator.Empty,
         FilterOperator.NotEmpty,
     ];
@@ -111,30 +128,8 @@ internal sealed class TableToolsView : UserControl
         this.session = session;
         this.stratify = stratify;
         this.calculateColumns = calculateColumns;
-        foreach (var path in session.Files.Where(session.IsTabular))
-        {
-            if ((stratify || calculateColumns) && Path.GetExtension(path).Equals(".dlb", StringComparison.OrdinalIgnoreCase))
-            {
-                using var reader = new CompactBankReader(session.Resolve(path));
-                foreach (var table in reader.Catalog.Tables.Where(t => !t.Name.StartsWith(Dendro.Core.Processing.ProcessingHistory.InternalPrefix, StringComparison.Ordinal)))
-                    inputs.Add(new() { Path = path, Sheet = table.Name,
-                        Name = session.ContentName(path) + " · " + table.Name });
-                continue;
-            }
-            inputs.Add(
-                new()
-                {
-                    Path = path,
-                    Name = session.ContentName(path),
-                    Selected = path == selectedPath,
-                }
-            );
-        }
-        source = Ui.Combo(inputs.Select(i => i.Name));
-        if (selectedPath != null)
-            source.SelectedIndex = inputs.ToList().FindIndex(i => i.Path == selectedPath &&
-                (i.Sheet.Length == 0 || i.Sheet == session.ExcelOptions(selectedPath).S("sheet")));
-        if (source.SelectedIndex < 0 && inputs.Count > 0) source.SelectedIndex = 0;
+        this.selectedPath = selectedPath;
+        source = Ui.Combo([]);
         var panel = Ui.Form();
         panel.Children.Add(owner.ToolHeader(calculateColumns ? "Gerar coluna" : stratify ? "Estratificar" : "Juntar tabelas"));
         Ui.Section(panel, calculateColumns ? "Definir coluna calculada" : stratify ? "Definir estratos" : "Selecionar tabelas para juntar");
@@ -152,36 +147,26 @@ internal sealed class TableToolsView : UserControl
                 Width = new DataGridLength(1, DataGridLengthUnitType.Star),
             }
         );
-        groupGrid = Grid(230);
-        groupGrid.ItemsSource = groups;
-        groupGrid.Columns.Add(
-            new DataGridCheckBoxColumn { Header = "Gerar", Binding = new Binding("Selected") }
-        );
-        groupGrid.Columns.Add(
-            new DataGridTextColumn
-            {
-                Header = "Estrato",
-                Binding = new Binding("Value"),
-                IsReadOnly = true,
-            }
-        );
-        groupGrid.Columns.Add(
-            new DataGridTextColumn
-            {
-                Header = "Nome da saída",
-                Binding = new Binding("Name"),
-                Width = new DataGridLength(1, DataGridLengthUnitType.Star),
-            }
-        );
-        groupGrid.Columns.Add(
-            new DataGridTextColumn
-            {
-                Header = "Linhas",
-                Binding = new Binding("Rows"),
-                IsReadOnly = true,
-            }
-        );
+        groupList = new ListBox
+        {
+            ItemsSource = groups,
+            Height = 220,
+            MinHeight = 120,
+            AllowDrop = true,
+            ItemTemplate = GroupTemplate(),
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        };
+        groupList.PreviewMouseLeftButtonDown += GroupMouseDown;
+        groupList.PreviewMouseMove += GroupMouseMove;
+        groupList.PreviewMouseLeftButtonUp += (_, _) => { groupDragStart = null; groupDragRow = null; };
+        groupList.DragOver += GroupDragOver;
+        groupList.Drop += GroupDrop;
+        undoMergeButton = Ui.Button("Desfazer última união", UndoMerge);
+        undoMergeButton.IsEnabled = false;
         filterGrid = Grid(135);
+        filterGrid.MaxHeight = 135;
         filterGrid.ItemsSource = filters;
         filterGrid.Columns.Add(
             new DataGridComboBoxColumn
@@ -254,7 +239,13 @@ internal sealed class TableToolsView : UserControl
             if (!calculateColumns)
             {
             Ui.Section(panel,"Filtros e resultados");
-            Ui.Field(panel, "Filtros opcionais (todas as condições)", filterGrid);
+            var noFilters = Ui.Text("Nenhum filtro aplicado; todos os registros serão considerados.");
+            noFilters.Margin = new Thickness(3, 2, 3, 8);
+            filterGrid.Visibility = Visibility.Collapsed;
+            var filterArea = new Grid();
+            filterArea.Children.Add(noFilters);
+            filterArea.Children.Add(filterGrid);
+            Ui.Field(panel, "Filtros opcionais (todas as condições)", filterArea);
             var buttons = new StackPanel { Orientation = Orientation.Horizontal };
             buttons.Children.Add(
                 Ui.Button(
@@ -273,8 +264,19 @@ internal sealed class TableToolsView : UserControl
                 )
             );
             panel.Children.Add(buttons);
+            void UpdateFilterLayout()
+            {
+                bool hasFilters = filters.Count > 0;
+                filterGrid.Visibility = hasFilters ? Visibility.Visible : Visibility.Collapsed;
+                noFilters.Visibility = hasFilters ? Visibility.Collapsed : Visibility.Visible;
+                filterGrid.Height = Math.Min(135, 32 + filters.Count * 34);
+            }
+            filters.CollectionChanged += (_, _) => UpdateFilterLayout();
             panel.Children.Add(Ui.AsyncButton("Listar estratos", () => owner.Execute(Discover)));
-            Ui.Field(panel, "Estratos e nomes dos resultados", groupGrid);
+            Ui.Section(panel, "Estratos encontrados");
+            Ui.AddHelp(panel, "Marque os estratos que deseja gerar. Para combinar estratos, arraste a alça ⋮⋮ de um item sobre outro; o item de destino define o nome do resultado. A contagem de linhas será somada.");
+            panel.Children.Add(groupList);
+            panel.Children.Add(undoMergeButton);
             column.SelectionChanged += (_, _) =>
             {
                 if (syncingColumnSelection || column.SelectedItem is not string selected || !stratificationColumns.Items.Contains(selected))
@@ -289,7 +291,7 @@ internal sealed class TableToolsView : UserControl
         {
             Ui.Section(panel,"Opções da junção");
             Ui.Field(panel, "Tabelas de origem", inputGrid);
-            Ui.AddHelp(panel, "A junção cria automaticamente a coluna Fonte com o nome da tabela de origem de cada linha. Se já existir uma coluna Fonte, seus valores são preservados como Fonte_anterior.");
+        Ui.AddHelp(panel, "A junção cria automaticamente a coluna Fonte com o nome da tabela de origem de cada linha. Se já existir uma coluna Fonte, seus valores são preservados como Fonte_anterior. Cabeçalhos vazios recebem nomes como ‘Coluna 4’ e duplicados ganham sufixos como ‘_2’, mantendo a ordem das colunas.");
             var buttons = new StackPanel { Orientation = Orientation.Horizontal };
             buttons.Children.Add(
                 Ui.Button(
@@ -341,6 +343,186 @@ internal sealed class TableToolsView : UserControl
             ColumnWidth = 100,
         };
 
+    private static DataTemplate GroupTemplate()
+    {
+        var row = new FrameworkElementFactory(typeof(DockPanel));
+        row.SetValue(DockPanel.LastChildFillProperty, true);
+        row.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+
+        var handle = new FrameworkElementFactory(typeof(StratumDragHandle));
+        handle.SetValue(TextBlock.TextProperty, "⋮⋮");
+        handle.SetValue(TextBlock.FontSizeProperty, 15d);
+        handle.SetValue(TextBlock.WidthProperty, 23d);
+        handle.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+        handle.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        handle.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(91, 112, 137)));
+        handle.SetValue(DockPanel.DockProperty, Dock.Left);
+        handle.SetValue(FrameworkElement.ToolTipProperty, "Arraste este estrato sobre outro para combiná-los");
+        row.AppendChild(handle);
+
+        var check = new FrameworkElementFactory(typeof(CheckBox));
+        check.SetValue(CheckBox.VerticalAlignmentProperty, VerticalAlignment.Center);
+        check.SetValue(FrameworkElement.MarginProperty, new Thickness(3, 0, 7, 0));
+        check.SetValue(FrameworkElement.ToolTipProperty, "Incluir este estrato na geração");
+        check.SetValue(DockPanel.DockProperty, Dock.Left);
+        check.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(GroupRow.Selected))
+        {
+            Mode = BindingMode.TwoWay,
+            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,
+        });
+        row.AppendChild(check);
+
+        var details = new FrameworkElementFactory(typeof(StackPanel));
+        details.SetValue(DockPanel.DockProperty, Dock.Left);
+        details.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        details.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 0, 8, 0));
+        var value = new FrameworkElementFactory(typeof(TextBlock));
+        value.SetBinding(TextBlock.TextProperty, new Binding(nameof(GroupRow.DisplayValue)));
+        value.SetBinding(FrameworkElement.ToolTipProperty, new Binding(nameof(GroupRow.Values))
+        {
+            Converter = new StratumValuesTooltipConverter(),
+        });
+        value.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+        value.SetValue(TextBlock.FontWeightProperty, FontWeights.SemiBold);
+        details.AppendChild(value);
+        var rows = new FrameworkElementFactory(typeof(TextBlock));
+        rows.SetBinding(TextBlock.TextProperty, new Binding(nameof(GroupRow.Rows)) { StringFormat = "{0:N0} linhas" });
+        rows.SetValue(TextBlock.FontSizeProperty, 11d);
+        rows.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(91, 112, 137)));
+        details.AppendChild(rows);
+        var outputName = new FrameworkElementFactory(typeof(TextBox));
+        outputName.SetBinding(TextBox.TextProperty, new Binding(nameof(GroupRow.Name))
+        {
+            Mode = BindingMode.TwoWay,
+            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,
+        });
+        outputName.SetValue(FrameworkElement.MinWidthProperty, 100d);
+        outputName.SetValue(FrameworkElement.WidthProperty, 160d);
+        outputName.SetValue(FrameworkElement.MinHeightProperty, 32d);
+        outputName.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        outputName.SetValue(FrameworkElement.ToolTipProperty, "Nome da tabela de saída");
+        outputName.SetValue(DockPanel.DockProperty, Dock.Right);
+        row.AppendChild(outputName);
+        row.AppendChild(details);
+
+        var border = new FrameworkElementFactory(typeof(Border));
+        border.SetValue(Border.BackgroundProperty, Brushes.White);
+        border.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(213, 223, 233)));
+        border.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+        border.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+        border.SetValue(FrameworkElement.MarginProperty, new Thickness(2, 2, 2, 2));
+        border.SetValue(Border.PaddingProperty, new Thickness(6, 3, 6, 3));
+        border.AppendChild(row);
+
+        return new DataTemplate(typeof(GroupRow)) { VisualTree = border };
+    }
+
+    private sealed class StratumValuesTooltipConverter : System.Windows.Data.IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+            value is string[] values ? string.Join(" + ", values) : "";
+        public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+            Binding.DoNothing;
+    }
+
+    private void GroupMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindAncestor<StratumDragHandle>(e.OriginalSource as DependencyObject) is null)
+            return;
+        var item = ItemsControl.ContainerFromElement(groupList, e.OriginalSource as DependencyObject) as ListBoxItem;
+        groupDragRow = item?.DataContext as GroupRow;
+        groupDragStart = groupDragRow is null ? null : e.GetPosition(groupList);
+    }
+
+    private void GroupMouseMove(object sender, MouseEventArgs e)
+    {
+        if (groupDragStart is not Point start || groupDragRow is not GroupRow row || e.LeftButton != MouseButtonState.Pressed)
+            return;
+        Point current = e.GetPosition(groupList);
+        if (Math.Abs(current.X - start.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(current.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+        groupDragStart = null;
+        groupDragRow = null;
+        DragDrop.DoDragDrop(groupList, row, DragDropEffects.Move);
+    }
+
+    private void GroupDragOver(object sender, DragEventArgs e)
+    {
+        var target = GroupAt(e.OriginalSource as DependencyObject);
+        e.Effects = e.Data.GetDataPresent(typeof(GroupRow)) && target is not null
+            && !ReferenceEquals(target, e.Data.GetData(typeof(GroupRow)))
+            ? DragDropEffects.Move
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void GroupDrop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(typeof(GroupRow)) is GroupRow sourceRow && GroupAt(e.OriginalSource as DependencyObject) is GroupRow targetRow)
+            MergeGroups(sourceRow, targetRow);
+        e.Handled = true;
+    }
+
+    private GroupRow? GroupAt(DependencyObject? element) =>
+        element is null
+            ? null
+            : (ItemsControl.ContainerFromElement(groupList, element) as ListBoxItem)?.DataContext as GroupRow;
+
+    private static T? FindAncestor<T>(DependencyObject? element) where T : DependencyObject
+    {
+        while (element is not null)
+        {
+            if (element is T match)
+                return match;
+            element = VisualTreeHelper.GetParent(element);
+        }
+        return null;
+    }
+
+    private void MergeGroups(GroupRow sourceRow, GroupRow targetRow)
+    {
+        if (ReferenceEquals(sourceRow, targetRow) || !groups.Contains(sourceRow) || !groups.Contains(targetRow))
+            return;
+        mergeUndo.Push(groups.Select(CloneGroup).ToArray());
+        undoMergeButton.IsEnabled = true;
+        var merged = new GroupRow
+        {
+            Key = targetRow.Key,
+            Keys = targetRow.Keys.Concat(sourceRow.Keys).Distinct(StringComparer.Ordinal).ToArray(),
+            Value = targetRow.Value,
+            Values = targetRow.Values.Concat(sourceRow.Values).ToArray(),
+            Rows = targetRow.Rows + sourceRow.Rows,
+            Name = targetRow.Name,
+            Selected = targetRow.Selected || sourceRow.Selected,
+        };
+        groups.Remove(sourceRow);
+        int targetIndex = groups.IndexOf(targetRow);
+        groups[targetIndex] = merged;
+    }
+
+    private void UndoMerge()
+    {
+        if (mergeUndo.Count == 0)
+            return;
+        GroupRow[] snapshot = mergeUndo.Pop();
+        groups.Clear();
+        foreach (var row in snapshot)
+            groups.Add(row);
+        undoMergeButton.IsEnabled = mergeUndo.Count > 0;
+    }
+
+    private static GroupRow CloneGroup(GroupRow row) => new()
+    {
+        Key = row.Key,
+        Keys = [.. row.Keys],
+        Value = row.Value,
+        Values = [.. row.Values],
+        Rows = row.Rows,
+        Name = row.Name,
+        Selected = row.Selected,
+    };
+
     private TableSource Source(string path)
     {
         var options = session.ExcelOptions(path);
@@ -356,6 +538,37 @@ internal sealed class TableToolsView : UserControl
 
     internal async Task Initialize()
     {
+        var files = session.Files.Where(session.IsTabular)
+            .Select(path => (Path: path, Name: session.ContentName(path), Resolved: session.Resolve(path),
+                Compact: Path.GetExtension(path).Equals(CompactBankReader.Extension, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        InputRow[] discovered = await Task.Run(() =>
+        {
+            var rows = new List<InputRow>();
+            var catalogs = new ProjectTableCatalogCache();
+            foreach (var file in files)
+            {
+                if ((stratify || calculateColumns) && file.Compact)
+                {
+                    foreach (var table in catalogs.Tables(session, file.Path).Where(name =>
+                        !name.StartsWith(Dendro.Core.Processing.ProcessingHistory.InternalPrefix, StringComparison.Ordinal)))
+                        rows.Add(new() { Path = file.Path, Sheet = table, Name = file.Name + " · " + table });
+                    continue;
+                }
+                rows.Add(new() { Path = file.Path, Name = file.Name, Selected = file.Path == selectedPath });
+            }
+            return rows.ToArray();
+        });
+        inputs.Clear();
+        foreach (var row in discovered) inputs.Add(row);
+        source.ItemsSource = inputs.Select(i => i.Name).ToArray();
+        if (selectedPath != null)
+        {
+            string selectedSheet = session.ExcelOptions(selectedPath).S("sheet");
+            source.SelectedIndex = inputs.ToList().FindIndex(i => i.Path == selectedPath &&
+                (i.Sheet.Length == 0 || i.Sheet == selectedSheet));
+        }
+        if (source.SelectedIndex < 0 && inputs.Count > 0) source.SelectedIndex = 0;
         if ((stratify || calculateColumns) && inputs.Count > 0)
             await LoadColumns();
     }
@@ -366,7 +579,7 @@ internal sealed class TableToolsView : UserControl
         sourceColumns = await Task.Run(() =>
         {
             using var cursor = new TableCursor(table);
-            return cursor.Columns;
+            return TableTools.NormalizeHeaders(cursor.Columns);
         });
         derivedColumns.Clear();
         calculatedPreview.Text = "";
@@ -505,6 +718,8 @@ internal sealed class TableToolsView : UserControl
         var derived = DerivedSpecs();
         var strata = await Task.Run(() => TableTools.Discover(table, selected, criteria, derived, cancellation));
         groups.Clear();
+        mergeUndo.Clear();
+        undoMergeButton.IsEnabled = false;
         var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var stratum in strata)
         {
@@ -517,7 +732,9 @@ internal sealed class TableToolsView : UserControl
                 new()
                 {
                     Key = stratum.Key,
+                    Keys = [stratum.Key],
                     Value = stratum.Value,
+                    Values = [stratum.Value],
                     Rows = stratum.Rows,
                     Name = proposed,
                 }
@@ -544,11 +761,9 @@ internal sealed class TableToolsView : UserControl
                 throw new InvalidOperationException(
                     "Clique em Listar estratos após definir as colunas e os filtros."
                 );
-            groupGrid.CommitEdit(DataGridEditingUnit.Cell, true);
-            groupGrid.CommitEdit(DataGridEditingUnit.Row, true);
             var selected = groups
                 .Where(g => g.Selected)
-                .Select(g => new StratumOutput(g.Key, g.Name))
+                .Select(g => new StratumOutput(g.Key, g.Name, g.Keys))
                 .ToArray();
             parent = CurrentPath;
             var table = Source(parent);

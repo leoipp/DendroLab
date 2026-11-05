@@ -89,18 +89,30 @@ internal static class WorkspaceOperations
                 else
                     result = Read(request).ToJson();
                 break;
+            case "columns":
+                using (var cursor = new TableCursor(new(
+                    request.S("path"), request.S("sheet"), (int)request.N("header_row", 1))))
+                    result = new JsonObject
+                    {
+                        ["columns"] = new JsonArray(cursor.Columns.Select(c => (JsonNode?)JsonValue.Create(c)).ToArray()),
+                        ["total"] = cursor.TotalRows ?? -1,
+                    };
+                break;
             case "groups":
-                var table = Read(request);
-                int column = table.Require(request.S("column"));
-                result = new JsonArray(
-                    Enumerable
-                        .Range(1, table.Count - 1)
-                        .Select(r => table.Text(r, column))
-                        .Distinct()
-                        .Order(StringComparer.Ordinal)
-                        .Select(s => (JsonNode?)JsonValue.Create(s))
-                        .ToArray()
-                );
+                using (var cursor = new TableCursor(new(
+                    request.S("path"), request.S("sheet"), (int)request.N("header_row", 1))))
+                {
+                    int column = Array.FindIndex(cursor.Columns, c => c == request.S("column"));
+                    if (column < 0) throw new InvalidDataException($"Coluna não encontrada: {request.S("column")}");
+                    var values = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var row in cursor.Rows())
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        values.Add(TableCursor.Text(row[column]));
+                    }
+                    result = new JsonArray(values.Order(StringComparer.Ordinal)
+                        .Select(s => (JsonNode?)JsonValue.Create(s)).ToArray());
+                }
                 break;
             case "process":
                 var summary = new InventoryProcessor().Process(
@@ -127,18 +139,33 @@ internal static class WorkspaceOperations
             case "fit":
             case "export":
                 var config = request["chart"]!.AsObject();
-                var source = Read(config);
+                bool exportAllSourceColumns = request.S("op") == "export" && request.N("format") == 2;
+                DataTable? source = exportAllSourceColumns ? Read(config) : null;
                 bool compareAllPredictorCounts = request.S("op") == "fit" && request.N("model") == -2;
-                var chart = new RegressionEngine(
+                var engine = new RegressionEngine(
                     project == null ? null : RegressionCatalog.Families(
                         project,
                         compareAllPredictorCounts ? 0 : (int)config.N("predictor_count", 1)
                     )
-                ).Generate(
-                    source,
-                    config,
-                    request.S("op") == "fit" ? (int)request.N("model") : null
                 );
+                ChartResult chart;
+                if (source != null)
+                    chart = engine.Generate(source, config,
+                        request.S("op") == "fit" ? (int)request.N("model") : null);
+                else if (CompactBankFile.IsCompactBank(config.S("path")))
+                {
+                    var tableSource = new TableSource(config.S("path"), config.S("sheet"), (int)config.N("header_row", 1));
+                    using var cursor = TableCursor.Projected(tableSource, ChartColumnNames(config));
+                    chart = engine.Generate(cursor.Columns, cursor.Rows(), config,
+                        request.S("op") == "fit" ? (int)request.N("model") : null);
+                }
+                else
+                {
+                    source = ReadChartColumns(config);
+                    chart = engine.Generate(source, config,
+                        request.S("op") == "fit" ? (int)request.N("model") : null);
+                    source.ReleaseDataRows();
+                }
                 result = RegressionEngine.ToJson(chart);
                 if (request.S("op") == "export")
                 {
@@ -149,7 +176,7 @@ internal static class WorkspaceOperations
                             ChartExport.Svg(path, chart);
                             break;
                         case 2:
-                            ChartExport.Excel(path, chart, source);
+                            ChartExport.Excel(path, chart, source!);
                             break;
                         default:
                             ExportPng(path, result.AsObject(), chart.Chart);
@@ -176,6 +203,39 @@ internal static class WorkspaceOperations
                 request.S("sheet"),
                 (int)request.N("header_row", 1)
             );
+
+    private static DataTable ReadChartColumns(JsonObject request)
+    {
+        string path = request.S("path");
+        if (!CompactBankFile.IsCompactBank(path)) return Read(request);
+
+        var source = new TableSource(path, request.S("sheet"), (int)request.N("header_row", 1));
+        int[] selected;
+        using (var catalog = new TableCursor(source))
+        {
+            var names = ChartColumnNames(request).ToList();
+            if (names.Any(string.IsNullOrWhiteSpace)) return Read(request);
+            selected = names.Distinct(StringComparer.Ordinal).Select(name =>
+                Array.FindIndex(catalog.Columns, column => column == name)).ToArray();
+            if (selected.Any(index => index < 0)) return Read(request);
+            selected = selected.Distinct().Order().ToArray();
+        }
+
+        using var cursor = new TableCursor(source, selected);
+        var projected = new DataTable(cursor.Columns);
+        foreach (var row in cursor.Rows()) projected.Add(row);
+        return projected;
+    }
+
+    private static string[] ChartColumnNames(JsonObject request)
+    {
+        var names = request["x_variables"] is JsonArray predictors
+            ? predictors.Select(value => value?.GetValue<string>() ?? "").Take(3).ToList()
+            : [request.S("x")];
+        names.Add(request.S("y"));
+        if (request.S("stratum").Length > 0) names.Add(request.S("stratum"));
+        return names.Distinct(StringComparer.Ordinal).ToArray();
+    }
 
     private static void ExportPng(string path, JsonObject data, JsonObject config)
     {

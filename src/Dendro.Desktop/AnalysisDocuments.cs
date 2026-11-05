@@ -223,7 +223,25 @@ internal static class AnalysisDocuments
     private static void SaveSnapshot(JsonObject entry, AnalysisReport report)
     {
         if (report.Plot == null) return;
-        entry["plot_snapshot"] = JsonSerializer.SerializeToNode(report.Plot);
+        // ChartPoint's optional X2/X3 defaults are NaN. System.Text.Json correctly
+        // rejects those in JSON; snapshots only need finite coordinates and omit unused inputs.
+        var plot = report.Plot;
+        var points = plot.Points.Where(point => double.IsFinite(point.X) && double.IsFinite(point.Y))
+            .Select(point => point with
+            {
+                X2 = double.IsFinite(point.X2) ? point.X2 : 0,
+                X3 = double.IsFinite(point.X3) ? point.X3 : 0,
+                InputCount = Math.Clamp(point.InputCount, 1, 3),
+            }).ToArray();
+        var curves = plot.Curves.Select(curve => curve
+            .Where(point => point.Length >= 2 && double.IsFinite(point[0]) && double.IsFinite(point[1]))
+            .ToArray()).ToArray();
+        entry["plot_snapshot"] = JsonSerializer.SerializeToNode(plot with
+        {
+            Points = points,
+            Curves = curves,
+            Invalid = plot.Invalid + plot.Points.Length - points.Length,
+        });
         entry["details_snapshot"] = report.Details.ToJson();
         ProjectSnapshots.CompactEntry(entry);
     }

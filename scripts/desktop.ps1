@@ -61,6 +61,13 @@ try {
             if((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath (Join-Path $candidate $file.Name)).Hash){throw ('Arquivo publicado divergente: '+$file.Name)}
         }
         foreach($culture in Get-ChildItem -LiteralPath $staging -Directory){Copy-Item -LiteralPath $culture.FullName -Destination $candidate -Recurse}
+        $bridge=Join-Path $staging 'Scripts/model_fitter_bridge.py'
+        if(Test-Path -LiteralPath $bridge){
+            $scriptFolder=Join-Path $candidate 'Scripts'
+            New-Item -ItemType Directory -Force $scriptFolder | Out-Null
+            Copy-Item -LiteralPath $bridge -Destination $scriptFolder
+            if((Get-FileHash -LiteralPath $bridge).Hash -ne (Get-FileHash -LiteralPath (Join-Path $scriptFolder 'model_fitter_bridge.py')).Hash){throw 'Script de integração ModelFitter divergente'}
+        }
         $licenses=Join-Path $candidate 'licenses'
         New-Item -ItemType Directory -Force $licenses | Out-Null
         Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $candidate 'LICENSE')

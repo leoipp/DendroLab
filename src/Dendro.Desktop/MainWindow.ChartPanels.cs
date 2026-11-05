@@ -13,6 +13,7 @@ public partial class MainWindow
     internal void AttachChartPanels(ChartWorkspace? workspace)
     {
         if (ReferenceEquals(activeChartWorkspace, workspace)) { UpdateRegressionNavigation(); return; }
+        if (IsChartFullScreen) ExitChartFullScreen();
         if (activeChartWorkspace != null) DetachChartPanels(activeChartWorkspace);
         if (workspace == null) { UpdateRegressionNavigation(); return; }
         activeChartWorkspace = workspace;
@@ -21,6 +22,8 @@ public partial class MainWindow
             if (pane != null) { SetPaneVisibility(pane, false); pane.Content = null; }
         UpdateRegressionNavigation();
     }
+
+    internal bool IsActiveChartWorkspace(ChartWorkspace workspace) => ReferenceEquals(activeChartWorkspace, workspace);
 
     private static void SetPaneVisibility(LayoutAnchorable pane, bool visible)
     {
