@@ -108,6 +108,12 @@ public partial class MainWindow : Window
         Refresh();
         Loaded += (_, _) => RestoreLayout();
         Loaded += (_, _) => Dispatcher.BeginInvoke(new Action(AttachDocumentNavigator));
+        DockManager.LayoutUpdated += (_, _) =>
+        {
+            var currentPane = FindDocumentPaneControl();
+            if (documentNavigator == null || !ReferenceEquals(currentPane, documentPaneControl))
+                AttachDocumentNavigator();
+        };
         Loaded += async (_, _) => { if (!App.IsSelfTest) { await Task.Delay(5000); if (!closing) await CheckUpdates(false); } };
         CommandBindings.Add(
             new CommandBinding(ApplicationCommands.Save, async (_, _) => await SaveProject())
@@ -1393,9 +1399,17 @@ public partial class MainWindow : Window
 
     private void AttachDocumentNavigator()
     {
-        var control = FindVisualChild<LayoutDocumentPaneControl>(DockManager);
-        if (control == null) return;
-        if (ReferenceEquals(control, documentPaneControl))
+        var control = FindDocumentPaneControl();
+        if (control == null)
+        {
+            if (documentNavigator != null && documentAdornerLayer != null)
+                documentAdornerLayer.Remove(documentNavigator);
+            documentNavigator = null;
+            documentAdornerLayer = null;
+            documentPaneControl = null;
+            return;
+        }
+        if (ReferenceEquals(control, documentPaneControl) && documentNavigator != null)
         {
             UpdateDocumentNavigator();
             return;
@@ -1403,10 +1417,17 @@ public partial class MainWindow : Window
 
         if (documentNavigator != null && documentAdornerLayer != null)
             documentAdornerLayer.Remove(documentNavigator);
-        documentPaneControl = control;
-        documentAdornerLayer = AdornerLayer.GetAdornerLayer(control);
-        if (documentAdornerLayer == null) return;
+        var adornerLayer = AdornerLayer.GetAdornerLayer(control);
+        if (adornerLayer == null)
+        {
+            documentPaneControl = null;
+            documentNavigator = null;
+            documentAdornerLayer = null;
+            return;
+        }
 
+        documentPaneControl = control;
+        documentAdornerLayer = adornerLayer;
         documentNavigator = new DocumentTabNavigatorAdorner(control,
             () => NavigateDocument(-1), () => NavigateDocument(1));
         documentAdornerLayer.Add(documentNavigator);
@@ -1427,22 +1448,45 @@ public partial class MainWindow : Window
     {
         var tabs = Documents.Children.OfType<LayoutDocument>().ToArray();
         if (tabs.Length < 2) return;
-        int selected = Array.FindIndex(tabs, tab => tab.IsSelected || tab.IsActive);
+        int selected = Array.FindIndex(tabs, tab => tab.IsSelected);
+        if (selected < 0) selected = Array.FindIndex(tabs, tab => tab.IsActive);
         if (selected < 0) selected = 0;
         int target = (selected + direction + tabs.Length) % tabs.Length;
-        tabs[target].IsActive = true;
-        tabs[target].IsSelected = true;
+        var targetDocument = tabs[target];
+        Documents.SelectedContentIndex = target;
+        DockManager.ActiveContent = targetDocument.Content;
+        targetDocument.IsSelected = true;
+        targetDocument.IsActive = true;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            var paneControl = FindDocumentPaneControl();
+            if (paneControl == null) return;
+            paneControl.SelectedIndex = target;
+            var tabItem = FindVisualChildren<LayoutDocumentTabItem>(paneControl)
+                .FirstOrDefault(item => ReferenceEquals(item.Model, targetDocument));
+            tabItem?.BringIntoView();
+        }));
     }
 
-    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    private LayoutDocumentPaneControl? FindDocumentPaneControl() =>
+        FindVisualChildren<LayoutDocumentPaneControl>(DockManager)
+            .Where(control => control.IsVisible
+                && control.ActualWidth > 0
+                && control.ActualHeight > 0)
+            .OrderByDescending(control => ReferenceEquals(control.Model, Documents))
+            .ThenByDescending(control => control.ActualWidth * control.ActualHeight)
+            .FirstOrDefault();
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
     {
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
         {
             var child = VisualTreeHelper.GetChild(parent, i);
-            if (child is T match) return match;
-            if (FindVisualChild<T>(child) is { } nested) return nested;
+            if (child is T match)
+                yield return match;
+            foreach (var nested in FindVisualChildren<T>(child))
+                yield return nested;
         }
-        return null;
     }
 
     internal void FocusDocument(LayoutDocument doc) => doc.IsActive = true;

@@ -75,7 +75,7 @@ a licença do produto e os avisos das dependências.
 Para gerar **ZIP com runtime incluído**, **instalador somente para o usuário**
 e publicar versões reconhecidas pelo atualizador do aplicativo, consulte
 [Distribuição e atualizações](docs/DISTRIBUICAO.md). Com os requisitos de
-compilação instalados, use `./scripts/package.ps1 -Version 1.0.0`.
+compilação instalados, use `./scripts/package.ps1`.
 
 1. Crie e salve um projeto em **Projeto**.
 2. Adicione os dados em **Conteúdos**, escolhendo a tabela/aba e o cabeçalho.

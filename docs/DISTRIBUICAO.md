@@ -26,11 +26,11 @@ O script usa `.build` para os temporários e o cache de pacotes, no mesmo disco
 do projeto, e restaura as variáveis de ambiente ao terminar.
 
 ```powershell
-.\scripts\package.ps1 -Version 1.0.0
+.\scripts\package.ps1
 # Somente ZIP, sem precisar do Inno Setup:
-.\scripts\package.ps1 -Version 1.0.0 -Format Zip
+.\scripts\package.ps1 -Format Zip
 # Compilador Inno Setup fora do PATH:
-.\scripts\package.ps1 -Version 1.0.0 -InnoCompiler 'C:\Ferramentas\Inno Setup 6\ISCC.exe'
+.\scripts\package.ps1 -InnoCompiler 'C:\Ferramentas\Inno Setup 6\ISCC.exe'
 ```
 
 Os arquivos ficam em `dist/<versão>/`:
@@ -47,9 +47,9 @@ rotina; portanto, o Windows pode identificar o editor como desconhecido.
 
 ## Publicar uma atualização no GitHub
 
-1. Escolha uma versão maior que a anterior, por exemplo `1.0.1`.
-2. Gere e teste os pacotes com `package.ps1 -Version 1.0.1`.
-3. No repositório `leoipp/DendroLab`, crie um **Release** com a tag `v1.0.1`.
+1. Escolha uma versão maior que a anterior, por exemplo `1.0.2`.
+2. Gere e teste os pacotes com `package.ps1 -Version 1.0.2`.
+3. No repositório `leoipp/DendroLab`, crie um **Release** com a tag `v1.0.2`.
 4. Anexe o instalador, o ZIP e `SHA256SUMS.txt` gerados para essa mesma versão.
 5. Publique como versão estável, sem marcar draft ou pre-release.
 
