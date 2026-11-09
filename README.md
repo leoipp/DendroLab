@@ -28,8 +28,11 @@ técnica para o titular e usuários expressamente autorizados.
   exportar a tabela limpa ou salvá-la como nova tabela no projeto.
 - **Auditoria e estatística:** auditoria pós-processamento, Isolation Forest,
   gráfico derivado apenas com observações normais e testes estatísticos.
+- **Agrupamento K-means:** padronização das variáveis, inicialização k-means++,
+  comparação de K por elbow (inertia) e silhouette, com grupos exportáveis.
 - **Ativo biológico:** vincula uma tabela aos resultados mais recentes por
-  chave e **data da medição**, sinalizando conflitos sem multiplicar linhas.
+  chave e **data da medição**, projeta o volume pela curva vigente de cada ID
+  até 1º de junho do ano final e calcula IMA para idades inteiras por talhão.
 - **Gestão de tabelas:** junção com identificação da fonte, estratificação,
   criação de colunas, filtros, ordenação e remoção de linhas e colunas.
 

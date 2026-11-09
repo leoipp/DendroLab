@@ -61,7 +61,7 @@ internal sealed class TableBrowser : DockPanel, IDisposable
     private readonly TextBlock caption = Ui.Text("");
     private readonly Button previous,
         next;
-    private readonly WrapPanel bar;
+    private readonly StackPanel bar;
     internal long Offset { get; private set; }
     internal long Total { get; private set; }
 
@@ -73,7 +73,7 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         this.readOnly = readOnly; this.releaseSource = releaseSource;
         Background = Brushes.White;
         ToolTip = "Use o ícone de filtro no cabeçalho da coluna. Clique no nome da coluna para ordenar; clique com o botão direito para mais opções de ordenação e formato.";
-        bar = new WrapPanel
+        bar = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
@@ -101,16 +101,22 @@ internal sealed class TableBrowser : DockPanel, IDisposable
         navigation.Children.Add(previous);
         navigation.Children.Add(caption);
         navigation.Children.Add(next);
-        export = Ui.IconButton("Exportar tabela…", CommandIconKind.Export, () => { _ = owner.Execute(Export); });
-        bar.Children.Add(export);
         deleteSelected = Ui.IconButton("Excluir selecionadas…", CommandIconKind.Remove, () => { _ = owner.Execute(async () => { await DeleteRows(false); UpdateDeleteButtons(); }); });
         deleteFiltered = Ui.IconButton("Excluir filtradas…", CommandIconKind.Remove, () => { _ = owner.Execute(async () => { await DeleteRows(true); UpdateDeleteButtons(); }); });
         bar.Children.Add(deleteSelected); bar.Children.Add(deleteFiltered);
+        export = Ui.IconButton("Exportar tabela…", CommandIconKind.Export, () => { _ = owner.Execute(Export); });
+        bar.Children.Add(export);
         if(selectionOnly)deleteSelected.Visibility=deleteFiltered.Visibility=Visibility.Collapsed;
         var toolbar = new DockPanel { Margin = new Thickness(4, 1, 4, 3), LastChildFill = true };
         DockPanel.SetDock(navigation, Dock.Right);
         toolbar.Children.Add(navigation);
-        toolbar.Children.Add(bar);
+        toolbar.Children.Add(new ScrollViewer
+        {
+            Content = bar,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            CanContentScroll = false,
+        });
         SetDock(toolbar, Dock.Top);
         Children.Add(toolbar);
         Children.Add(grid);
@@ -118,8 +124,9 @@ internal sealed class TableBrowser : DockPanel, IDisposable
 
     internal void AddToolbarAction(UIElement action)
     {
-        int index = bar.Children.IndexOf(export);
-        bar.Children.Insert(index < 0 ? bar.Children.Count : index, action);
+        // Keep the row deletion controls at the leading edge so optional actions
+        // cannot push them below the viewport on narrow windows.
+        bar.Children.Insert(Math.Min(3, bar.Children.Count), action);
     }
 
     private Task AddFilter(string column, ComboBox filterOperator, TextBox filterValue)

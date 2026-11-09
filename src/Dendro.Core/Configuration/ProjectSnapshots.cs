@@ -7,7 +7,7 @@ namespace Dendro.Core.Configuration;
 /// <summary>Compact analysis results inside projects, with support for legacy plain snapshots.</summary>
 public static class ProjectSnapshots
 {
-    private static readonly string[] Keys = ["plot_snapshot", "details_snapshot"];
+    private static readonly string[] Keys = ["plot_snapshot", "additional_plots_snapshot", "details_snapshot"];
 
     public static void Compact(JsonObject project)
     {

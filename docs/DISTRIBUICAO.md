@@ -47,9 +47,9 @@ rotina; portanto, o Windows pode identificar o editor como desconhecido.
 
 ## Publicar uma atualização no GitHub
 
-1. Escolha uma versão maior que a anterior, por exemplo `1.0.2`.
-2. Gere e teste os pacotes com `package.ps1 -Version 1.0.2`.
-3. No repositório `leoipp/DendroLab`, crie um **Release** com a tag `v1.0.2`.
+1. Escolha uma versão maior que a anterior, por exemplo `1.1.0`.
+2. Gere e teste os pacotes com `package.ps1 -Version 1.1.0`.
+3. No repositório `leoipp/DendroLab`, crie um **Release** com a tag `v1.1.0`.
 4. Anexe o instalador, o ZIP e `SHA256SUMS.txt` gerados para essa mesma versão.
 5. Publique como versão estável, sem marcar draft ou pre-release.
 

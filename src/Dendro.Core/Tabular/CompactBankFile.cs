@@ -163,9 +163,20 @@ public static class CompactBankFile
     public static bool RemoveTable(TableSource source, IReadOnlyCollection<string>? descendantDatasets = null)
     {
         CompactTable selected;
+        var location = Location(source.Path);
         using (var reader = new CompactBankReader(source.Path)) selected = reader.Table(source.Table);
         var descendants = (descendantDatasets ?? []).ToHashSet(StringComparer.Ordinal);
-        return RemoveTables(Location(source.Path).File, table => table.Id == selected.Id || descendants.Contains(table.Dataset));
+        return RemoveTables(location.File, table =>
+            table.Dataset == selected.Dataset && table.Id == selected.Id || descendants.Contains(table.Dataset));
+    }
+
+    public static bool RemoveTables(string path, IReadOnlyCollection<(string Dataset, string Id)> tables,
+        IReadOnlyCollection<string>? datasets = null)
+    {
+        var keys = tables.ToHashSet();
+        var datasetIds = (datasets ?? []).ToHashSet(StringComparer.Ordinal);
+        if (keys.Count == 0 && datasetIds.Count == 0) return false;
+        return RemoveTables(path, table => keys.Contains((table.Dataset, table.Id)) || datasetIds.Contains(table.Dataset));
     }
 
     public static bool RemoveTables(string path, IReadOnlyCollection<string> tableIds, IReadOnlyCollection<string>? datasets = null)

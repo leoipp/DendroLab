@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <Copyright>Copyright (c) 2026 leoipp. Todos os direitos reservados.</Copyright>
-    <Version>1.0.1</Version>
+    <Version>1.1.0</Version>
   </PropertyGroup>
   <PropertyGroup>
     <UseArtifactsOutput>true</UseArtifactsOutput>

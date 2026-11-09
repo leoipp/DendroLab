@@ -319,7 +319,7 @@ internal sealed partial class ChartView : DockPanel
 
     private void UpdatePredictorFields()
     {
-        int[] compareCounts = SelectedComparePredictors();
+        int[] compareCounts = AvailableComparePredictors();
         int count = compareModels.IsChecked == true
             ? compareCounts.DefaultIfEmpty(1).Max()
             : predictorCount.SelectedIndex + 1;
@@ -341,6 +341,16 @@ internal sealed partial class ChartView : DockPanel
         6 => [2, 3],
         _ => [1, 2, 3],
     };
+
+    private int[] AvailableComparePredictors()
+    {
+        var definitions = metadata?["models"] as JsonArray ?? [];
+        var available = definitions
+            .OfType<JsonObject>()
+            .Select(model => (int)model.N("predictors", 1))
+            .ToHashSet();
+        return SelectedComparePredictors().Where(available.Contains).ToArray();
+    }
 
     private void CompareModeChanged()
     {
@@ -410,7 +420,7 @@ internal sealed partial class ChartView : DockPanel
     {
         var definitions = metadata["models"] as JsonArray ?? new JsonArray();
         int count = predictorCount.SelectedIndex + 1;
-        int[] compareCounts = SelectedComparePredictors();
+        int[] compareCounts = AvailableComparePredictors();
         var available = definitions.OfType<JsonObject>()
             .Where(m => compareModels.IsChecked == true
                 ? compareCounts.Contains((int)m.N("predictors", 1))
@@ -429,7 +439,7 @@ internal sealed partial class ChartView : DockPanel
     private JsonObject[] AvailableModels() => (metadata["models"] as JsonArray ?? new JsonArray())
         .OfType<JsonObject>()
         .Where(m => compareModels.IsChecked == true
-            ? SelectedComparePredictors().Contains((int)m.N("predictors", 1))
+            ? AvailableComparePredictors().Contains((int)m.N("predictors", 1))
             : (int)m.N("predictors", 1) == predictorCount.SelectedIndex + 1)
         .ToArray();
 
@@ -605,12 +615,12 @@ internal sealed partial class ChartView : DockPanel
         var c = config.DeepClone().AsObject();
         c["x"] = x.SelectedItem?.ToString();
         int variableCount = compareModels.IsChecked == true
-            ? SelectedComparePredictors().DefaultIfEmpty(1).Max()
+            ? AvailableComparePredictors().DefaultIfEmpty(1).Max()
             : predictorCount.SelectedIndex + 1;
         c["predictor_count"] = variableCount;
         c["fit_predictor_scope"] = comparePredictors.SelectedIndex < 0 ? 0 : comparePredictors.SelectedIndex;
         c["fit_predictors"] = compareModels.IsChecked == true
-            ? new JsonArray(SelectedComparePredictors().Select(n => (JsonNode?)JsonValue.Create(n)).ToArray())
+            ? new JsonArray(AvailableComparePredictors().Select(n => (JsonNode?)JsonValue.Create(n)).ToArray())
             : null;
         if (fitting)
         {

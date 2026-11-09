@@ -207,7 +207,8 @@ public static class ProjectModels
         var files = meta.Arr("files");
         Index(files, index);
         static string Key(string path) => path.Replace('/', '\\');
-        var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { Key(files[index].Display()) };
+        string selectedPath = Key(files[index].Display());
+        var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { selectedPath };
         var children = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (string key in new[] { "derived_tables", "processing_results" })
             foreach (var edge in (meta[key] as JsonArray ?? []).OfType<JsonObject>())
@@ -217,13 +218,29 @@ public static class ProjectModels
                 if (!children.TryGetValue(parent, out var targets)) children[parent] = targets = [];
                 targets.Add(child);
             }
+        // Never cascade from an output back into its source, even if imported or
+        // legacy metadata contains a cycle or a reversed dependency edge.
+        var parents = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var edge in children)
+            foreach (string child in edge.Value)
+            {
+                if (!parents.TryGetValue(child, out var sources)) parents[child] = sources = [];
+                sources.Add(edge.Key);
+            }
+        var ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ancestorQueue = new Queue<string>();
+        ancestorQueue.Enqueue(selectedPath);
+        while (ancestorQueue.TryDequeue(out string? child))
+            if (parents.TryGetValue(child, out var sources))
+                foreach (string source in sources)
+                    if (ancestors.Add(source)) ancestorQueue.Enqueue(source);
         // Traverse before removing links, so every generation remains discoverable.
         // The visited set also protects against cyclic or duplicated project metadata.
         var pending = new Queue<string>(removed);
         while (pending.TryDequeue(out string? parent))
             if (children.TryGetValue(parent, out var targets))
                 foreach (string child in targets)
-                    if (removed.Add(child)) pending.Enqueue(child);
+                    if (!ancestors.Contains(child) && removed.Add(child)) pending.Enqueue(child);
         bool Contains(string? path) => !string.IsNullOrEmpty(path) && removed.Contains(Key(path));
         for (int i = files.Count - 1; i >= 0; i--)
             if (Contains(files[i].Display())) files.RemoveAt(i);

@@ -137,6 +137,8 @@ internal static class AnalysisDocuments
             if (!separatePlot && definition.S("kind") == "frontier")
                 tabs.SelectedIndex = 1;
         }
+        foreach (var extraPlot in report.AdditionalPlots ?? [])
+            tabs.Items.Add(new TabItem { Header = extraPlot.Chart.S("title"), Content = PlotBody(extraPlot) });
         if (report.Details.Count > 1)
             tabs.Items.Add(
                 new TabItem
@@ -243,6 +245,8 @@ internal static class AnalysisDocuments
             Invalid = plot.Invalid + plot.Points.Length - points.Length,
         });
         entry["details_snapshot"] = report.Details.ToJson();
+        if (report.AdditionalPlots is { Length: > 0 })
+            entry["additional_plots_snapshot"] = JsonSerializer.SerializeToNode(report.AdditionalPlots);
         ProjectSnapshots.CompactEntry(entry);
     }
 
@@ -251,6 +255,8 @@ internal static class AnalysisDocuments
         var snapshot = ProjectSnapshots.Read(entry);
         ChartResult? plot = snapshot["plot_snapshot"] is { } saved
             ? JsonSerializer.Deserialize<ChartResult>(saved.ToJsonString()) : null;
+        ChartResult[]? additionalPlots = snapshot["additional_plots_snapshot"] is { } extras
+            ? JsonSerializer.Deserialize<ChartResult[]>(extras.ToJsonString()) : null;
         var details = new Dendro.Core.Spreadsheets.DataTable(["Item", "Resultado"]);
         if (snapshot["details_snapshot"] is JsonObject data)
         {
@@ -266,10 +272,10 @@ internal static class AnalysisDocuments
             var reconstructed = await Compute(session, definition);
             plot = reconstructed.Plot;
             if (entry["definition"].S("kind") == "increments") details = reconstructed.Details;
-            var restored = new AnalysisReport(entry.Obj("summary").DeepClone().AsObject(), details, plot);
+            var restored = new AnalysisReport(entry.Obj("summary").DeepClone().AsObject(), details, plot, additionalPlots);
             SaveSnapshot(entry, restored); session.Touch();
         }
-        return new(entry.Obj("summary").DeepClone().AsObject(), details, plot);
+        return new(entry.Obj("summary").DeepClone().AsObject(), details, plot, additionalPlots);
     }
 
     internal static async Task OpenPlot(MainWindow owner, ProjectSession session, JsonObject entry)
@@ -396,6 +402,12 @@ internal static class AnalysisDocuments
                     Dendro.Core.Tabular.TableStore.Read(new(path, copy.S("sheet"), (int)copy.N("header_row", 1))),
                     anomalyModel == null ? throw new InvalidDataException("Modelo de anomalias não encontrado no projeto.") : JsonSerializer.Deserialize<IsolationForestModel>(anomalyModel.ToJsonString())!,
                     copy.S("x"), copy.S("y"))
+                : copy.S("kind") == "kmeans"
+                ? KMeansClustering.Run(
+                    Dendro.Core.Tabular.TableStore.Read(new(path, copy.S("sheet"), (int)copy.N("header_row", 1))),
+                    copy["features"]!.AsArray().Select(item => item!.GetValue<string>()).ToArray(),
+                    copy.S("x"), copy.S("y"),
+                    JsonSerializer.Deserialize<KMeansOptions>(copy["options"]!.ToJsonString())!)
                 : copy.S("kind") == "frontier"
                 ? FrontierAnalysis.Run(
                     Dendro.Core.Tabular.TableStore.Read(new(path, copy.S("sheet"), (int)copy.N("header_row", 1))),

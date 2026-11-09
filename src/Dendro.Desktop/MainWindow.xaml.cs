@@ -436,11 +436,10 @@ public partial class MainWindow : Window
     private Task CreateContentGroup(string type)
     {
         var form = Ui.Form();
-        form.Children.Add(Ui.Text(type == "spreadsheet" ? "Crie um grupo para organizar planilhas." : "Crie um grupo para organizar camadas vetoriais."));
         var name = Ui.Input();
         Ui.Field(form, "Nome do grupo", name);
-        var dialog = Ui.Dialog("Novo grupo", form, 480, 250);
-        var create = Ui.Button("Criar grupo", () =>
+        Window dialog = null!;
+        var create = Ui.IconButton("Criar grupo", CommandIconKind.Add, () =>
         {
             string label = name.Text.Trim();
             if (label.Length == 0) throw new InvalidOperationException("Informe um nome para o grupo.");
@@ -452,8 +451,23 @@ public partial class MainWindow : Window
             });
             Session.Touch(); RefreshTree(); dialog.DialogResult = true;
         });
-        var cancel = Ui.Button("Cancelar", () => dialog.DialogResult = false);
-        dialog.Content = Ui.WithToolbar(form, create, cancel);
+        var cancel = Ui.IconButton("Cancelar", CommandIconKind.ClearSelection, () => dialog.DialogResult = false);
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(10, 6, 12, 8),
+        };
+        actions.Children.Add(create);
+        actions.Children.Add(cancel);
+        var content = new DockPanel { Background = Brushes.White };
+        DockPanel.SetDock(actions, Dock.Bottom);
+        content.Children.Add(actions);
+        content.Children.Add(form);
+        dialog = Ui.Dialog("Novo grupo", content, 420, 190);
+        dialog.MinWidth = 420;
+        dialog.MinHeight = 190;
+        dialog.ResizeMode = ResizeMode.NoResize;
         dialog.ShowDialog();
         return Task.CompletedTask;
     }
@@ -465,7 +479,7 @@ public partial class MainWindow : Window
         var form = Ui.Form();
         var name = Ui.Input(group.S("name"));
         Ui.Field(form, "Nome do grupo", name);
-        var dialog = Ui.Dialog("Renomear grupo", form, 480, 240);
+        Window dialog = null!;
         var save = Ui.Button("Salvar nome", () =>
         {
             string label = name.Text.Trim();
@@ -475,7 +489,7 @@ public partial class MainWindow : Window
             group["name"] = label; Session.Touch(); RefreshTree(); dialog.DialogResult = true;
         });
         var cancel = Ui.Button("Cancelar", () => dialog.DialogResult = false);
-        dialog.Content = Ui.WithToolbar(form, save, cancel);
+        dialog = Ui.Dialog("Renomear grupo", Ui.WithToolbar(form, save, cancel), 480, 240);
         dialog.ShowDialog();
         return Task.CompletedTask;
     }
@@ -484,16 +498,27 @@ public partial class MainWindow : Window
     {
         string? type = ContentGroupType(Session, path);
         if (type == null) return;
+        MoveContentsToGroup([path], type, groupId, refresh);
+    }
+
+    private void MoveContentsToGroup(IEnumerable<string> paths, string type, string? groupId, bool refresh = true)
+    {
+        string[] moving = paths.Where(path => ContentGroupType(Session, path) == type)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (moving.Length == 0) return;
         var groups = ContentGroups("spreadsheet").Concat(ContentGroups("vector")).ToArray();
+        var movingSet = moving.ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var group in groups)
         {
-            var paths = group.Arr("paths");
-            for (int i = paths.Count - 1; i >= 0; i--)
-                if (string.Equals(paths[i].Display(), path, StringComparison.OrdinalIgnoreCase)) paths.RemoveAt(i);
+            var groupPaths = group.Arr("paths");
+            for (int i = groupPaths.Count - 1; i >= 0; i--)
+                if (movingSet.Contains(groupPaths[i].Display())) groupPaths.RemoveAt(i);
         }
         var target = groups.FirstOrDefault(group => group.S("id") == groupId && group.S("type") == type);
-        if (target != null && !target.Arr("paths").Any(item => string.Equals(item.Display(), path, StringComparison.OrdinalIgnoreCase)))
-            target.Arr("paths").Add(path);
+        if (target != null)
+            foreach (string path in moving)
+                if (!target.Arr("paths").Any(item => string.Equals(item.Display(), path, StringComparison.OrdinalIgnoreCase)))
+                    target.Arr("paths").Add(path);
         Session.Touch();
         if (refresh) RefreshTree();
     }
@@ -535,27 +560,32 @@ public partial class MainWindow : Window
             && Math.Abs(current.Y - contentDragOrigin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         if (TreeItemFromSource(e.OriginalSource) is not { Tag: string path }
             || ContentGroupType(Session, path) == null) return;
-        var data = new DataObject("Dendro.ContentPath", path);
+        string[] paths = selectedContentPaths.Contains(path)
+            ? selectedContentPaths.Where(selected => Session.Files.Contains(selected, StringComparer.OrdinalIgnoreCase)
+                && ContentGroupType(Session, selected) != null).ToArray()
+            : [path];
+        var data = new DataObject("Dendro.ContentPaths", paths);
         DragDrop.DoDragDrop(ContentsTree, data, DragDropEffects.Move);
     }
 
     private void ContentsTreeDragOver(object sender, DragEventArgs e)
     {
         object? target = TreeItemFromSource(e.OriginalSource)?.Tag;
-        if (!e.Data.GetDataPresent("Dendro.ContentPath") || (target is not ContentGroupReference && target is not ContentGroupRootReference))
+        if (!e.Data.GetDataPresent("Dendro.ContentPaths") || (target is not ContentGroupReference && target is not ContentGroupRootReference))
         { e.Effects = DragDropEffects.None; return; }
-        string? pathType = ContentGroupType(Session, e.Data.GetData("Dendro.ContentPath") as string ?? "");
+        string[] paths = e.Data.GetData("Dendro.ContentPaths") as string[] ?? [];
         string targetType = target switch { ContentGroupReference group => group.Type, ContentGroupRootReference root => root.Type, _ => "" };
-        e.Effects = pathType == targetType ? DragDropEffects.Move : DragDropEffects.None;
+        e.Effects = paths.Any(path => ContentGroupType(Session, path) == targetType) ? DragDropEffects.Move : DragDropEffects.None;
         e.Handled = true;
     }
 
     private void ContentsTreeDrop(object sender, DragEventArgs e)
     {
         object? target = TreeItemFromSource(e.OriginalSource)?.Tag;
-        if (e.Data.GetData("Dendro.ContentPath") is not string path || (target is not ContentGroupReference && target is not ContentGroupRootReference)) return;
+        if (e.Data.GetData("Dendro.ContentPaths") is not string[] paths || (target is not ContentGroupReference && target is not ContentGroupRootReference)) return;
         string? groupId = target is ContentGroupReference group ? group.Id : null;
-        MoveContentToGroup(path, groupId);
+        string targetType = target is ContentGroupReference targetGroup ? targetGroup.Type : ((ContentGroupRootReference)target).Type;
+        MoveContentsToGroup(paths, targetType, groupId);
         e.Handled = true;
     }
 
@@ -573,7 +603,7 @@ public partial class MainWindow : Window
         sheets.ContextMenu = new ContextMenu();
         sheets.ContextMenu.Items.Add(add);
         Menu(sheets, "Juntar tabelas…", CommandIconKind.Merge, () => OpenTableTool(false));
-        Menu(sheets, "Parear medições…", CommandIconKind.Merge, () => OpenPairedMeasurementsTool());
+        Menu(sheets, "Parear medições…", CommandIconKind.PairedMeasurements, () => OpenPairedMeasurementsTool());
         AddCreateGroupCommand(sheets, "spreadsheet");
         var db = ContentItem("Bancos de dados", CommandIconKind.Database);
         db.ContextMenu = new ContextMenu();
@@ -692,9 +722,9 @@ public partial class MainWindow : Window
                 if (Session.IsTabular(path))
                     Menu(item, "Worksheet e cabeçalho…", CommandIconKind.Settings, () => ConfigureExcel(path));
                 Menu(item, "Gráfico de dispersão…", CommandIconKind.Chart, () => OpenChart(path, false));
-                Menu(item, "Aplicar regressões…", CommandIconKind.CalculateColumn, () => OpenRegressionApplicationTool(path));
+                Menu(item, "Aplicar regressões…", CommandIconKind.ApplyRegression, () => OpenRegressionApplicationTool(path));
                 Menu(item, "Estratificar…", CommandIconKind.Stratify, () => OpenTableTool(true, path));
-                Menu(item, "Parear medições…", CommandIconKind.Merge, () => OpenPairedMeasurementsTool(path));
+                Menu(item, "Parear medições…", CommandIconKind.PairedMeasurements, () => OpenPairedMeasurementsTool(path));
                 Menu(item, "Gerar coluna…", CommandIconKind.CalculateColumn, () => OpenTableTool(false, path, true));
                 Menu(item, "Isolation Forest…", CommandIconKind.Anomaly, () => OpenAnomalyTool(path));
                 Menu(item, "Limpeza integrada…", CommandIconKind.IntegratedCleaning, () => OpenIntegratedCleaning(path));
@@ -825,7 +855,7 @@ public partial class MainWindow : Window
                         new JsonObject { ["path"] = output, ["sheet"] = name, ["header_row"] = 1 })));
                     Menu(node, "Estratificar…", CommandIconKind.Stratify, () => OpenResultTool(reference, () => OpenTableTool(true, output)));
                     Menu(node, "Gerar coluna…", CommandIconKind.CalculateColumn, () => OpenResultTool(reference, () => OpenTableTool(false, output, true)));
-                    Menu(node, "Aplicar regressões…", CommandIconKind.CalculateColumn, () => OpenResultTool(reference, () => OpenRegressionApplicationTool(output, name)));
+                    Menu(node, "Aplicar regressões…", CommandIconKind.ApplyRegression, () => OpenResultTool(reference, () => OpenRegressionApplicationTool(output, name)));
                     Menu(node, "Isolation Forest…", CommandIconKind.Anomaly, () => OpenAnomalyTool(output, name));
                     Menu(node, "Limpeza integrada…", CommandIconKind.IntegratedCleaning, () => OpenIntegratedCleaning(output, name));
                     if (name is "DIRETO - PARCELAS" or "RESULTADO - PARCELAS")
@@ -1037,9 +1067,12 @@ public partial class MainWindow : Window
         }
         else
         {
-            selectedContentPaths.Clear();
-            selectedContentPaths.Add(path!);
-            contentSelectionAnchorPath = path;
+            if (!selectedContentPaths.Contains(path!))
+            {
+                selectedContentPaths.Clear();
+                selectedContentPaths.Add(path!);
+                contentSelectionAnchorPath = path;
+            }
         }
         UpdateContentSelectionVisuals();
     }
@@ -1742,15 +1775,17 @@ public partial class MainWindow : Window
             || name == "Testes estatísticos"
                 && "identidade Graybill regressão Welch Student t F ANOVA Levene Brown Forsythe variâncias médias".Contains(
                     ToolSearch.Text, StringComparison.CurrentCultureIgnoreCase);
+        bool MatchesTool(string name) => MatchesToolSearch(name)
+            || name == "K-means" && "kmeans cluster agrupamento silhouette silhueta elbow cotovelo inertia inércia".Contains(ToolSearch.Text, StringComparison.CurrentCultureIgnoreCase);
         var toolGroups = new (string Title, string[] Items)[]
         {
             ("Preparar e revisar dados", ["Processador", "Revisão de inventário", "Auditoria pós-processamento", "Juntar tabelas", "Parear medições", "Gerar coluna", "Estratificar", "Limpeza integrada", "Ativo biológico"]),
             ("Gráficos e modelos", ["Gráficos", "Ajuste de regressão", "Aplicar regressões", "Ajustar rede neural", "Ajustar Random Forest", "Ajustar Gradient Boosting", "Ajustar SVR", "Fronteira de eficiência"]),
-            ("Comparar e validar", ["Comparar curvas de produção", "ICA e IMA", "Testes estatísticos", "Validação de modelos", "Isolation Forest"]),
+            ("Comparar e validar", ["Comparar curvas de produção", "ICA e IMA", "Testes estatísticos", "Validação de modelos", "Isolation Forest", "K-means"]),
         };
         foreach (var (groupTitle, groupTools) in toolGroups)
         {
-            var visibleTools = groupTools.Where(MatchesToolSearch).ToArray();
+            var visibleTools = groupTools.Where(MatchesTool).ToArray();
             if (visibleTools.Length == 0) continue;
             if (string.IsNullOrWhiteSpace(ToolSearch.Text))
                 list.Items.Add(new ListBoxItem
@@ -1785,6 +1820,7 @@ public partial class MainWindow : Window
                         "Comparar curvas de produção" => "Escolha uma curva base e compare uma ou mais candidatas; a prévia mostra as séries selecionadas.",
                         "Testes estatísticos" => "Execute testes de médias, variâncias e identidade de modelos.",
                         "Validação de modelos" => "Compare uma ou várias colunas estimadas com os valores observados, com métricas, dispersão e histograma de erros.",
+                        "K-means" => "Agrupe observações numéricas e compare o número de grupos com elbow (inertia) e silhouette.",
                         _ => null,
                     },
                     IsEnabled = tool switch
@@ -1819,6 +1855,7 @@ public partial class MainWindow : Window
                     "ICA e IMA" => CommandIconKind.Increments,
                     "Comparar curvas de produção" => CommandIconKind.CurveComparison,
                     "Isolation Forest" => CommandIconKind.Anomaly,
+                    "K-means" => CommandIconKind.Statistics,
                     "Limpeza integrada" => CommandIconKind.IntegratedCleaning,
                     "Testes estatísticos" => CommandIconKind.Statistics,
                     "Validação de modelos" => CommandIconKind.ModelValidation,
@@ -1863,6 +1900,8 @@ public partial class MainWindow : Window
                 await Execute(async () => { var view = new GrowthComparisonView(this, Session); SetTool(view); await view.Initialize(); });
             else if ((string)i.Tag == "Isolation Forest")
                 await Execute(() => OpenAnomalyTool());
+            else if ((string)i.Tag == "K-means")
+                await Execute(() => OpenKMeansTool());
             else if ((string)i.Tag == "Limpeza integrada")
                 await Execute(() => OpenIntegratedCleaning());
             else if ((string)i.Tag == "Auditoria pós-processamento")
@@ -1918,6 +1957,12 @@ public partial class MainWindow : Window
     internal async Task OpenAnomalyTool(string? path = null, string? sheet = null)
     {
         var view = new IsolationForestView(this, Session);
+        SetTool(view); await view.Initialize(path, sheet);
+    }
+
+    internal async Task OpenKMeansTool(string? path = null, string? sheet = null)
+    {
+        var view = new KMeansView(this, Session);
         SetTool(view); await view.Initialize(path, sheet);
     }
 

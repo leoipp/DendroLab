@@ -9,7 +9,8 @@ namespace Dendro.Core.Statistics;
 public sealed record AnalysisReport(
     JsonObject Summary,
     DataTable Details,
-    ChartResult? Plot = null
+    ChartResult? Plot = null,
+    ChartResult[]? AdditionalPlots = null
 );
 
 public sealed class SampleMoments

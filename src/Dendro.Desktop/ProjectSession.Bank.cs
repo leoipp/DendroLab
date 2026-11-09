@@ -10,19 +10,19 @@ internal sealed partial class ProjectSession
 {
     private sealed class PendingBankRemoval
     {
-        public HashSet<string> Tables { get; } = new(StringComparer.Ordinal);
+        public HashSet<(string Dataset, string Id)> Tables { get; } = [];
         public HashSet<string> Datasets { get; } = new(StringComparer.Ordinal);
     }
 
     private string? workFolder;
     private readonly Dictionary<string, PendingBankRemoval> pendingBankRemovals = new(StringComparer.OrdinalIgnoreCase);
 
-    private void DeferBankRemoval(string path, IEnumerable<string>? tableIds = null, IEnumerable<string>? datasets = null)
+    private void DeferBankRemoval(string path, IEnumerable<(string Dataset, string Id)>? tables = null, IEnumerable<string>? datasets = null)
     {
         path = Path.GetFullPath(path);
         if (!pendingBankRemovals.TryGetValue(path, out var pending))
             pendingBankRemovals[path] = pending = new PendingBankRemoval();
-        if (tableIds != null) pending.Tables.UnionWith(tableIds);
+        if (tables != null) pending.Tables.UnionWith(tables);
         if (datasets != null) pending.Datasets.UnionWith(datasets);
     }
 
@@ -210,7 +210,7 @@ internal sealed partial class ProjectSession
             foreach (var entry in meta.Arr("derived_tables").OfType<JsonObject>().Where(e => e.S("path") == path).ToArray())
                 meta.Arr("derived_tables").Remove(entry);
         }
-        DeferBankRemoval(bank, [selected.Id], descendantDatasets);
+        DeferBankRemoval(bank, [(selected.Dataset, selected.Id)], descendantDatasets);
         Replace(updated);
         return Task.CompletedTask;
     }
@@ -218,9 +218,20 @@ internal sealed partial class ProjectSession
     private static string[] DescendantPathsToRemove(JsonObject updated, string path, string sheet, string[] remaining, string firstSheet)
     {
         var meta = updated.Obj("_dendro");
+        static string Key(string value) => value.Replace('/', '\\');
+        var edges = new[] { "derived_tables", "processing_results" }
+            .SelectMany(section => meta.Arr(section).OfType<JsonObject>()).ToArray();
+        var sources = edges.ToLookup(entry => Key(entry.S("path")), entry => Key(entry.S("source_path")), StringComparer.OrdinalIgnoreCase);
+        var protectedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sourceQueue = new Queue<string>();
+        sourceQueue.Enqueue(Key(path));
+        while (sourceQueue.TryDequeue(out string? child))
+            foreach (string source in sources[child])
+                if (source.Length > 0 && protectedSources.Add(source)) sourceQueue.Enqueue(source);
         string[] childPaths = new[] { "derived_tables", "processing_results" }
             .SelectMany(section => meta.Arr(section).OfType<JsonObject>())
-            .Where(entry => entry.S("source_path") == path && (remaining.Length == 0 ||
+            .Where(entry => string.Equals(Key(entry.S("source_path")), Key(path), StringComparison.OrdinalIgnoreCase)
+                && !protectedSources.Contains(Key(entry.S("path"))) && (remaining.Length == 0 ||
                 (string.IsNullOrWhiteSpace(entry.S("source_sheet")) ? firstSheet : entry.S("source_sheet")) == sheet))
             .Select(entry => entry.S("path")).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var removedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
