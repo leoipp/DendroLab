@@ -16,6 +16,9 @@
   <DataTemplate x:Key="ContentsItemHeader">
     <Border x:Name="SelectionBackground" Background="Transparent" CornerRadius="4" Padding="2,1">
     <DockPanel LastChildFill="True" Margin="0,1">
+      <CheckBox x:Name="LayerVisibilityToggle" DockPanel.Dock="Left" Margin="0,0,6,0" VerticalAlignment="Center"
+                Visibility="Collapsed" ToolTip="Exibir camada no mapa"
+                IsChecked="{Binding Path=(local:ShellVisuals.LayerVisible), RelativeSource={RelativeSource AncestorType=TreeViewItem}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
       <local:CommandIcon
         Kind="{Binding Path=(local:ShellVisuals.Icon), RelativeSource={RelativeSource AncestorType=TreeViewItem}}"
         Width="16"
@@ -33,6 +36,9 @@
     </DockPanel>
     </Border>
     <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Path=(local:ShellVisuals.LayerToggle), RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
+        <Setter TargetName="LayerVisibilityToggle" Property="Visibility" Value="Visible" />
+      </DataTrigger>
       <DataTrigger Binding="{Binding Path=(local:ShellVisuals.MultiSelected), RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
         <Setter TargetName="SelectionBackground" Property="Background" Value="#DFEAF5" />
       </DataTrigger>

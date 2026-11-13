@@ -1,6 +1,7 @@
 using System.Text;
 using System.Buffers.Binary;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Dendro.Core.Mathematics;
 using Dendro.Core.Spreadsheets;
 using Dendro.Core.Tabular;
@@ -16,8 +17,8 @@ public readonly record struct ChartPoint(
     string Group,
     bool Excluded = false,
     int Side = 0,
-    double X2 = double.NaN,
-    double X3 = double.NaN,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowNamedFloatingPointLiterals)] double X2 = double.NaN,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowNamedFloatingPointLiterals)] double X3 = double.NaN,
     int InputCount = 1
 )
 {

@@ -146,7 +146,7 @@ public class MigrationTests
                 {
                     var header = expected.Rows.FirstOrDefault(row => row.Any(cell => cell?.ToString() == "H Med"))
                         ?? expected.Rows.First(row => row.Any(cell => cell?.ToString() == "H"));
-                    dominantAfter = header.FindIndex(cell => cell?.ToString() == (header.Any(cell => cell?.ToString() == "H Med") ? "H Med" : "H"));
+                    dominantAfter = Array.FindIndex(header, cell => cell?.ToString() == (header.Any(cell => cell?.ToString() == "H Med") ? "H Med" : "H"));
                 }
                 Assert.Equal(expected.Width + (ages ? 1 : 0) + (dominant ? 2 : 0), actual.Width);
                 for (int r = 0; r < expected.Count; r++)

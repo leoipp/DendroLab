@@ -340,6 +340,13 @@ public sealed class InventoryProcessor
                 "Executando RNA: variáveis, categorias, normalização e camadas Dense…"
             );
             HeightProcessor.Apply(input, registry, cfg, heightModel, cancellation, progress);
+            string areaName = cadCols.S("area_efetiva", "Área efetiva (ha)");
+            if (input.Column(areaName) < 0)
+            {
+                int area = input.Ensure(areaName);
+                for (int row = 1; row < input.Count; row++)
+                    input.Set(row, area, registry.Value(RegistryRow(row), ca));
+            }
         }
         else
         {

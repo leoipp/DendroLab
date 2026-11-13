@@ -34,7 +34,7 @@ public sealed class InventoryAuditTests : IDisposable
         Assert.Equal(20,audit.Plots.Number(1,audit.Plots.Require("Volume_conhecido_origem_ha")),8);
         Assert.Contains("DAP/H/dimensões diferentes",audit.Plots.Text(1,audit.Plots.Require("Diagnostico")));
         Assert.Equal(before,File.ReadAllBytes(path));
-        Assert.All(new[]{audit.Plots,audit.Trees,audit.Information,audit.Evolution},t=>Assert.All(t.Rows,r=>Assert.Equal(t.Rows[0].Count,r.Count)));
+        Assert.All(new[]{audit.Plots,audit.Trees,audit.Information,audit.Evolution},t=>Assert.All(t.Rows,r=>Assert.Equal(t.Rows[0].Length,r.Length)));
     }
     [Fact]
     public void LocalPeersDoNotMixInventoryTypesAndSmallGroupsHaveNoStatisticalLimit()
@@ -67,7 +67,7 @@ public sealed class InventoryAuditTests : IDisposable
         input.Add(input.Rows[2].ToArray());
         temporal=InventoryAudit.Evolution(input,options);
         Assert.Equal(2,temporal.Count);Assert.Equal("Ambígua",temporal.Text(1,temporal.Require("Situacao")));
-        Assert.All(temporal.Rows,r=>Assert.Equal(temporal.Rows[0].Count,r.Count));
+        Assert.All(temporal.Rows,r=>Assert.Equal(temporal.Rows[0].Length,r.Length));
     }
     [Fact]
     public void SourceMissingHeightRemainsPartialAndDoesNotClaimProcessingError()

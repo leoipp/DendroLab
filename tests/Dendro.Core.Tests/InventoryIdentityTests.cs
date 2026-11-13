@@ -86,7 +86,10 @@ public sealed class InventoryIdentityTests : IDisposable
         input.Set(2, input.Require("Fonte"), "Base IFC"); input.Set(2, input.Require("Tipo"), "IFC");
         foreach (string column in new[] { "Cova", "Fuste", "Fila" })
         {
-            int index = input.Require(column); foreach (var row in input.Rows) row.RemoveAt(index);
+            int index = input.Require(column);
+            var trimmed = new Dendro.Core.Spreadsheets.DataTable();
+            foreach (var row in input.Rows) trimmed.Add(row.Where((_, position) => position != index).ToArray());
+            input = trimmed;
         }
         var (path, _) = Process(cfg, input);
         Assert.Equal(3, TableStore.Read(new(path, ProcessingHistory.Plots)).Count);

@@ -27,7 +27,7 @@ public sealed class DirectOutputColumnsTests
             foreach(var (level,column,sheet) in omitted)
             {
                 var table=TableStore.Read(new(output,sheet));Assert.Equal(-1,table.Column(column));
-                Assert.Equal(DirectOutputColumns.Headers(level).Where(c=>DirectOutputColumns.Enabled(cfg["processador"],level,c)),table.Rows[0].Select(v=>v!.ToString()));
+                Assert.Equal(DirectOutputColumns.Headers(level).Where(c=>(c!="IS" || cfg["processador"].B("calcular_is")) && DirectOutputColumns.Enabled(cfg["processador"],level,c)),table.Rows[0].Select(v=>v!.ToString()));
                 Assert.Equal(2,table.Count-(level=="arvore"?1:0));
             }
             var plots=TableStore.Read(new(output,"DIRETO - PARCELAS"));Assert.Equal(500,plots.Number(1,plots.Require("Volume_m3_ha")));

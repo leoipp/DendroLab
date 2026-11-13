@@ -9,6 +9,9 @@ A aplicação usa apenas assemblies gerenciados das seguintes bibliotecas:
 | ExcelDataReader | 3.9.0 | Leitura XLS/XLSX | MIT |
 | LiteDB | 5.0.21 | Compatibilidade com bancos antigos .dendrodb | MIT |
 | MathNet.Numerics | 5.0.0 | Distribuições t, F e probabilidades dos testes | MIT |
+| NetTopologySuite.IO.Esri.Shapefile | 1.2.0 | Leitura, operações geométricas e escrita de shapefiles de amostragem | BSD-3-Clause |
+| NetTopologySuite | 2.0.0 | Operações geométricas vetoriais (dependência transitiva) | BSD-3-Clause |
+| NetTopologySuite.Features | 2.0.0 | Atributos de feições vetoriais (dependência transitiva) | BSD-3-Clause |
 | PureHDF | 2.2.0 | Leitura dos pesos HDF5 em C# | MIT |
 | DocumentFormat.OpenXml | 3.5.1 | Escrita XLSX | MIT |
 | DocumentFormat.OpenXml.Framework | 3.5.1 | Infraestrutura Open XML | MIT |
@@ -25,4 +28,5 @@ Fontes: [ExcelDataReader](https://github.com/ExcelDataReader/ExcelDataReader),
 [Open XML SDK](https://github.com/dotnet/Open-XML-SDK),
 [AvalonDock](https://github.com/Dirkster99/AvalonDock),
 [LiteDB](https://github.com/litedb-org/LiteDB),
+[NetTopologySuite.IO.Esri](https://github.com/NetTopologySuite/NetTopologySuite.IO.Esri),
 [Math.NET Numerics](https://numerics.mathdotnet.com/Probability).

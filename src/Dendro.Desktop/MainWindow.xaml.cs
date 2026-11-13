@@ -124,6 +124,8 @@ public partial class MainWindow : Window
             { ExitChartFullScreen(); e.Handled = true; }
             else if (e.Key == Key.F1 && Keyboard.Modifiers == ModifierKeys.Control)
             { SetRibbonPinned(!RibbonPinned); e.Handled = true; }
+            else if (e.Key == Key.F1 && Keyboard.Modifiers == ModifierKeys.None)
+            { new ManualWindow { Owner = this }.ShowDialog(); e.Handled = true; }
             else if (e.Key == Key.Right && (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Alt)
                 || Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
             { _ = NavigateSavedChart(1); e.Handled = true; }
@@ -332,6 +334,33 @@ public partial class MainWindow : Window
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
             return false;
+        }
+    }
+
+    internal void RevealAddedContents(IEnumerable<string> paths)
+    {
+        var added = paths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (added.Count == 0) return;
+        // A previous search or collapsed folder must not hide a newly added file.
+        ContentSearch.Clear();
+        contentSearchTimer.Stop();
+        RefreshTree();
+        ContentsPane.Show();
+        TreeViewItem? selected = null;
+        foreach (var node in ContentsDescendants(ContentsTree).Where(node => node.Tag is string path && added.Contains(path)))
+        {
+            for (var parent = ItemsControl.ItemsControlFromItemContainer(node) as TreeViewItem; parent != null;
+                parent = ItemsControl.ItemsControlFromItemContainer(parent) as TreeViewItem)
+            {
+                parent.IsExpanded = true;
+                contentsExpansion[ContentsNodeKey(parent)] = true;
+            }
+            selected = node;
+        }
+        if (selected != null)
+        {
+            selected.IsSelected = true;
+            selected.BringIntoView();
         }
     }
 
@@ -610,6 +639,7 @@ public partial class MainWindow : Window
         Menu(db, "Adicionar banco DendroLab…", CommandIconKind.Database, AddBank);
         var shapes = ContentItem("Dados vetoriais", CommandIconKind.Shape);
         shapes.ContextMenu = new ContextMenu();
+        Menu(shapes, "Adicionar shapefile…", CommandIconKind.Add, () => AddData(vectorOnly: true));
         AddCreateGroupCommand(shapes, "vector");
         var basemaps = ContentItem("Mapas base", CommandIconKind.Map);
         basemaps.ContextMenu = new ContextMenu();
@@ -681,6 +711,17 @@ public partial class MainWindow : Window
                     : CommandIconKind.Shape
             );
             item.Tag = path;
+            if (Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsRasterPath(path))
+            {
+                ShellVisuals.SetLayerToggle(item, true);
+                ShellVisuals.SetLayerVisible(item, Session.Meta.Obj("gis_layer_visibility")[path]?.GetValue<bool>() ?? true);
+                ShellVisuals.SetLayerVisibilityChanged(item, visible =>
+                {
+                    Session.Meta.Obj("gis_layer_visibility")[path] = visible;
+                    gisView?.SetLayerVisible(Session.Resolve(path), visible);
+                    Session.Touch();
+                });
+            }
             bool missingSource = !ContentAvailable(path);
             ShellVisuals.SetMissing(item, missingSource);
             item.ToolTip = missingSource
@@ -733,6 +774,8 @@ public partial class MainWindow : Window
             string? itemGroupType = ContentGroupType(Session, path);
             if (itemGroupType == "vector" && !missingSource)
                 Menu(item, "Abrir no GIS", CommandIconKind.Map, () => OpenGIS(path));
+            if (!missingSource && Session.Meta.Arr("sampling_results").Any(result => result.S("path") == path))
+                Menu(item, "Exportar amostragem…", CommandIconKind.SaveAs, () => ExportSamplingContent(path));
             if (IsRasterPath(path) && !missingSource)
                 Menu(item, "Abrir no GIS", CommandIconKind.Map, () => OpenGIS(path));
             if ((itemGroupType is "spreadsheet" or "vector") && !processingOutput) AddMoveToGroupMenu(item, path, itemGroupType);
@@ -1159,6 +1202,7 @@ public partial class MainWindow : Window
         {
             foreach (string path in selected)
                 if (!Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) Session.AddFile(path);
+            RevealAddedContents(selected);
             await OpenGIS(selected.LastOrDefault());
             Log($"{selected.Length:N0} camada(s) GIS adicionada(s) ao projeto.");
         });
@@ -1782,6 +1826,7 @@ public partial class MainWindow : Window
             ("Preparar e revisar dados", ["Processador", "Revisão de inventário", "Auditoria pós-processamento", "Juntar tabelas", "Parear medições", "Gerar coluna", "Estratificar", "Limpeza integrada", "Ativo biológico"]),
             ("Gráficos e modelos", ["Gráficos", "Ajuste de regressão", "Aplicar regressões", "Ajustar rede neural", "Ajustar Random Forest", "Ajustar Gradient Boosting", "Ajustar SVR", "Fronteira de eficiência"]),
             ("Comparar e validar", ["Comparar curvas de produção", "ICA e IMA", "Testes estatísticos", "Validação de modelos", "Isolation Forest", "K-means"]),
+            ("Planejamento de campo", ["Amostragem"]),
         };
         foreach (var (groupTitle, groupTools) in toolGroups)
         {
@@ -1902,6 +1947,8 @@ public partial class MainWindow : Window
                 await Execute(() => OpenAnomalyTool());
             else if ((string)i.Tag == "K-means")
                 await Execute(() => OpenKMeansTool());
+            else if ((string)i.Tag == "Amostragem")
+                await Execute(OpenForestSampling);
             else if ((string)i.Tag == "Limpeza integrada")
                 await Execute(() => OpenIntegratedCleaning());
             else if ((string)i.Tag == "Auditoria pós-processamento")
@@ -2018,6 +2065,63 @@ public partial class MainWindow : Window
 
     private async void GISClick(object sender, RoutedEventArgs e) => await Execute(() => OpenGIS());
 
+    private void ManualClick(object sender, RoutedEventArgs e) => new ManualWindow { Owner = this }.ShowDialog();
+
+    private async Task OpenForestSampling()
+    {
+        if (!Session.IsOpen)
+            throw new InvalidOperationException("Abra um projeto para usar a ferramenta de amostragem.");
+        var shapefiles = Session.Files.Where(path => Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase))
+            .Where(path => !Session.Meta.Arr("sampling_results").Any(result => result.S("path") == path))
+            .Select(Session.Resolve).ToArray();
+        var view = new ForestSamplingView(this, shapefiles, async result =>
+        {
+            string path = await RegisterSamplingContent(result);
+            await OpenGIS(path);
+        });
+        SetTool(view);
+        await view.Initialize();
+    }
+
+    internal async Task<string> RegisterSamplingContent(Dendro.Core.Sampling.ForestSamplingResult result)
+    {
+        string baseFolder = Session.FilePath.Length > 0
+            ? Path.Combine(Path.GetDirectoryName(Session.FilePath)!, Path.GetFileNameWithoutExtension(Session.FilePath) + "_camadas")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DENDRO", "amostragens");
+        string folder = Path.Combine(baseFolder, Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(folder, Path.GetFileNameWithoutExtension(result.SourcePath) + "_amostra_" + result.Method + ".shp");
+        await Task.Run(() =>
+        {
+            Directory.CreateDirectory(folder);
+            Dendro.Core.Sampling.ForestSampler.WriteShapefile(result, path);
+            Dendro.Core.Sampling.ForestSampler.WriteCsv(result, Path.ChangeExtension(path, ".csv"));
+            Dendro.Core.Sampling.ForestSampler.WriteMapSvg(result, Path.ChangeExtension(path, ".svg"));
+            Dendro.Core.Sampling.ForestSampler.WriteDesign(result, Path.ChangeExtension(path, ".design.json"));
+        });
+        Session.Meta.Arr("sampling_results").Add(new JsonObject
+        {
+            ["path"] = path, ["source_path"] = result.SourcePath, ["method"] = result.Method.ToString(),
+            ["rounds"] = new JsonArray(result.Samples.Select(sample => (JsonNode?)JsonValue.Create(sample.Round)).ToArray()),
+            ["design"] = System.Text.Json.JsonSerializer.SerializeToNode(result.GrtsDesign),
+            ["options"] = System.Text.Json.JsonSerializer.SerializeToNode(result.Options),
+        });
+        Session.AddFile(path);
+        RevealAddedContents([path]);
+        return path;
+    }
+
+    private Task ExportSamplingContent(string path)
+    {
+        var picker = new Microsoft.Win32.SaveFileDialog { Filter = "Shapefile|*.shp", FileName = Path.GetFileName(path), Title = "Exportar amostragem" };
+        if (picker.ShowDialog(this) != true) return Task.CompletedTask;
+        foreach (string extension in new[] { ".shp", ".shx", ".dbf", ".prj", ".cpg", ".csv", ".svg", ".design.json" })
+        {
+            string from = Path.ChangeExtension(Session.Resolve(path), extension), to = Path.ChangeExtension(picker.FileName, extension);
+            if (File.Exists(from) && !string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) File.Copy(from, to, true);
+        }
+        return Task.CompletedTask;
+    }
+
     private async Task OpenGIS(string? selectedVector = null)
     {
         if (!Session.IsOpen)
@@ -2058,17 +2162,19 @@ public partial class MainWindow : Window
         return header;
     }
 
-    private async Task AddData()
+    private async Task AddData(bool vectorOnly = false)
     {
         var picker = new Microsoft.Win32.OpenFileDialog
         {
-            Filter = "Planilhas Excel|*.xlsx;*.xls|Dados|*.dlb;*.dendrodb;*.db;*.shp|Todos|*.*",
+            Filter = vectorOnly ? "Shapefile|*.shp" : "Planilhas Excel|*.xlsx;*.xls|Dados|*.dlb;*.dendrodb;*.db;*.shp;*.tif;*.tiff|Todos|*.*",
             Multiselect = true,
         };
         if (picker.ShowDialog() != true)
             return;
         await Execute(async () =>
         {
+            string? selectedShape = null;
+            var addedPaths = new List<string>();
             foreach (var path in picker.FileNames)
             {
                 if (Session.IsSpreadsheet(path))
@@ -2077,7 +2183,11 @@ public partial class MainWindow : Window
                         continue;
                 }
                 Session.AddFile(path);
+                addedPaths.Add(path);
+                if (Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsRasterPath(path)) selectedShape = path;
             }
+            RevealAddedContents(addedPaths);
+            if (selectedShape != null) await OpenGIS(selectedShape);
         });
     }
 
@@ -2198,6 +2308,8 @@ public partial class MainWindow : Window
         {
             if (i.Tag is string path && Session.IsTabular(path))
                 await Execute(() => OpenTable(path));
+            else if (i.Tag is string vectorPath && (Path.GetExtension(vectorPath).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsRasterPath(vectorPath)))
+                await Execute(() => OpenGIS(vectorPath));
             else if (i.Tag is JsonObject chart)
                 await Execute(() => OpenChart(chart.S("path"), chart.B("fitting"), chart, false));
             else if (i.Tag is AnalysisReference analysis)
@@ -2239,6 +2351,8 @@ public partial class MainWindow : Window
             return;
         await Execute(async () =>
         {
+            string? selectedShape = null;
+            var addedPaths = new List<string>();
             foreach (var path in (string[])e.Data.GetData(DataFormats.FileDrop))
             {
                 if (
@@ -2247,7 +2361,11 @@ public partial class MainWindow : Window
                 )
                     continue;
                 Session.AddFile(path);
+                addedPaths.Add(path);
+                if (Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsRasterPath(path)) selectedShape = path;
             }
+            RevealAddedContents(addedPaths);
+            if (selectedShape != null) await OpenGIS(selectedShape);
         });
     }
 

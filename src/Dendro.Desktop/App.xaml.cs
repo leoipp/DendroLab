@@ -38,13 +38,14 @@ public partial class App : Application
             catch (UnauthorizedAccessException) { }
             Ui.Alert("DendroLab", args.Exception.Message, Ui.MessageTone.Error);
         };
-        if (e.Args.Length > 0 && e.Args[0] is "--self-test" or "--self-test-ui-results" or "--self-test-workflow" or "--self-test-duplicates" or "--self-test-remove-discard" or "--self-test-context-menu-icons")
+        if (e.Args.Length > 0 && e.Args[0] is "--self-test" or "--self-test-ui-results" or "--self-test-workflow" or "--self-test-duplicates" or "--self-test-remove-discard" or "--self-test-context-menu-icons" or "--self-test-gis-contents")
         {
             IsSelfTest = true;
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             try
             {
-                if (e.Args[0] == "--self-test-workflow") await DesktopTests.RunProcessingWorkflow(e.Args[1]);
+                if (e.Args[0] == "--self-test-gis-contents") await DesktopTests.RunGisContents(e.Args[1]);
+                else if (e.Args[0] == "--self-test-workflow") await DesktopTests.RunProcessingWorkflow(e.Args[1]);
                 else if (e.Args[0] == "--self-test-duplicates") await DesktopTests.RunDuplicateSettings(e.Args[1]);
                 else if (e.Args[0] == "--self-test-remove-discard") await DesktopTests.RunDeferredRemoval(e.Args[1]);
                 else if (e.Args[0] == "--self-test-context-menu-icons") await DesktopTests.RunContextMenuIconAudit(e.Args[1]);

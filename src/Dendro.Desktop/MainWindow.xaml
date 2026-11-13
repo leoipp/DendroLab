@@ -91,6 +91,7 @@
                     Tag="Settings"
                   />
                   <Button x:Name="UpdateButton" Content="Verificar atualizações" Click="UpdatesClick" Style="{StaticResource RibbonCommand}" Tag="Updates" ToolTip="Verificar novas versões no GitHub Releases" />
+                  <Button Content="Manual do DendroLab" Click="ManualClick" Style="{StaticResource RibbonCommand}" Tag="Contents" ToolTip="Manual de ferramentas e configurações" />
                 </WrapPanel>
                 <TextBlock Text="Preferências" Style="{StaticResource RibbonGroupLabel}" />
               </StackPanel>

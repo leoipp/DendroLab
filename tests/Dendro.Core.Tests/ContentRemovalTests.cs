@@ -59,6 +59,19 @@ public class ContentRemovalTests
     }
 
     [Fact]
+    public void RemovingShapeCascadesToSamplesAndClearsLayerVisibility()
+    {
+        var project = ProjectStore.Create("Amostragem"); var meta = project.Obj("_dendro");
+        meta["files"] = new JsonArray("stands.shp", "sample.shp", "other.tif");
+        meta["sampling_results"] = new JsonArray(Edge("stands.shp", "sample.shp"));
+        meta["gis_layer_visibility"] = new JsonObject { ["stands.shp"] = true, ["sample.shp"] = false, ["other.tif"] = true };
+        ProjectModels.RemoveFile(project, 0);
+        Assert.Equal("other.tif", Assert.Single(meta.Arr("files")).Display());
+        Assert.Empty(meta.Arr("sampling_results"));
+        Assert.Equal("other.tif", Assert.Single(meta.Obj("gis_layer_visibility")).Key);
+    }
+
+    [Fact]
     public void RemovalPreservesPhysicalFilesAndInvalidIndexDoesNotMutateProject()
     {
         string file = Path.GetTempFileName();

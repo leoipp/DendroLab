@@ -60,6 +60,8 @@ public sealed class InventoryIdentity
     private readonly string defaultType;
     private readonly Dictionary<(string Type, string Origin), InventoryContext> contexts = new();
     private readonly Dictionary<InventoryKeyFingerprint, string> plots = new();
+    private readonly Dictionary<InventoryKeyFingerprint, (string Stand, string Lot, string Plot)> plotDetails = new();
+    private readonly int standColumn, lotColumn, plotColumn;
     private readonly Dictionary<double, string> dates = new();
     private readonly Dictionary<DataTable, (int Source, int Target)[]> copiedColumns = new();
     private static readonly InventoryContext EmptyContext = new("", "", "");
@@ -69,6 +71,9 @@ public sealed class InventoryIdentity
     {
         this.input = input; Ensure(cfg);
         var map = cfg.At("arquivo_entrada.colunas");
+        standColumn = input.Column(map.S("talhao", "Talhão"));
+        lotColumn = input.Column(map.S("lote", "Lote"));
+        plotColumn = input.Column(map.S("parcela", "Parcela"));
         string Resolve(string field) => map?[field] is JsonValue ? map.S(field) : field;
         int[] Columns(string key) => cfg.Obj("identificacao").Arr(key).Select(f => input.Require(Resolve(f.Display()))).ToArray();
         treeColumns = requireTree ? Columns("arvore") : [];
@@ -133,6 +138,10 @@ public sealed class InventoryIdentity
     public string PlotKey(int row)
     {
         var key = RawKey(row, plotColumns);
+        var details = (Stand: input.Text(row, standColumn), Lot: input.Text(row, lotColumn), Plot: input.Text(row, plotColumn));
+        if (plotDetails.TryGetValue(key, out var first) && first != details)
+            throw new InvalidDataException("A chave de parcela está agrupando talhões, lotes ou números de parcela diferentes. Revise Configurações > Identificação.");
+        plotDetails.TryAdd(key, details);
         if (!plots.TryGetValue(key, out string? stored)) plots[key] = stored = key.ToHexString();
         return stored;
     }

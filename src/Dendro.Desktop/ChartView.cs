@@ -54,6 +54,11 @@ internal sealed partial class ChartView : DockPanel
     private readonly CheckBox compareModels = new() { Content = "Ajustar e comparar modelos", Margin = new Thickness(2, 5, 2, 7) };
     private readonly CheckBox showCurrentCurve = new() { Content = "Mostrar curva vigente do catálogo", Margin = new Thickness(2, 5, 2, 5) };
     private readonly ComboBox currentCurveSource = Ui.Combo(["Regressão salva", "Índice de sítio", "Crescimento e produção"]);
+    private readonly ComboBox siteIndexModel = new();
+    private readonly TextBox siteIndexReferenceAge = Ui.Input("7");
+    private readonly TextBox siteIndexDeviation = Ui.Input("20");
+    private readonly CheckBox showSiteIndexCurves = new() { Content = "Mostrar nove curvas anamórficas", Margin = new Thickness(2, 5, 2, 5) };
+    private JsonObject[] siteIndexModels = [];
     private string currentCurveMessage = "";
     private readonly ComboBox comparePredictors = Ui.Combo([
         "Todos (1P, 2P e 3P)",
@@ -183,6 +188,21 @@ internal sealed partial class ChartView : DockPanel
             violinResolution.SelectedIndex = 2;
             violinOutlierRule.SelectedIndex = 0;
             tabs.Items.Add(new TabItem { Header = "Violino", Content = Ui.Scroll(violin) });
+
+            var siteIndex = Ui.Form();
+            Ui.Section(siteIndex, "Famílias de curvas de índice de sítio");
+            siteIndexModels = session.Meta.Arr("site_index_models").OfType<JsonObject>()
+                .Where(model => model.B("vigente", true) && model.S("source_y") is "Hd" or "DAPd")
+                .OrderBy(model => model.S("codigo"), StringComparer.OrdinalIgnoreCase).ToArray();
+            siteIndexModel.ItemsSource = siteIndexModels.Select(model => $"{model.S("codigo")} · {model.S("name")} · Y={model.S("source_y")} · base {model.N("reference_age"):G5} {model.S("age_unit")}").ToArray();
+            if (siteIndexModels.Length > 0) siteIndexModel.SelectedIndex = 0;
+            Ui.Field(siteIndex, "Equação-guia vigente", siteIndexModel);
+            Ui.Field(siteIndex, "Idade-base no eixo X (anos)", siteIndexReferenceAge);
+            Ui.Field(siteIndex, "Desvio máximo na idade-base (%)", siteIndexDeviation);
+            siteIndex.Children.Add(showSiteIndexCurves);
+            Ui.AddHelp(siteIndex, "A equação-guia gera nove curvas anamórficas: valores igualmente espaçados entre −desvio e +desvio na idade-base. Cada três curvas formam as classes 1 (inferior), 2 (intermediária) e 3 (superior); a curva central coincide com a guia. Para base de 84 meses, informe 7 anos. As curvas só são aplicadas quando você atualiza o gráfico.");
+            siteIndex.Children.Add(Ui.AsyncButton("Aplicar curvas ao gráfico", () => owner.Execute(ApplySiteIndexCurves)));
+            tabs.Items.Add(new TabItem { Header = "Índice de sítio", Content = Ui.Scroll(siteIndex) });
         }
         var fit = Ui.Form();
         Ui.Section(fit, "Modelo de regressão");
@@ -876,6 +896,25 @@ internal sealed partial class ChartView : DockPanel
         )["result"]!.AsObject();
         config = data["chart"]!.DeepClone().AsObject();
         config["path"] = c.S("path");
+        if (!fitting)
+        {
+            if (showSiteIndexCurves.IsChecked == true)
+            {
+                if (siteIndexModel.SelectedIndex < 0 || siteIndexModel.SelectedIndex >= siteIndexModels.Length)
+                    throw new InvalidOperationException("Cadastre ou selecione uma equação vigente de índice de sítio.");
+                double referenceAge = Ui.Number(siteIndexReferenceAge.Text);
+                double deviation = Ui.Number(siteIndexDeviation.Text);
+                SiteIndexCurveOverlay.Add(config, data, siteIndexModels[siteIndexModel.SelectedIndex], referenceAge, deviation);
+            }
+            else if (config.B("site_index_overlay"))
+            {
+                data.Remove("reference_curves");
+                config["site_index_overlay"] = false;
+                config.Remove("site_index_model");
+                config.Remove("site_index_reference_age");
+                config.Remove("site_index_deviation_percent");
+            }
+        }
         session.StoreChart(config);
         Render(data);
         if (!fitting && fitCurrentGraph != null)
@@ -913,6 +952,12 @@ internal sealed partial class ChartView : DockPanel
                 ? "\nAviso: X tem apenas um valor distinto; confira os eixos antes de ajustar uma regressão."
                 : "")
             + (currentCurveMessage.Length > 0 ? "\n" + currentCurveMessage : "");
+    }
+
+    private async Task ApplySiteIndexCurves()
+    {
+        showSiteIndexCurves.IsChecked = true;
+        await Generate();
     }
 
     private void Render(JsonObject data)

@@ -14,11 +14,16 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
+using Dendro.Core.Sampling;
+using Dendro.Core;
 
 namespace Dendro.Desktop;
 
-internal sealed record GisFeature(int Type, Point[][] Parts);
-internal sealed record GisRasterLayer(string Path, string Name, BitmapSource Image, Rect Extent);
+internal sealed record GisFeature(int Type, Point[][] Parts, int Round = 0);
+internal sealed record GisRasterLayer(string Path, string Name, BitmapSource Image, Rect Extent)
+{
+    internal bool Visible { get; set; } = true;
+}
 
 internal sealed class GisLayer(string path, string name, GisFeature[] features, Rect extent, string? warning)
 {
@@ -34,23 +39,15 @@ internal sealed class GisView : DockPanel, IDisposable
 {
     private readonly ProjectSession session;
     private readonly GisMapCanvas map = new();
-    private readonly TextBlock status = Ui.Text("Carregando camadas GIS…", 12);
     private readonly List<GisLayer> layers = new();
     private readonly List<GisRasterLayer> rasters = new();
     private bool disposed;
+    internal IReadOnlyList<GisLayer> VectorLayers => layers;
 
     internal GisView(ProjectSession session)
     {
         this.session = session;
         Background = Brushes.White;
-        var toolbar = new DockPanel { LastChildFill = true, Margin = new Thickness(10, 7, 10, 4) };
-        status.Margin = new Thickness(4, 2, 4, 2);
-        status.TextTrimming = TextTrimming.CharacterEllipsis;
-        status.MaxWidth = 1050;
-        status.VerticalAlignment = VerticalAlignment.Center;
-        toolbar.Children.Add(status);
-        DockPanel.SetDock(toolbar, Dock.Top);
-        Children.Add(toolbar);
         var mapHost = new Grid();
         mapHost.Children.Add(map);
         var credit = new Border
@@ -89,20 +86,45 @@ internal sealed class GisView : DockPanel, IDisposable
         rasters.Clear();
         layers.AddRange(loadedVectors.Where(result => result.Layer != null).Select(result => result.Layer!));
         rasters.AddRange(loadedRasters.Where(result => result.Layer != null).Select(result => result.Layer!));
+        foreach (var layer in layers)
+        {
+            layer.Visible = LayerIsVisible(layer.Path);
+            var sampling = session.Meta.Arr("sampling_results").FirstOrDefault(entry =>
+                string.Equals(session.Resolve(entry.S("path")), layer.Path, StringComparison.OrdinalIgnoreCase));
+            if (sampling != null)
+            {
+                var rounds = sampling.AsObject().Arr("rounds");
+                for (int i = 0; i < Math.Min(rounds.Count, layer.Features.Length); i++)
+                    layer.Features[i] = layer.Features[i] with { Round = rounds[i]?.GetValue<int>() ?? 1 };
+            }
+        }
+        foreach (var raster in rasters)
+            raster.Visible = LayerIsVisible(raster.Path);
         map.SetLayers(layers, rasters);
         var failures = loadedVectors.Where(result => result.Error != null).Select(result => result.Error!)
             .Concat(loadedRasters.Where(result => result.Error != null).Select(result => result.Error!)).ToArray();
         var warnings = layers.Where(layer => layer.Warning != null).Select(layer => layer.Name + ": " + layer.Warning).ToArray();
-        status.Text = failures.Length > 0 ? string.Join("\n", failures)
-            : warnings.Length > 0 ? string.Join("\n", warnings)
-            : layers.Count + rasters.Count == 0 ? "Adicione shapefiles ou rasteres GeoTIFF pelo menu de contexto de Mapas base."
-            : $"{layers.Count:N0} vetor(es) · {rasters.Count:N0} raster(es). Arraste para mover; use a roda para zoom.";
+        if (failures.Length > 0 || warnings.Length > 0)
+            MessageBox.Show(string.Join("\n", failures.Concat(warnings)), "Camadas do mapa", MessageBoxButton.OK, MessageBoxImage.Warning);
         map.Fit(layers.Where(layer => selectedVector == null || string.Equals(layer.Path, selectedVector, StringComparison.OrdinalIgnoreCase)).Select(layer => layer.Extent)
             .Concat(rasters.Where(layer => selectedVector == null || string.Equals(layer.Path, selectedVector, StringComparison.OrdinalIgnoreCase)).Select(layer => layer.Extent)).ToArray());
     }
 
     private static bool IsGeoTiff(string path) => Path.GetExtension(path) is string extension
         && (extension.Equals(".tif", StringComparison.OrdinalIgnoreCase) || extension.Equals(".tiff", StringComparison.OrdinalIgnoreCase));
+
+    internal void SetLayerVisible(string path, bool visible)
+    {
+        foreach (var layer in layers.Where(layer => string.Equals(layer.Path, path, StringComparison.OrdinalIgnoreCase))) layer.Visible = visible;
+        foreach (var layer in rasters.Where(layer => string.Equals(layer.Path, path, StringComparison.OrdinalIgnoreCase))) layer.Visible = visible;
+        map.InvalidateVisual();
+    }
+
+    private bool LayerIsVisible(string resolvedPath)
+    {
+        string key = session.Files.FirstOrDefault(path => string.Equals(session.Resolve(path), resolvedPath, StringComparison.OrdinalIgnoreCase)) ?? resolvedPath;
+        return session.Meta.Obj("gis_layer_visibility")[key]?.GetValue<bool>() ?? true;
+    }
 
     internal bool HasLayer(string path) => layers.Any(layer => string.Equals(layer.Path, path, StringComparison.OrdinalIgnoreCase))
         || rasters.Any(layer => string.Equals(layer.Path, path, StringComparison.OrdinalIgnoreCase));
@@ -226,6 +248,7 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
         double scale = PixelScale(zoom);
         foreach (var raster in rasters)
         {
+            if (!raster.Visible) continue;
             Point upperLeft = Screen(new Point(raster.Extent.Left, raster.Extent.Top), scale);
             Point lowerRight = Screen(new Point(raster.Extent.Right, raster.Extent.Bottom), scale);
             if (lowerRight.X <= 0 || upperLeft.X >= ActualWidth || lowerRight.Y <= 0 || upperLeft.Y >= ActualHeight)
@@ -356,7 +379,8 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
             {
                 Point p = Screen(point, scale);
                 if (p.X < -6 || p.Y < -6 || p.X > ActualWidth + 6 || p.Y > ActualHeight + 6) continue;
-                dc.DrawEllipse(Brushes.White, new Pen(stroke, 1), p, 4, 4); dc.DrawEllipse(stroke, null, p, 2.4, 2.4);
+                var pointBrush = feature.Round > 0 ? SamplingPointBrush(feature.Round) : stroke;
+                dc.DrawEllipse(Brushes.White, new Pen(pointBrush, 1.2), p, 5, 5); dc.DrawEllipse(pointBrush, null, p, 3.5, 3.5);
             }
             dc.PushTransform(new MatrixTransform(matrix));
             for (int fi = 0; fi < layer.Features.Length; fi++)
@@ -370,6 +394,15 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
             dc.Pop();
         }
     }
+
+    internal static Brush SamplingPointBrush(int round) => round switch
+    {
+        1 => Brushes.RoyalBlue,
+        2 => Brushes.DarkOrange,
+        3 => Brushes.MediumOrchid,
+        4 => Brushes.Crimson,
+        _ => Brushes.RoyalBlue,
+    };
 
     private Geometry?[] GetGeometries(GisLayer layer)
     {
@@ -651,7 +684,7 @@ internal static class ShapefileReader
         return BinaryPrimitives.ReadInt32BigEndian(bytes);
     }
 
-    private static Func<Point, Point> CreateProjection(string path)
+    internal static Func<Point, Point> CreateProjection(string path)
     {
         string prjPath = Path.ChangeExtension(path, ".prj");
         if (!File.Exists(prjPath)) return source => source;

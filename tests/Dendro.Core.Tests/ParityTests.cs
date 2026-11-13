@@ -111,10 +111,10 @@ public class ParityTests
                 var header = expected.Rows.FirstOrDefault(row => row.Any(cell => cell?.ToString() == "H Med"))
                     ?? expected.Rows.First(row => row.Any(cell => cell?.ToString() == "H"));
                 string heightHeader = header.Any(cell => cell?.ToString() == "H Med") ? "H Med" : "H";
-                dominantAfter = header.FindIndex(cell => cell?.ToString() == heightHeader);
+                dominantAfter = Array.FindIndex(header, cell => cell?.ToString() == heightHeader);
             }
             Assert.True(expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0) == actual.Width,
-                $"{name}: expected {expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0)} columns; actual {actual.Width}; ages={ages}, basal={basal}, dominant={dominant}; headers={string.Join("|", actual.Rows[0])}");
+                $"{name}: expected {expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0)} columns; actual {actual.Width}; ages={ages}, basal={basal}, dominant={dominant}; expected headers={string.Join("|", expected.Rows[0])}; actual headers={string.Join("|", actual.Rows[0])}");
             for (int r = 0; r < expected.Count; r++)
             for (int c = 0; c < expected.Width; c++)
             {

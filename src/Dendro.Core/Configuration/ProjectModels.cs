@@ -210,7 +210,7 @@ public static class ProjectModels
         string selectedPath = Key(files[index].Display());
         var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { selectedPath };
         var children = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (string key in new[] { "derived_tables", "processing_results" })
+        foreach (string key in new[] { "derived_tables", "processing_results", "sampling_results" })
             foreach (var edge in (meta[key] as JsonArray ?? []).OfType<JsonObject>())
             {
                 string parent = Key(edge.S("source_path")), child = Key(edge.S("path"));
@@ -218,34 +218,18 @@ public static class ProjectModels
                 if (!children.TryGetValue(parent, out var targets)) children[parent] = targets = [];
                 targets.Add(child);
             }
-        // Never cascade from an output back into its source, even if imported or
-        // legacy metadata contains a cycle or a reversed dependency edge.
-        var parents = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var edge in children)
-            foreach (string child in edge.Value)
-            {
-                if (!parents.TryGetValue(child, out var sources)) parents[child] = sources = [];
-                sources.Add(edge.Key);
-            }
-        var ancestors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var ancestorQueue = new Queue<string>();
-        ancestorQueue.Enqueue(selectedPath);
-        while (ancestorQueue.TryDequeue(out string? child))
-            if (parents.TryGetValue(child, out var sources))
-                foreach (string source in sources)
-                    if (ancestors.Add(source)) ancestorQueue.Enqueue(source);
         // Traverse before removing links, so every generation remains discoverable.
         // The visited set also protects against cyclic or duplicated project metadata.
         var pending = new Queue<string>(removed);
         while (pending.TryDequeue(out string? parent))
             if (children.TryGetValue(parent, out var targets))
                 foreach (string child in targets)
-                    if (!ancestors.Contains(child) && removed.Add(child)) pending.Enqueue(child);
+                    if (removed.Add(child)) pending.Enqueue(child);
         bool Contains(string? path) => !string.IsNullOrEmpty(path) && removed.Contains(Key(path));
         for (int i = files.Count - 1; i >= 0; i--)
             if (Contains(files[i].Display())) files.RemoveAt(i);
         foreach (
-            string key in new[] { "file_options", "charts", "derived_tables", "content_names", "processing_results", "analyses" }
+            string key in new[] { "file_options", "charts", "derived_tables", "content_names", "processing_results", "sampling_results", "analyses" }
         )
         {
             var array = meta[key] as JsonArray;
@@ -254,13 +238,15 @@ public static class ProjectModels
             for (int i = array.Count - 1; i >= 0; i--)
                 if (
                     Contains(array[i].S("path"))
-                    || (key == "derived_tables" || key == "processing_results")
+                    || (key == "derived_tables" || key == "processing_results" || key == "sampling_results")
                         && Contains(array[i].S("source_path"))
                     || key == "analyses" && (Contains(array[i]?["definition"].S("path"))
                         || Contains(array[i]?["definition"]?["chart"].S("path")))
                 )
                     array.RemoveAt(i);
         }
+        if (meta["gis_layer_visibility"] is JsonObject visibility)
+            foreach (string path in visibility.Select(entry => entry.Key).Where(Contains).ToArray()) visibility.Remove(path);
         if (meta["batch_inputs"] is JsonArray selected)
             for (int i = selected.Count - 1; i >= 0; i--)
                 if (Contains(selected[i].Display())) selected.RemoveAt(i);

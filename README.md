@@ -35,6 +35,15 @@ técnica para o titular e usuários expressamente autorizados.
   até 1º de junho do ano final e calcula IMA para idades inteiras por talhão.
 - **Gestão de tabelas:** junção com identificação da fonte, estratificação,
   criação de colunas, filtros, ordenação e remoção de linhas e colunas.
+- **Amostragem GIS:** geração de parcelas em talhões por malha sistemática,
+  início sistemático aleatório, seleção maximin ou GRTS, com saída shapefile,
+  CSV e mapa SVG.
+- **GRTS configurável:** estratos por campo, quantidades por intensidade ou estrato,
+  planejamento por confiança/erro/CV, probabilidades iguais, proporcionais ou por
+  categoria, densidade, distância, reservas e registro do desenho em JSON.
+- **Manual integrado:** diálogo com árvore de assuntos e busca no conteúdo,
+  cobrindo ferramentas, cálculos, interpretação e configurações. Abra em Projeto
+  → Manual do DendroLab ou pressione F1.
 
 O processamento ocorre no aplicativo .NET. Não é necessário instalar
 Microsoft Excel, Python, Java ou bibliotecas HDF5 nativas para executar o app.

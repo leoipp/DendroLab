@@ -20,6 +20,21 @@ public static class ShellVisuals
     }
 
     internal static void Initialize() { }
+    public static readonly DependencyProperty LayerToggleProperty = DependencyProperty.RegisterAttached(
+        "LayerToggle", typeof(bool), typeof(ShellVisuals), new PropertyMetadata(false));
+    public static bool GetLayerToggle(DependencyObject element) => (bool)element.GetValue(LayerToggleProperty);
+    public static void SetLayerToggle(DependencyObject element, bool value) => element.SetValue(LayerToggleProperty, value);
+    public static readonly DependencyProperty LayerVisibilityChangedProperty = DependencyProperty.RegisterAttached(
+        "LayerVisibilityChanged", typeof(Action<bool>), typeof(ShellVisuals));
+    public static void SetLayerVisibilityChanged(DependencyObject element, Action<bool> value) => element.SetValue(LayerVisibilityChangedProperty, value);
+    public static readonly DependencyProperty LayerVisibleProperty = DependencyProperty.RegisterAttached(
+        "LayerVisible", typeof(bool), typeof(ShellVisuals), new FrameworkPropertyMetadata(true,
+            (element, args) => (element.GetValue(LayerVisibilityChangedProperty) as Action<bool>)?.Invoke((bool)args.NewValue)));
+    public static bool GetLayerVisible(DependencyObject element) => (bool)element.GetValue(LayerVisibleProperty);
+    public static void SetLayerVisible(DependencyObject element, bool value)
+    {
+        element.SetValue(LayerVisibleProperty, value);
+    }
     public static readonly DependencyProperty IconProperty = DependencyProperty.RegisterAttached(
         "Icon",
         typeof(CommandIconKind),

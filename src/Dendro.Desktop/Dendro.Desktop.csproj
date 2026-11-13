@@ -20,6 +20,8 @@
     <ProjectReference Include="..\Dendro.Core\Dendro.Core.csproj" />
     <Resource Include="Assets\logo.ico" />
     <Resource Include="Assets\logo.png" />
+    <EmbeddedResource Include="Manual\DendroLab.md" />
+    <EmbeddedResource Include="Manual\Calculos.md" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Scripts\model_fitter_bridge.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
