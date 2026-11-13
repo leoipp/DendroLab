@@ -1,5 +1,5 @@
 param(
-    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')][string]$Version='1.2.0',
+    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')][string]$Version='1.2.1',
     [ValidateSet('Zip','Installer','Both')][string]$Format='Both',
     [string]$InnoCompiler
 )

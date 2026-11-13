@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.2.1"
 #endif
 #ifndef PayloadDir
   #error Informe /DPayloadDir com a publicação self-contained.
@@ -23,7 +23,7 @@ MinVersion=10.0.17763
 OutputDir={#OutputPath}
 OutputBaseFilename=DendroLab-{#AppVersion}-win-x64-Setup
 SetupIconFile=..\src\Dendro.Desktop\Assets\logo.ico
-UninstallDisplayIcon={app}\DendroLab.exe
+UninstallDisplayIcon={app}\DendroLab-{#AppVersion}.ico
 LicenseFile=..\LICENSE
 Compression=lzma2
 SolidCompression=yes
@@ -41,16 +41,26 @@ Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; Flags: un
 
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\src\Dendro.Desktop\Assets\logo.ico"; DestDir: "{app}"; DestName: "DendroLab-{#AppVersion}.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{userprograms}\DendroLab"; Filename: "{app}\DendroLab.exe"; WorkingDir: "{app}"
-Name: "{userdesktop}\DendroLab"; Filename: "{app}\DendroLab.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userprograms}\DendroLab"; Filename: "{app}\DendroLab.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DendroLab-{#AppVersion}.ico"; AppUserModelID: "leoipp.DendroLab"
+Name: "{userdesktop}\DendroLab"; Filename: "{app}\DendroLab.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DendroLab-{#AppVersion}.ico"; AppUserModelID: "leoipp.DendroLab"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\DendroLab.exe"; Description: "Abrir DendroLab"; Flags: nowait postinstall skipifsilent; Check: not IsUpdateInstall
 Filename: "{app}\DendroLab.exe"; Flags: nowait; Check: IsUpdateInstall
 
 [Code]
+procedure SHChangeNotify(EventId: Integer; Flags: Cardinal; Item1, Item2: Integer);
+  external 'SHChangeNotify@shell32.dll stdcall';
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    SHChangeNotify($08000000, 0, 0, 0);
+end;
+
 function IsUpdateInstall: Boolean;
 begin
   Result := ExpandConstant('{param:DENDROUPDATE|0}') = '1';
