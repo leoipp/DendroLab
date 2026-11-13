@@ -44,8 +44,8 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Source: "..\src\Dendro.Desktop\Assets\logo.ico"; DestDir: "{app}"; DestName: "DendroLab-{#AppVersion}.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{userprograms}\DendroLab"; Filename: "{app}\DendroLab.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DendroLab-{#AppVersion}.ico"; AppUserModelID: "leoipp.DendroLab"
-Name: "{userdesktop}\DendroLab"; Filename: "{app}\DendroLab.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DendroLab-{#AppVersion}.ico"; AppUserModelID: "leoipp.DendroLab"; Tasks: desktopicon
+Name: "{userprograms}\DendroLab"; Filename: "{app}\DendroLab.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DendroLab-{#AppVersion}.ico"
+Name: "{userdesktop}\DendroLab"; Filename: "{app}\DendroLab.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DendroLab-{#AppVersion}.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\DendroLab.exe"; Description: "Abrir DendroLab"; Flags: nowait postinstall skipifsilent; Check: not IsUpdateInstall
