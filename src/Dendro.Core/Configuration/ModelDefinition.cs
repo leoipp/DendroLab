@@ -8,6 +8,10 @@ public sealed record GrowthFamily(string Id, string Name, string Formula);
 
 public static class ModelDefinition
 {
+    public static readonly string[] VolumeTypes = ["VTCC", "VCCC", "VTSC", "VCSC"];
+    public static readonly string[] Coefficients = Enumerable.Range(0, 32).Select(i => "b" + i).ToArray();
+    public static bool IsCoefficient(string symbol) => Coefficients.Contains(symbol, StringComparer.Ordinal);
+
     public static readonly GrowthFamily[] Growth =
     [
         new("gompertz", "Gompertz", "b0 * exp(-exp(b1 - b2*t))"),
@@ -90,17 +94,18 @@ public static class ModelDefinition
             "area_efetiva",
             "volume_ha",
             "fustes_ha",
+            "volume_vtcc",
+            "volume_vccc",
+            "volume_vtsc",
+            "volume_vcsc",
         ];
         foreach (var x in a)
         {
             string s = x.S("simbolo");
             if (
                 !Regex.IsMatch(s, "^[A-Za-z_][A-Za-z0-9_]{0,30}$")
-                || new[]
+                || Coefficients.Concat(new[]
                 {
-                    "b0",
-                    "b1",
-                    "b2",
                     "pi",
                     "exp",
                     "log",
@@ -115,7 +120,7 @@ public static class ModelDefinition
                     "pow",
                     "min",
                     "max",
-                }.Contains(s)
+                }).Contains(s)
                 || !symbols.Add(s)
                 || x.S("coluna").Length is < 1 or > 255
                 || x.S("unidade").Length is < 1 or > 63
@@ -139,10 +144,26 @@ public static class ModelDefinition
                 )
             )
                 throw new InvalidDataException("Variável calculada indisponível neste modelo.");
+            if (!growth && x.S("origem") == "calculado" && x.S("coluna").StartsWith("volume_", StringComparison.Ordinal))
+            {
+                string type = v.S("tipo_volume", "VTCC");
+                int currentOrder = Array.IndexOf(VolumeTypes, type);
+                int inputOrder = Array.IndexOf(VolumeTypes, x.S("coluna")["volume_".Length..].ToUpperInvariant());
+                if (currentOrder < 0 || inputOrder < 0 || inputOrder >= currentOrder)
+                    throw new InvalidDataException($"O modelo {type} só pode usar volumes estimados antes dele na sequência VTCC, VCCC, VTSC, VCSC.");
+            }
         }
-        _ = new Formula(FormulaText(v, growth), symbols.Concat(["b0", "b1", "b2"]));
+        var compiled = new Formula(FormulaText(v, growth), symbols.Concat(Coefficients));
+        if (v["codigo"] is not null)
+            foreach (string coefficient in compiled.Dependencies.Where(IsCoefficient))
+                if (v[coefficient]?.GetValueKind() != System.Text.Json.JsonValueKind.Number || !double.IsFinite(v.N(coefficient, double.NaN)))
+                    throw new InvalidDataException($"Coeficiente {coefficient} inválido ou ausente no modelo {v.S("codigo")}.");
         if (growth && v.S("unidade_idade", "meses") is not ("meses" or "anos"))
             throw new InvalidDataException("A unidade de idade deve ser meses ou anos.");
+        if (!growth && v.S("modo_saida", "direto") is not ("direto" or "razao"))
+            throw new InvalidDataException("O resultado do modelo volumétrico deve ser direto ou razão.");
+        if (!growth && v.S("modo_saida") == "razao" && v.S("tipo_volume", "VTCC") == "VTCC")
+            throw new InvalidDataException("VTCC inicia a sequência e não pode ser calculado como razão de um volume anterior.");
         if (
             growth
             && v["codigo"] is not null

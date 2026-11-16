@@ -200,8 +200,12 @@ public static class ProjectStore
         foreach (var e in equations)
         {
             string volumeType = e.S("tipo_volume", "VTCC");
-            if (volumeType is not ("VTCC" or "VCCC")) throw new InvalidDataException("Tipo de volume inválido. Use VTCC ou VCCC.");
+            if (volumeType is not ("VTCC" or "VCCC" or "VCSC" or "VTSC"))
+                throw new InvalidDataException("Tipo de volume inválido. Use VTCC, VCCC, VCSC ou VTSC.");
             e!["tipo_volume"] = volumeType;
+            // Legacy VCCC equations represented a proportion of VTCC. Preserve that
+            // meaning when loading old projects; new catalog entries store their mode.
+            if (e["modo_saida"] is null) e["modo_saida"] = volumeType == "VCCC" ? "razao" : "direto";
             ValidateCoefficients(e!);
             ModelDefinition.Validate(e!, false);
             if (!ids.Add(e.S("codigo") + "\0" + volumeType))
@@ -268,6 +272,11 @@ public static class ProjectStore
             throw new InvalidDataException(
                 "Informe ID de até 31 bytes e coeficientes numéricos finitos."
             );
+        foreach (var pair in e.AsObject().Where(pair => pair.Key.Length > 1 && pair.Key[0] == 'b' && char.IsDigit(pair.Key[1])))
+            if (!ModelDefinition.IsCoefficient(pair.Key)
+                || pair.Value?.GetValueKind() != JsonValueKind.Number
+                || !double.IsFinite(e.N(pair.Key, double.NaN)))
+                throw new InvalidDataException($"Coeficiente {pair.Key} inválido; use betas numéricos b0 até b31.");
     }
 
     public static void ValidateHeight(JsonObject height)

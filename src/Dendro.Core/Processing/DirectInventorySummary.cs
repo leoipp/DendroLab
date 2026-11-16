@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Dendro.Core.Configuration;
 using Dendro.Core.Tabular;
 
 namespace Dendro.Core.Processing;
@@ -9,7 +10,7 @@ public sealed class DirectInventorySummary : IDisposable
     public static readonly string[] Levels = ["arvore", "parcela", "talhao", "lote", "projeto"];
     public static JsonObject Defaults()
     {
-        var columns=new JsonObject();foreach(string level in Levels){var fields=new JsonObject();foreach(string field in DirectOutputColumns.Headers(level))fields[field]=true;columns[level]=fields;}
+        var columns=new JsonObject();foreach(string level in Levels){var fields=new JsonObject();foreach(string field in DirectOutputColumns.Headers(level))fields[field]=DirectOutputColumns.DefaultEnabled(level,field);columns[level]=fields;}
         return new() {
         ["modo"] = "completo", ["remover_duplicadas"] = false, ["inventory_type"]="",["factor_scope"]="talhao",["n_dominantes_parcela"] = 5,["calcular_is"] = false,["colunas_direto"]=columns,["saidas"] = new JsonObject {
             ["arvore"] = false, ["parcela"] = true, ["talhao"] = true, ["lote"] = true, ["projeto"] = true,
@@ -53,13 +54,17 @@ public sealed class DirectInventorySummary : IDisposable
         public readonly string Curve = curve;
         public readonly int Year = year;
         public readonly double Effective = effective;
-        public double Volume, Area, AgeSum;
+        public double Volume, CommercialVolume = double.NaN, Area, AgeSum;
+        public readonly double[] TypedVolumes = new double[4];
+        public readonly int[] TypedVolumeCounts = new int[4];
         public string Measurement = "";
         public double DapSum, DapSquareSum, HeightSum, BasalArea;
         public readonly DominantTreeMetrics Dominant = new(dominantCount);
         public int Rows, Stems, Invalid;
         public int ValidDap, ValidHeight;
         public double VolumeHa => Area > 0 ? Volume * 10000 / (Area / Rows) : double.NaN;
+        public double TypedVolume(int index) => TypedVolumeCounts[index] > 0 ? TypedVolumes[index] : double.NaN;
+        public double TypedVolumeHa(int index) => Area > 0 && TypedVolumeCounts[index] > 0 ? TypedVolumes[index] * 10000 / (Area / Rows) : double.NaN;
         public double StemsHa => Area > 0 ? Stems * 10000.0 / (Area / Rows) : double.NaN;
         public double Age => Rows > 0 ? AgeSum / Rows : double.NaN;
         public double MeanDap => ValidDap > 0 ? DapSum / ValidDap : double.NaN;
@@ -73,6 +78,7 @@ public sealed class DirectInventorySummary : IDisposable
     private readonly string? trees;
     private readonly JsonNode? processing;
     private readonly int dominantTreesPerPlot;
+    private readonly double confidence, minimumPlots;
     private readonly SiteIndexCalculator? siteIndex;
     private readonly Dictionary<string,int[]> projections=new();
     private string AddTable(string level,string[] columns,string name)
@@ -85,10 +91,13 @@ public sealed class DirectInventorySummary : IDisposable
     private bool published;
     private int rows;
     private double volume;
+    private long vcccPairs, vcccViolations;
     public DirectInventorySummary(string output, JsonObject config)
     {
         Validate(config["processador"]);
         processing=config["processador"]?.DeepClone();
+        confidence=config.At("estatisticas").N("nivel_confianca",.95);
+        minimumPlots=config.At("estatisticas").N("min_parcelas_estatistica",3);
         dominantTreesPerPlot=(int)(processing?.N("n_dominantes_parcela",5)??5);
         siteIndex = SiteIndexCalculator.Create(config);
         if (!Path.GetExtension(output).Equals(CompactBankReader.Extension, StringComparison.OrdinalIgnoreCase))
@@ -100,16 +109,23 @@ public sealed class DirectInventorySummary : IDisposable
         writer = new CompactBankWriter(temporary);
         if (levels.Contains("arvore")) trees = AddTable("arvore",[
             "Talhão", "Parcela", "Lote", "Ano_Medicao", "Linha_Origem", "DAP", "H", "AS", "Idade_anos", "Volume_m3",
+            "VTCC_m3", "VCCC_m3", "VTSC_m3", "VCSC_m3",
             RegistryAgeFallback.FlagColumn, RegistryAgeFallback.DateColumn,
             "Parcela_ID", "Contexto_ID", "Base_Origem", "Tipo_Inventario",
         ], "DIRETO - ARVORES");
     }
     public void Add(string stand, string plot, string lot, int year, long sourceRow, double age,
         double treeVolume, bool stem, double area, double effective, string inferred, string planted,
-        double dap = double.NaN, double height = double.NaN, string? plotId = null, InventoryContext? context = null, string measurement = "", string curveId = "")
+        double dap = double.NaN, double height = double.NaN, string? plotId = null, InventoryContext? context = null, string measurement = "", string curveId = "",
+        double commercialVolume = double.NaN, double vtcc = double.NaN, double vtsc = double.NaN, double vcsc = double.NaN)
     {
         rows++;
         if (double.IsFinite(treeVolume)) volume += treeVolume;
+        if (double.IsFinite(vtcc) && double.IsFinite(commercialVolume))
+        {
+            vcccPairs++;
+            if (vtcc <= commercialVolume) vcccViolations++;
+        }
         context ??= new("", "", "");
         // The configured parcel identity is authoritative. Keep a fallback only
         // for callers that do not supply an identity key.
@@ -142,25 +158,61 @@ public sealed class DirectInventorySummary : IDisposable
         if (double.IsFinite(height) && height > 0) { p.HeightSum += height; p.ValidHeight++; }
         p.Dominant.Add(dap, height);
         if (double.IsFinite(treeVolume)) p.Volume += treeVolume; else if (stem) p.Invalid++;
+        double[] typedValues = [vtcc, commercialVolume, vtsc, vcsc];
+        for (int index = 0; index < typedValues.Length; index++)
+            if (double.IsFinite(typedValues[index]))
+            {
+                p.TypedVolumes[index] += typedValues[index];
+                p.TypedVolumeCounts[index]++;
+            }
+        if (double.IsFinite(commercialVolume)) p.CommercialVolume = double.IsFinite(p.CommercialVolume) ? p.CommercialVolume + commercialVolume : commercialVolume;
         if (trees != null) AddRow(trees, [stand, plot, lot, year == 0 ? null : (double)year,
-            (double)sourceRow, dap, height, Math.PI * Math.Pow(dap / 10, 2) / 40000, age, treeVolume,
+            (double)sourceRow, dap, height, Math.PI * Math.Pow(dap / 10, 2) / 40000, age, treeVolume, vtcc, commercialVolume, vtsc, vcsc,
             inferred, planted, key, context.Id, context.Origin, context.Type]);
     }
     public ProcessingResult Complete(int removedDuplicates = 0)
     {
-        string[] headers = ["Grupo", "Talhão", "Parcela", "Lote", "Ano_Medicao", "N_Parcelas", "Volume_amostrado_m3",
-            "Fustes_amostrados", "VMI_amostrado_m3_fuste", "Volume_m3_ha", "Fustes_ha", "VMI_m3_fuste",
-            "DAPd", "Hd", "IS", "Area_efetiva_ha", "Volume_total_m3", "Fustes_totais_estimados", "Fustes_sem_volume"];
+        string[] volumeTypes = ModelDefinition.VolumeTypes;
+        double[] TypedSums(IEnumerable<Plot> group) => volumeTypes.Select((_, index) =>
+        {
+            double[] values = group.Select(plot => plot.TypedVolume(index)).Where(double.IsFinite).ToArray();
+            return values.Length > 0 ? values.Sum() : double.NaN;
+        }).ToArray();
+        double[] TypedPerHa(Plot[] group, string level, double effective)
+        {
+            var result = new double[volumeTypes.Length];
+            for (int index = 0; index < result.Length; index++)
+            {
+                if (level == "parcela") result[index] = group[0].TypedVolumeHa(index);
+                else if (level == "talhao") result[index] = MeanFinite(group.Select(plot => plot.TypedVolumeHa(index)));
+                else if (effective > 0)
+                {
+                    double total = 0;
+                    bool any = false;
+                    foreach (var stand in group.GroupBy(plot => plot.Stand))
+                    {
+                        double standMean = MeanFinite(stand.Select(plot => plot.TypedVolumeHa(index)));
+                        double area = stand.First().Effective;
+                        if (!double.IsFinite(standMean) || !double.IsFinite(area)) continue;
+                        total += standMean * area;
+                        any = true;
+                    }
+                    result[index] = any ? total / effective : double.NaN;
+                }
+                else result[index] = double.NaN;
+            }
+            return result;
+        }
+        static double MeanFinite(IEnumerable<double> values)
+        {
+            double[] finite = values.Where(double.IsFinite).ToArray();
+            return finite.Length > 0 ? finite.Average() : double.NaN;
+        }
         void Write(string level, string name, IEnumerable<(string Name, IEnumerable<Plot> Plots)> groups)
         {
             if (!levels.Contains(level)) return;
             bool includeAge = level is "parcela" or "talhao";
-            string[] parcelHeaders = ["Grupo", "Talhão", "Parcela", "Lote", "Ano_Medicao", "N_Parcelas",
-                "DAP_medio", "Dq", "H_medio", "DAPd", "Hd", "IS", "AB", "Volume_m3_ha", "Fustes_ha", "VMI_m3_fuste",
-                "Area_efetiva_ha", "Volume_total_m3", "Fustes_totais_estimados", "Fustes_sem_volume",
-                "Idade_anos", "Idade_meses"];
-            string[] selectedHeaders = level == "parcela" ? [.. parcelHeaders, "Data_Medicao", "area_corr"] : includeAge ? [.. headers, "Idade_anos", "Idade_meses", "Data_Medicao"] : [..headers,"Data_Medicao"];
-            string id = AddTable(level,[.. selectedHeaders, "Parcela_ID", "Contexto_ID", "Base_Origem", "Tipo_Inventario"], name);
+            string id = AddTable(level, DirectOutputColumns.Headers(level), name);
             foreach (var group in groups)
             {
                 var all = group.Plots.ToArray(); var first = all[0];
@@ -174,6 +226,14 @@ public sealed class DirectInventorySummary : IDisposable
                 }
                 double volumeHa = level == "parcela" ? first.VolumeHa : level == "talhao" ? all.Average(p => p.VolumeHa)
                     : effective > 0 ? totalVolume / effective : double.NaN;
+                double[] sampledTyped = TypedSums(all);
+                double[] typedHa = TypedPerHa(all, level, effective);
+                double[] typedTotals = typedHa.Select(value => level == "parcela" ? double.NaN : value * effective).ToArray();
+                double[] sampleVolumes = all.Select(p => p.VolumeHa).Where(double.IsFinite).ToArray();
+                double absoluteError = sampleVolumes.Length >= minimumPlots && sampleVolumes.Length > 1
+                    ? SamplingAbsoluteError(sampleVolumes, confidence) : double.NaN;
+                double samplingError = double.IsFinite(volumeHa) && volumeHa > 0 && double.IsFinite(absoluteError)
+                    ? absoluteError / volumeHa * 100 : double.NaN;
                 double stemsHa = level == "parcela" ? first.StemsHa : level == "talhao" ? all.Average(p => p.StemsHa)
                     : effective > 0 ? totalStems / effective : double.NaN;
                 double dapd = DominantTreeMetrics.AreaWeightedMean(all.Select(p => (p.Dominant.Dap, p.Area / p.Rows)));
@@ -183,20 +243,28 @@ public sealed class DirectInventorySummary : IDisposable
                     : DominantTreeMetrics.AreaWeightedMean(all.Select(p => (SiteIndex(p), p.Area / p.Rows)));
                 // A plot is a sample; extrapolated stand totals do not belong to individual plot rows.
                 if (level == "parcela") effective = totalVolume = totalStems = double.NaN;
-                object?[] cells = [group.Name, level is "parcela" or "talhao" ? first.Stand : "",
-                    level == "parcela" ? first.Name : "", level is "parcela" or "lote" ? first.Lot : "",
-                    first.Year == 0 ? null : (double)first.Year, (double)all.Length, rawVolume, stems,
-                    stems > 0 ? rawVolume / stems : double.NaN, volumeHa, stemsHa,
-                    stemsHa > 0 ? volumeHa / stemsHa : double.NaN, dapd, hd, siteIndexValue, effective, totalVolume, totalStems, (double)all.Sum(p => p.Invalid)];
                 double age = all.Average(p => p.Age);
                 if (level == "parcela")
-                    AddRow(id, [group.Name, first.Stand, first.Name, first.Lot,
-                        first.Year == 0 ? null : (double)first.Year, (double)all.Length,
-                        first.MeanDap, first.QuadraticDap, first.MeanHeight, first.Dominant.Dap, first.Dominant.Height, siteIndexValue, all.Sum(p => p.BasalArea),
-                        volumeHa, stemsHa, stemsHa > 0 ? volumeHa / stemsHa : double.NaN,
-                        effective, totalVolume, totalStems, (double)all.Sum(p => p.Invalid), age, age * 12, first.Measurement, first.Area / first.Rows, first.Id, first.Context.Id, first.Context.Origin, first.Context.Type]);
+                {
+                    AddRow(id, [group.Name, first.Stand, first.Name, first.Lot, first.Year == 0 ? null : (double)first.Year,
+                        (double)all.Length, first.MeanDap, first.QuadraticDap, first.MeanHeight, first.Dominant.Dap, first.Dominant.Height,
+                        siteIndexValue, all.Sum(p => p.BasalArea), volumeHa, .. typedHa, stemsHa,
+                        stemsHa > 0 ? volumeHa / stemsHa : double.NaN, effective, totalVolume, .. typedTotals, totalStems,
+                        (double)all.Sum(p => p.Invalid), age, age * 12, first.Measurement, first.Area / first.Rows,
+                        first.Id, first.Context.Id, first.Context.Origin, first.Context.Type]);
+                }
                 else
-                    AddRow(id, [.. (includeAge ? [.. cells, age, age * 12] : cells), all.Select(p=>p.Measurement).Where(s=>s.Length>0).Order(StringComparer.Ordinal).LastOrDefault()??"", "", first.Context.Id, first.Context.Origin, first.Context.Type]);
+                {
+                    AddRow(id, [group.Name, level == "talhao" ? first.Stand : "", "", level is "parcela" or "lote" ? first.Lot : "",
+                        first.Year == 0 ? null : (double)first.Year, (double)all.Length, rawVolume, .. sampledTyped, stems,
+                        stems > 0 ? rawVolume / stems : double.NaN, volumeHa, .. typedHa, stemsHa,
+                        stemsHa > 0 ? volumeHa / stemsHa : double.NaN, dapd, hd, siteIndexValue, effective, totalVolume,
+                        .. typedTotals, totalStems, (double)all.Sum(p => p.Invalid),
+                        .. (level == "talhao" ? new object?[] { age, age * 12 } : Array.Empty<object?>()),
+                        .. (level is "talhao" or "lote" or "projeto" ? new object?[] { absoluteError, samplingError } : Array.Empty<object?>()),
+                        all.Select(p => p.Measurement).Where(s => s.Length > 0).Order(StringComparer.Ordinal).LastOrDefault() ?? "",
+                        "", first.Context.Id, first.Context.Origin, first.Context.Type]);
+                }
             }
         }
         var values = plots.Values.OrderBy(p => p.Stand, StringComparer.Ordinal).ThenBy(p => p.Year).ThenBy(p => p.Name, StringComparer.Ordinal).ToArray();
@@ -205,8 +273,17 @@ public sealed class DirectInventorySummary : IDisposable
         Write("lote", "DIRETO - LOTES", values.GroupBy(p => (p.Context.Id, p.Lot, p.Year)).Select(g => (g.Key.Lot, (IEnumerable<Plot>)g)));
         Write("projeto", "DIRETO - PROJETO", values.GroupBy(p => (p.Context.Id, p.Year)).Select(g => (projectName, (IEnumerable<Plot>)g)));
         string info = writer.AddTable(["Item", "Descrição"], "INFORMACOES");
+        if (vcccPairs > 0)
+        {
+            string audit = writer.AddTable(["Regra", "Pares avaliados", "Violações", "Resultado"], "AUDITORIA VOLUMES");
+            writer.Add(audit, ["VTCC > VCCC", (double)vcccPairs, (double)vcccViolations, vcccViolations == 0 ? "Conforme" : "Revisar estimativas"]);
+        }
         writer.Add(info, ["Modo", "Resumo direto: volumetria, fustes e VMI; sem curvas de crescimento, comparação IFC e relatórios estatísticos completos."]);
+        writer.Add(info, ["Tipos de volume", "As equações ativas VTCC, VCCC, VTSC e VCSC são calculadas na ordem configurada. Volume_m3 e os indicadores derivados usam a primeira equação disponível para cada código; colunas tipadas podem ser habilitadas por nível."]);
         writer.Add(info, ["Amostra e totais", "Volume/fustes amostrados são somas observadas. Por hectare: média entre parcelas por talhão; lote/projeto ponderam talhões por área efetiva. Totais dependem dessa área e ficam vazios se desconhecida."]);
+        writer.Add(info, ["Erro amostral", $"Erro absoluto e erro amostral (%) do volume principal são calculados nos níveis de talhão, lote e projeto com IC de {confidence:P0}; exigem ao menos {minimumPlots:G} parcelas. O erro absoluto está em m³/ha."]);
+        writer.Add(info, ["Modelos de volume", "Cada tipo usa a equação cadastrada. Modelos configurados como razão multiplicam o volume anterior da sequência; modelos de saída direta usam o valor calculado e o fator informado no resumo direto."]);
+        if (vcccPairs > 0) writer.Add(info, ["Auditoria de hierarquia dos volumes", $"VTCC > VCCC: {vcccViolations:N0} violações em {vcccPairs:N0} árvores avaliadas."]);
         writer.Add(info, ["Volumes ausentes", "Fustes_sem_volume identifica DAP positivo sem volume válido; reveja os dados antes de interpretar VMI e totais."]);
         writer.Add(info, ["Remover árvores duplicadas", processing?.B("remover_duplicadas") == true ? "Ativado: mantém a primeira ocorrência de cada chave configurada." : "Desativado."]);
         writer.Add(info, ["Linhas de entrada", (double)(rows + removedDuplicates)]);
@@ -227,4 +304,11 @@ public sealed class DirectInventorySummary : IDisposable
             InventoryTypes: values.Select(p => p.Context.Type).Where(t => t.Length > 0).Distinct().Order().ToArray());
     }
     public void Dispose() { writer.Dispose(); if (!published && File.Exists(temporary)) File.Delete(temporary); }
+
+    private static double SamplingAbsoluteError(double[] values, double confidence)
+    {
+        double mean = values.Average();
+        double sd = Math.Sqrt(values.Sum(v => (v - mean) * (v - mean)) / (values.Length - 1));
+        return InventoryReport.StudentT(confidence, values.Length - 1) * sd / Math.Sqrt(values.Length);
+    }
 }

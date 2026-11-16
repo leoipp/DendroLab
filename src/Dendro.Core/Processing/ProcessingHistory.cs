@@ -128,40 +128,90 @@ public static class ProcessingHistory
         cfg.Obj("volume")["fator"] = 1;
         var input = Read("INPUT"); var calc = TableStore.Read(new(baseline, Trees)); var plots = TableStore.Read(new(baseline, Plots)); var stands = Read("STANDS");
         int keyColumn = calc.Require(scope == "talhao" ? "Talhão" : "Lote");
-        int baseVolume = calc.Require("VTCC_Original"), volume = calc.Require("VTCC"), factorColumn = calc.Require("Fator_Volume");
+        int baseVolume = calc.Require("VTCC_Original"), factorColumn = calc.Require("Fator_Volume");
         int standColumn = calc.Require("Talhão"), plotColumn = calc.Require("Parcela"), dateColumn = calc.Require("Data_Medicao");
-        var totals = new Dictionary<string, (double Volume, double Original, int Rows)>(StringComparer.Ordinal);
+        string[] volumeTypes = Dendro.Core.Configuration.ModelDefinition.VolumeTypes;
+        int[] volumeColumns = volumeTypes.Select(calc.Column).ToArray();
+        var totals = new Dictionary<string, (double[] Values, bool[] Present, double Original, int Rows)>(StringComparer.Ordinal);
         for (int row = 1; row < calc.Count; row++)
         {
             cancellation.ThrowIfCancellationRequested();
             double factor = mapping[FactorKey(calc, row, calc.Text(0, keyColumn))], raw = calc.Number(row, baseVolume);
-            double corrected = raw * factor;
-            calc.Set(row, volume, corrected); calc.Set(row, factorColumn, factor);
+            calc.Set(row, factorColumn, factor);
             string key = calc.Column("Parcela_ID") >= 0 ? calc.Text(row, calc.Require("Parcela_ID")) : Key(calc.Text(row, standColumn), calc.Text(row, plotColumn), calc.Text(row, dateColumn));
-            var previous = totals.GetValueOrDefault(key);
-            totals[key] = (previous.Volume + (double.IsFinite(corrected) ? corrected : 0), previous.Original + (double.IsFinite(raw) ? raw : 0), previous.Rows + (double.IsFinite(corrected) ? 1 : 0));
+            (double[] Values, bool[] Present, double Original, int Rows) total = totals.TryGetValue(key, out var previous)
+                ? previous
+                : (new double[volumeTypes.Length], new bool[volumeTypes.Length], 0d, 0);
+            for (int i = 0; i < volumeTypes.Length; i++)
+            {
+                if (volumeColumns[i] < 0) continue;
+                double estimate = calc.Number(row, volumeColumns[i]);
+                if (!double.IsFinite(estimate)) continue;
+                double corrected = estimate * factor;
+                calc.Set(row, volumeColumns[i], corrected);
+                total.Values[i] += corrected;
+                total.Present[i] = true;
+            }
+            totals[key] = (total.Values, total.Present, total.Original + (double.IsFinite(raw) ? raw : 0),
+                total.Rows + (double.IsFinite(raw) ? 1 : 0));
         }
         for (int row = 1; row < plots.Count; row++)
         {
             var total = totals[plots.Column("Parcela_ID") >= 0 ? plots.Text(row, plots.Require("Parcela_ID")) : Key(plots.Text(row, plots.Require("Talhão")), plots.Text(row, plots.Require("Parcela")), plots.Text(row, plots.Require("Data_Medicao")))];
             void Set(string column, double value) => plots.Set(row, plots.Ensure(column), value);
-            double perHa = total.Volume * 10000 / plots.Number(row, plots.Require("area_corr"));
+            double area = plots.Number(row, plots.Require("area_corr"));
+            double volumeHa = total.Present[0] ? total.Values[0] * 10000 / area : double.NaN;
+            for (int i = 0; i < volumeTypes.Length; i++)
+            {
+                string type = volumeTypes[i];
+                if (!total.Present[i]) continue;
+                double estimate = total.Values[i];
+                if (plots.Column(type) >= 0) Set(type, estimate);
+                if (plots.Column(type + "_ha") >= 0) Set(type + "_ha", estimate * 10000 / area);
+            }
+            double perHa = double.IsFinite(volumeHa) ? volumeHa : double.NaN;
+            double correctedCommercial = total.Present[1] ? total.Values[1] : double.NaN;
+            double commercialHa = total.Present[1] ? correctedCommercial * 10000 / area : double.NaN;
             double stemsHa = plots.Number(row, plots.Require("Fustes_ha")), expected = plots.Number(row, plots.Require("Vol_Esperado_ha"));
-            Set("VTCC", total.Volume); Set("VTCC_Original", total.Original); Set("VTCC_ha", perHa);
-            Set("VMI", stemsHa > 0 ? perHa / stemsHa : double.NaN); Set("VMI_real", total.Rows > 0 ? total.Volume / total.Rows : double.NaN);
+            if (plots.Column("VTCC") >= 0) Set("VTCC", total.Present[0] ? total.Values[0] : double.NaN);
+            Set("VTCC_Original", total.Original);
+            if (plots.Column("VTCC_ha") >= 0) Set("VTCC_ha", volumeHa);
+            if (plots.Column("VCCC") >= 0) Set("VCCC", correctedCommercial);
+            if (plots.Column("VCCC_ha") >= 0) Set("VCCC_ha", commercialHa);
+            Set("VMI", stemsHa > 0 ? perHa / stemsHa : double.NaN); Set("VMI_real", total.Rows > 0 ? total.Values[0] / total.Rows : double.NaN);
             Set("Dif_IFC_pct", expected > 0 ? (perHa - expected) / expected * 100 : double.NaN); Set("IcV", expected > 0 ? perHa / expected : double.NaN);
-            Set("Fator_Volume", total.Original > 0 ? total.Volume / total.Original : mapping[FactorKey(plots, row, scope == "talhao" ? "Talhão" : "Lote")]);
+            Set("Fator_Volume", total.Original > 0 ? total.Values[0] / total.Original : mapping[FactorKey(plots, row, scope == "talhao" ? "Talhão" : "Lote")]);
         }
         var standGroups = Enumerable.Range(1, plots.Count - 1).GroupBy(p => (plots.Text(p, 0), plots.Text(p, plots.Require("Data_Medicao")), plots.Text(p, plots.Column("Contexto_ID"))))
             .ToDictionary(g => g.Key, g => g.ToArray());
         for (int row = 1; row < stands.Count; row++)
         {
             var group = standGroups[(stands.Text(row, 0), stands.Text(row, stands.Require("Data_Medicao")), stands.Text(row, stands.Column("Contexto_ID")))];
-            foreach (string column in new[] { "VTCC_ha", "VMI", "Dif_IFC_pct", "IcV" })
+            foreach (string column in new[] { "VTCC_ha", "VCCC_ha", "VTSC_ha", "VCSC_ha", "VMI", "Dif_IFC_pct", "IcV" })
+            {
+                if (stands.Column(column) < 0) continue;
                 stands.Set(row, stands.Require(column), Dendro.Core.Mathematics.InventoryMath.Mean(group.Select(p => plots.Number(p, plots.Require(column)))));
+            }
         }
         Stamp(cfg, calc, plots, stands);
-        var result = new ProcessingResult(calc.Count - 1, plots.Count - 1, stands.Count - 1, totals.Values.Sum(t => t.Volume));
+        var relations = new (string Higher, string Lower)[] { ("VTCC", "VCCC"), ("VTCC", "VTSC"), ("VCCC", "VCSC"), ("VTSC", "VCSC") };
+        var volumeAudit = new List<VolumeAuditItem>();
+        foreach (var (higher, lower) in relations)
+        {
+            int left = calc.Column(higher), right = calc.Column(lower);
+            if (left < 0 || right < 0) continue;
+            long checkedPairs = 0, violations = 0;
+            for (int row = 1; row < calc.Count; row++)
+            {
+                double a = calc.Number(row, left), b = calc.Number(row, right);
+                if (!double.IsFinite(a) || !double.IsFinite(b)) continue;
+                checkedPairs++;
+                if (a <= b) violations++;
+            }
+            if (checkedPairs > 0) volumeAudit.Add(new($"{higher} > {lower}", checkedPairs, violations));
+        }
+        var result = new ProcessingResult(calc.Count - 1, plots.Count - 1, stands.Count - 1,
+            totals.Values.Sum(t => t.Values[0]), VolumeAudit: volumeAudit.ToArray());
         cancellation.ThrowIfCancellationRequested();
         Configuration.ProjectStore.AtomicWrite(output, temp => InventoryReport.Write(temp, cfg, input, (int)stored.Number(1, 1), calc, plots, stands, result, true, progress, cancellation));
         return result;

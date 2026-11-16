@@ -131,12 +131,18 @@ A sessão usa cópias dos gráficos e todas as linhas atuais da tabela. Exclusõ
 Salve ou exporte a tabela limpa antes de fechar a sessão temporária. Os gráficos originais e a tabela de origem não são a própria sessão de limpeza. Registre o critério adotado: remover pontos por aparência pode alterar a representatividade e os resultados do inventário.
 
 ## Ativo biológico
+
+Ao final da tabela com projeção, IMA7 = [Y₁ × F(7)/F(I₁)] / 7 e IMA7-Curva = F(7)/7, em m³/ha/ano, independentemente do ano final escolhido. No modelo direto, ambos são F(7)/7. Sem medição e com o modelo direto desativado, apenas IMA7-Curva pode ser preenchido quando há curva válida.
+
+Fontes alternativas podem ser adicionadas, editadas e ordenadas. A busca tenta a fonte principal e depois cada alternativa na ordem indicada; dentro de cada fonte, escolhe a medição válida mais recente. Cada alternativa tem sua tabela, coluna de vínculo na base, chave na fonte, data de medição, volume, filtro de inventário e correspondência dos campos trazidos. O ID da curva pode vir da fonte alternativa; quando não informado, usa o ID da base receptora. Campos sem correspondência ficam vazios.
+
+Marque **Se nenhuma fonte tiver medição válida, usar a curva diretamente** para calcular V = f(idade) sem volume observado, começando automaticamente no primeiro aniversário do plantio de cada linha. O ano desse aniversário recebe f(1); os anos seguintes usam a referência anual escolhida, até o ano final. Nesse caso, usa o ID e o plantio da base. AB_Fonte e AB_Metodo identificam a origem e distinguem projeções pela última medição real de estimativas pelo modelo direto. O modo direto deixa AB_Data_Medicao vazia e calcula IMA(n) = f(n)/n.
 ### Entradas
 Escolha a tabela base, sua chave, o ID de curva e a data de plantio. No processamento, indique a chave correspondente, a data da medição, o volume observado em m³/ha e as colunas que deseja trazer. O tipo de inventário restringe a busca quando aplicável.
 ### Como calcula
-Mantém as linhas da base e procura a maior data de medição por chave. O ID da base seleciona a curva vigente correspondente. A projeção usa `Y₂ = Y₁ × F(I₂) / F(I₁)`, tomando 1º de junho como data de referência de cada ano até o ano limite.
+Mantém as linhas da base e procura a maior data de medição por chave. O ID da base seleciona a curva vigente correspondente. A projeção usa `Y₂ = Y₁ × F(I₂) / F(I₁)`. Escolha a referência anual: meio do ano (30/06), final do ano (31/12) ou dia e mês personalizados, até o ano limite.
 ### Saídas
-Ativo biológico reúne a base e os campos vinculados. Projeções mostra os anos futuros. IMA por idade calcula incrementos médios em idades inteiras desde o plantio. O prefixo ajuda a distinguir campos trazidos de campos já existentes.
+Uma única tabela Ativo biológico reúne a base, os campos vinculados, os volumes por ano e o IMA. Há uma coluna de volume por ano, desde o menor ano de medição encontrado. O ano da medição recebe o volume observado, sem deslocar sua data real; os anos seguintes são projetados na referência anual escolhida. Anos anteriores à medição ficam vazios. O IMA é calculado desde a idade 1 até a referência do ano final, inclusive retroprojetando idades anteriores à medição. Para idade n, V(n) = Y₁ × F(n)/F(I₁) e IMA(n) = V(n)/n; Y₁ e I₁ são sempre os da última medição real. A data da idade n é o aniversário de n anos do plantio. Cada idade tem uma coluna de valor e outra com a data correspondente. O prefixo distingue os campos trazidos dos existentes.
 ### Conferência
 Verifique chaves sem correspondência, empates na data mais recente, curvas ausentes, denominador nulo e idades fora do domínio do modelo. Projetar crescimento biológico não aplica automaticamente preço, custo, risco financeiro ou avaliação contábil.
 
@@ -289,13 +295,14 @@ O limite de treinamento usa uma amostra determinística quando necessário; as l
 # Catálogos de equações
 ## Volumetria
 ### Cadastro
-Cadastre ID, nome, família, coeficientes e tipo de volume, como VTCC ou VCCC. Confira a fórmula e cada entrada: origem, coluna, unidade e fator. As opções do catálogo determinam como o Processador obtém o volume.
+Cadastre ID, nome, coeficientes e tipo de volume: VTCC (total com casca), VCCC (comercial com casca), VTSC (total sem casca) ou VCSC (comercial sem casca). O editor mostra `b0`, `b1` e `b2`; betas adicionais aparecem quando são referenciados na fórmula, até `b31`. Cada beta precisa ter um valor numérico finito. Escreva os símbolos dos betas na fórmula em vez de repetir os valores numéricos. Confira também cada entrada: origem, coluna, unidade e fator. Em Modelos volumétricos, selecione uma equação e clique em Duplicar modelo para abrir uma cópia editável; informe o novo ID e ajuste os dados necessários antes de cadastrar.
 ### Regra técnica
-Equações legadas usam a forma Schumacher–Hall quando essa é a definição registrada: `V = exp(b0) × DAP^b1 × H^b2`. A expressão efetiva do cadastro e suas unidades prevalecem. Um coeficiente ajustado com DAP em centímetros não deve receber milímetros diretamente.
+Equações legadas usam a forma Schumacher–Hall quando essa é a definição registrada: `V = exp(b0) × DAP^b1 × H^b2`. Fórmulas personalizadas podem usar `exp`, `log`, potência `^` e funções como `max(a,b)`. As unidades são as entradas mapeadas no cadastro; por exemplo, `vtcc` pode receber o VTCC por árvore, `DAP` o DAP em centímetros e `Altura` a altura em metros. Um coeficiente ajustado com DAP em centímetros não deve receber milímetros diretamente.
 ### Como usar
-Defina os modelos, confira os códigos que relacionam os dados às equações e avalie exemplos conhecidos. Em Regras de volumetria das Configurações, revise o limite de idade da equação geral quando aplicável.
+Defina os modelos, confira os códigos que relacionam os dados às equações e avalie exemplos conhecidos. Os códigos derivados do lote usam duas letras mais `1R` ou `2R`; por isso, os modelos informados como ALF, BAX, COA, COE, COR, ITA, MAC, PDA, PEN, PIC, POM, SAB, SBA e VIR são cadastrados, respectivamente, com os prefixos AL, BA, CA, CE, CR, IT, MA, PD, PE, PC, PO, SA, SB e VI. A lista VCCC inclui os modelos 1R/2R disponíveis e o modelo geral de `> 15 anos`. Em Regras de volumetria das Configurações, revise o limite de idade da equação geral quando aplicável.
 ### Conferência
-Não misture volumes com e sem casca na mesma interpretação. Confira a unidade da saída, a escala de aplicação por árvore e as agregações por hectare. Equações ajustadas para determinada espécie ou intervalo de tamanho podem falhar fora desse domínio.
+Nos modelos VCCC cadastrados com limite inferior, a fórmula usa `max(0, expressão)`. `max(a,b)` retorna o maior dos dois valores; assim, se a equação ajustada der volume comercial negativo para uma árvore pequena, o resultado gravado é zero. Isso não altera os betas nem recalibra a equação: apenas impede uma estimativa fisicamente impossível abaixo de zero. Confira o domínio dos dados, pois esse limite pode afetar previsões perto da faixa inferior de ajuste. Não misture volumes com e sem casca na mesma interpretação. Confira a unidade da saída, a escala de aplicação por árvore e as agregações por hectare.
+Quando DAP e H são ambos exatamente zero, o Processador grava VTCC, VCCC, VTSC e VCSC como zero e não conta esse registro na auditoria de hierarquia dos volumes. Medidas parcialmente ausentes ou inválidas continuam exigindo revisão.
 
 ## Crescimento e produção
 ### Cadastro e vigência
@@ -471,3 +478,18 @@ Escolha uma família compatível com a pergunta, confira quantidade e significad
 Evite expressões com coeficientes que fazem exatamente o mesmo papel: isso pode impedir identificação e testes de modelos. Fórmulas precisam produzir valores finitos para as entradas válidas da análise. Uma fórmula estatisticamente ajustável ainda pode ser biologicamente inadequada fora da faixa observada.
 ### Uso posterior
 Regressões salvas após o ajuste são aplicações concretas dessas famílias. Antes de usá-las no processamento ou em projeções, confira o mapeamento das variáveis, as unidades e a origem dos dados de calibração.
+
+
+## Imagens NOAA e Sentinel-2
+
+Em Ferramentas > Mapa e satélite, abra Imagens NOAA ou Imagens Sentinel-2. Informe a área em coordenadas WGS84 ou carregue a caixa envolvente de um shapefile do projeto. As imagens geradas são georreferenciadas e abertas no GIS.
+
+NOAA oferece RGB e NDVI com periodicidade semanal, mensal ou anual para o NDVI. Escolha a data de referência e a largura da imagem. A resolução regional serve como contexto amplo; não separa árvores nem talhões pequenos.
+
+Sentinel-2 permite buscar cenas L2A por intervalo e cobertura de nuvens. Selecione a cena, o produto (RGB, falso colorido, NDVI, EVI, NDMI, NDWI ou SAVI) e a resolução. A geração mascara nuvens, sombras e neve e usa a conta Sentinel Hub/Copernicus configurada em Configurações. Credenciais ficam protegidas no perfil Windows, fora do projeto.
+
+No menu do vetor em Conteúdos, Abrir tabela de atributos permite editar e salvar os atributos no DBF. A ferramenta GIS pode exibir GeoTIFF e PNG georreferenciado acompanhado de seus arquivos de referência.
+
+## Painéis e navegação
+
+As setas de janela anterior/próxima ficam acima dos painéis, dentro da janela. Painéis desafixados preservam a moldura arredondada e possuem largura mínima para o conteúdo. No nó Resumo direto, use Remover processamento para excluir a execução preservando a base de origem. Remover a própria base também alcança seus resultados dependentes.

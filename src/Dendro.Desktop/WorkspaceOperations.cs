@@ -52,7 +52,9 @@ internal static class WorkspaceOperations
                     request.S("name"),
                     request.S("formula"),
                     request["inputs"],
-                    request["volume_type"]?.GetValue<string>()
+                    request["volume_type"]?.GetValue<string>(),
+                    request["volume_mode"]?.GetValue<string>(),
+                    request["coefficients"] as JsonObject
                 );
                 break;
             case "curve_set":

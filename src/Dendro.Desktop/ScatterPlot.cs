@@ -375,6 +375,16 @@ internal sealed class ScatterPlot : FrameworkElement
                     ? "__color_" + options.N("color", 0).ToString(CultureInfo.InvariantCulture)
                     : "__color_" + GroupColor(group).ToString(CultureInfo.InvariantCulture));
         }
+        foreach (var reference in input["reference_curves"] as JsonArray ?? [])
+        foreach (var point in reference?["points"] as JsonArray ?? [])
+        {
+            if (point?[0] == null || point[1] == null) continue;
+            double x = TransformValue(point[0]!.GetValue<double>(), true);
+            double y = TransformValue(point[1]!.GetValue<double>(), false);
+            if (!double.IsFinite(x) || !double.IsFinite(y)) continue;
+            xMinData = Math.Min(xMinData, x); xMaxData = Math.Max(xMaxData, x);
+            yMinData = Math.Min(yMinData, y); yMaxData = Math.Max(yMaxData, y);
+        }
         var bounds = CalculateBounds(options, xMinData, xMaxData, yMinData, yMaxData);
         if (validCount == 0)
             return new(generation, size, plot, bounds, [], [], 1, PlotSelectionIndex.Empty(), false);

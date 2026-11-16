@@ -15,6 +15,7 @@
   Height="1000"
   MinWidth="1050"
   MinHeight="680"
+  WindowStartupLocation="CenterScreen"
   Closing="OnClosing"
   AllowDrop="True"
   Drop="OnDrop"
@@ -40,7 +41,7 @@
           </Button.Template>
           <Path x:Name="RibbonPinGlyph" Data="{StaticResource PinAutoHide}" Fill="#304A60" Width="10" Height="10" Stretch="Uniform" />
         </Button>
-        <TabControl x:Name="Ribbon" Height="152" BorderThickness="0" PreviewMouseLeftButtonUp="RibbonTabClick" SelectionChanged="RibbonTabChanged" ClipToBounds="True">
+        <TabControl x:Name="Ribbon" Height="140" BorderThickness="0" PreviewMouseLeftButtonUp="RibbonTabClick" SelectionChanged="RibbonTabChanged" ClipToBounds="True">
           <TabItem Header="Projeto">
             <StackPanel Orientation="Horizontal" Margin="9,4">
               <StackPanel>
@@ -139,8 +140,10 @@
               <StackPanel>
                 <WrapPanel>
                   <Button x:Name="GISButton" Content="Abrir GIS" Click="GISClick" Style="{StaticResource RibbonCommand}" Tag="Map" ToolTip="Abrir o mapa base e as camadas raster e vetoriais do projeto." />
+                  <Button Content="Imagens NOAA" Click="NoaaNdviClick" Style="{StaticResource RibbonCommand}" Tag="Map" ToolTip="Baixar imagens NOAA em RGB natural ou NDVI e adicioná-las ao mapa do projeto." />
+                  <Button Content="Imagens Sentinel‑2" Click="Sentinel2NdviClick" Style="{StaticResource RibbonCommand}" Tag="Map" ToolTip="Buscar cenas Copernicus Sentinel‑2 e gerar imagens RGB ou índices espectrais para o projeto." />
                 </WrapPanel>
-                <TextBlock Text="Mapa e camadas vetoriais" Style="{StaticResource RibbonGroupLabel}" />
+                <TextBlock Text="Mapa, camadas e satélite" Style="{StaticResource RibbonGroupLabel}" />
               </StackPanel>
             </StackPanel>
           </TabItem>
@@ -206,11 +209,15 @@
         </StackPanel>
       </Grid>
     </Border>
+    <Border x:Name="DocumentNavigationHost" DockPanel.Dock="Top" Visibility="Collapsed"
+            Background="#F5F8FB" BorderBrush="#DBE3EC" BorderThickness="0,0,0,1" Padding="8,3">
+      <StackPanel x:Name="DocumentNavigationButtons" Orientation="Horizontal" HorizontalAlignment="Right" />
+    </Border>
     <ad:DockingManager
       x:Name="DockManager"
       Background="#EBF0F5"
       AnchorableTitleTemplate="{StaticResource PaneTitle}"
-      AnchorableHeaderTemplate="{StaticResource PaneTitle}"
+      AnchorableHeaderTemplate="{StaticResource PaneTabTitle}"
     >
       <ad:DockingManager.Resources>
         <Style
@@ -224,7 +231,7 @@
       <ad:LayoutRoot>
         <ad:LayoutPanel Orientation="Vertical">
           <ad:LayoutPanel Orientation="Horizontal">
-            <ad:LayoutAnchorablePane DockWidth="265">
+            <ad:LayoutAnchorablePane DockWidth="245">
               <ad:LayoutAnchorable
                 x:Name="ContentsPane"
                 Title="Conteúdos"
@@ -257,7 +264,7 @@
               </ad:LayoutAnchorable>
             </ad:LayoutAnchorablePane>
             <ad:LayoutDocumentPane x:Name="Documents" />
-            <ad:LayoutAnchorablePane DockWidth="370">
+            <ad:LayoutAnchorablePane DockWidth="310">
               <ad:LayoutAnchorable
                 x:Name="ToolsPane"
                 Title="Ferramentas"
@@ -276,6 +283,21 @@
                       ToolTip="Pesquisar ferramentas"
                       TextChanged="ToolSearchChanged"
                     />
+                    <ComboBox
+                      x:Name="ToolCategoryFilter"
+                      Margin="0,7,0,0"
+                      MinHeight="30"
+                      SelectedIndex="0"
+                      ToolTip="Filtrar ferramentas por área"
+                      SelectionChanged="ToolCategoryChanged"
+                    >
+                      <ComboBoxItem Content="Todas as categorias" Tag="" />
+                      <ComboBoxItem Content="Dados e inventário" Tag="Preparar e revisar dados" />
+                      <ComboBoxItem Content="Gráficos e modelos" Tag="Gráficos e modelos" />
+                      <ComboBoxItem Content="Comparação e validação" Tag="Comparar e validar" />
+                      <ComboBoxItem Content="Campo" Tag="Planejamento de campo" />
+                      <ComboBoxItem Content="Mapa e satélite" Tag="Mapa e satélite" />
+                    </ComboBox>
                   </StackPanel>
                   <ContentControl x:Name="ToolContent" />
                 </DockPanel>

@@ -40,14 +40,35 @@ internal static class CurrentCurveOverlay
             return $"Curva vigente ‘{model.Label}’ não exibida: intervalo de X inválido.";
 
         string formulaText = model.Value.S("formula");
+        var inputs = (model.Value["entradas"] as JsonArray ?? [])
+            .OfType<JsonObject>()
+            .ToArray();
+        var inputSymbols = inputs.Select(input => input.S("simbolo"))
+            .Where(symbol => symbol.Length > 0)
+            .ToArray();
+        var allowedSymbols = Enumerable.Range(0, model.Coefficients.Length)
+            .Select(index => "b" + index)
+            .Concat(["x", "x1", "x2", "x3", "t"])
+            .Concat(inputSymbols)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
         Formula formula;
-        try { formula = new Formula(formulaText, ["b0", "b1", "b2", "b3", "x", "x1", "x2", "x3", "t"]); }
+        try { formula = new Formula(formulaText, allowedSymbols); }
         catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
         { return $"Curva vigente ‘{model.Label}’ não exibida: {ex.Message}"; }
 
         var fixedInputs = model.Value["fixed_inputs"] as JsonObject;
-        double x2 = fit["x2_mean"] != null ? fit.N("x2_mean") : fixedInputs?.N("x2", double.NaN) ?? double.NaN;
-        double x3 = fit["x3_mean"] != null ? fit.N("x3_mean") : fixedInputs?.N("x3", double.NaN) ?? double.NaN;
+        var inputValues = new Dictionary<string, double>(StringComparer.Ordinal);
+        for (int index = 0; index < inputSymbols.Length; index++)
+        {
+            string symbol = inputSymbols[index];
+            if (symbol is "t" or "x" or "x1") continue;
+            string fitMean = "x" + (index + 1) + "_mean";
+            double value = fit[fitMean] != null
+                ? fit.N(fitMean)
+                : fixedInputs?.N(symbol, double.NaN) ?? double.NaN;
+            if (double.IsFinite(value)) inputValues[symbol] = value;
+        }
         string unit = model.Value.S("unidade_idade", model.Value.S("age_unit"));
         double unitScale = AgeScale(chart.S("x"), unit);
         var points = new JsonArray();
@@ -60,8 +81,7 @@ internal static class CurrentCurveOverlay
                 double y = formula.Evaluate(symbol => symbol switch
                 {
                     "x" or "x1" or "t" => modelX,
-                    "x2" when double.IsFinite(x2) => x2,
-                    "x3" when double.IsFinite(x3) => x3,
+                    _ when inputValues.TryGetValue(symbol, out double inputValue) => inputValue,
                     _ when symbol.Length == 2 && symbol[0] == 'b' && int.TryParse(symbol.AsSpan(1), out int coefficient)
                         && coefficient >= 0 && coefficient < model.Coefficients.Length => model.Coefficients[coefficient],
                     _ => throw new InvalidDataException($"A entrada ‘{symbol}’ não está disponível no ajuste."),

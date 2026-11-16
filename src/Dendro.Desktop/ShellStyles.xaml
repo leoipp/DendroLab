@@ -144,6 +144,10 @@
       </Setter.Value>
     </Setter>
   </Style>
+  <DataTemplate x:Key="PaneTabTitle">
+    <TextBlock Text="{Binding Title}" Foreground="#304A60" FontWeight="SemiBold"
+               VerticalAlignment="Center" Margin="4,2" />
+  </DataTemplate>
   <DataTemplate x:Key="PaneTitle">
     <DockPanel LastChildFill="True">
       <local:CommandIcon
@@ -255,15 +259,15 @@
   <DataTemplate x:Key="ToolCard">
     <Grid>
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="48" />
+        <ColumnDefinition Width="40" />
         <ColumnDefinition Width="*" />
         <ColumnDefinition Width="18" />
       </Grid.ColumnDefinitions>
-      <Border Background="#F3F5FA" BorderBrush="#E3E8F0" BorderThickness="1" CornerRadius="10" Width="38" Height="40" VerticalAlignment="Top">
+      <Border Background="#F3F5FA" BorderBrush="#E3E8F0" BorderThickness="1" CornerRadius="8" Width="32" Height="34" VerticalAlignment="Top">
         <local:CommandIcon
           Kind="{Binding Path=(local:ShellVisuals.Icon),RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
-          Width="24"
-          Height="24"
+          Width="20"
+          Height="20"
         />
       </Border>
       <DockPanel Grid.Column="1" Margin="4,1,5,0" VerticalAlignment="Center">
@@ -344,7 +348,7 @@
   <Style x:Key="ToolCardItem" TargetType="ListBoxItem">
     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
     <Setter Property="ContentTemplate" Value="{StaticResource ToolCard}" />
-    <Setter Property="Margin" Value="0,0,0,7" />
+    <Setter Property="Margin" Value="0,0,0,5" />
     <Setter Property="Cursor" Value="Hand" />
     <Setter Property="Template">
       <Setter.Value>
@@ -355,7 +359,7 @@
             BorderBrush="#E0E7EE"
             BorderThickness="1"
             CornerRadius="12"
-            Padding="12"
+            Padding="8"
           >
             <ContentPresenter />
           </Border>

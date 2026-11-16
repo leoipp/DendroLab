@@ -45,9 +45,7 @@ public partial class MainWindow : Window
     private GisView? gisView;
     private readonly Dictionary<string, LayoutDocument> documents = new();
     private readonly Dictionary<string, Action> documentSelection = new();
-    private LayoutDocumentPaneControl? documentPaneControl;
-    private AdornerLayer? documentAdornerLayer;
-    private DocumentTabNavigatorAdorner? documentNavigator;
+    private Button? previousDocumentButton, nextDocumentButton;
     private readonly Dictionary<string, bool> contentsExpansion = new(StringComparer.Ordinal);
     private bool resetContentsExpansion;
     private Point contentDragOrigin;
@@ -70,6 +68,9 @@ public partial class MainWindow : Window
     {
         ShellVisuals.Initialize();
         InitializeComponent();
+        var workArea = SystemParameters.WorkArea;
+        Width = Math.Min(Width, Math.Max(MinWidth, workArea.Width * 0.94));
+        Height = Math.Min(Height, Math.Max(MinHeight, workArea.Height * 0.92));
         ContentsTree.AllowDrop = true;
         ContentsTree.PreviewMouseLeftButtonDown += ContentsTreeMouseDown;
         ContentsTree.PreviewMouseRightButtonDown += ContentsTreeRightMouseDown;
@@ -100,6 +101,8 @@ public partial class MainWindow : Window
         Closed += (_, _) => { contentSearchTimer.Stop(); toolSearchTimer.Stop(); };
         using (var initial = new StringWriter())
         {
+            // Keep the history available from Exibir, but out of the way in a fresh workspace.
+            HistoryPane.Hide();
             new AvalonDock.Layout.Serialization.XmlLayoutSerializer(DockManager).Serialize(initial);
             defaultLayout = initial.ToString();
         }
@@ -108,12 +111,6 @@ public partial class MainWindow : Window
         Refresh();
         Loaded += (_, _) => RestoreLayout();
         Loaded += (_, _) => Dispatcher.BeginInvoke(new Action(AttachDocumentNavigator));
-        DockManager.LayoutUpdated += (_, _) =>
-        {
-            var currentPane = FindDocumentPaneControl();
-            if (documentNavigator == null || !ReferenceEquals(currentPane, documentPaneControl))
-                AttachDocumentNavigator();
-        };
         Loaded += async (_, _) => { if (!App.IsSelfTest) { await Task.Delay(5000); if (!closing) await CheckUpdates(false); } };
         CommandBindings.Add(
             new CommandBinding(ApplicationCommands.Save, async (_, _) => await SaveProject())
@@ -419,7 +416,10 @@ public partial class MainWindow : Window
 
     private static bool IsRasterPath(string path) => Path.GetExtension(path) is string extension
         && (extension.Equals(".tif", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".tiff", StringComparison.OrdinalIgnoreCase));
+            || extension.Equals(".tiff", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
+                && File.Exists(Path.ChangeExtension(path, ".pgw"))
+                && File.Exists(Path.ChangeExtension(path, ".prj")));
 
     private IEnumerable<JsonObject> ContentGroups(string type) =>
         Session.Meta.Arr("content_groups").OfType<JsonObject>()
@@ -773,7 +773,10 @@ public partial class MainWindow : Window
             }
             string? itemGroupType = ContentGroupType(Session, path);
             if (itemGroupType == "vector" && !missingSource)
+            {
+                Menu(item, "Abrir tabela de atributos", CommandIconKind.Table, () => OpenVectorAttributeTable(path));
                 Menu(item, "Abrir no GIS", CommandIconKind.Map, () => OpenGIS(path));
+            }
             if (!missingSource && Session.Meta.Arr("sampling_results").Any(result => result.S("path") == path))
                 Menu(item, "Exportar amostragem…", CommandIconKind.SaveAs, () => ExportSamplingContent(path));
             if (IsRasterPath(path) && !missingSource)
@@ -873,6 +876,9 @@ public partial class MainWindow : Window
                     string outputName = Path.GetFileNameWithoutExtension(output);
                     resultParent = ContentItem("Resumo direto · " + outputName, CommandIconKind.Processor);
                     resultParent.ToolTip = output + (result.S("created").Length > 0 ? "\nCriado: " + result.S("created") : "");
+                    resultParent.ContextMenu = new ContextMenu();
+                    Menu(resultParent, "Remover processamento…", CommandIconKind.Remove,
+                        () => RemoveDirectProcessing(output, result.S("source_path")));
                     item.Items.Add(resultParent);
                 }
                 foreach (var sheet in result.Arr("sheets"))
@@ -946,6 +952,16 @@ public partial class MainWindow : Window
             string path = derived.S("path"),
                 parent = derived.S("source_path");
             if (!nodes.TryGetValue(path, out var child)) continue;
+            var derivedSheets = derived["sheets"] as JsonArray;
+            foreach(var sheet in derivedSheets is { Count: > 1 } ? derivedSheets : new JsonArray())
+            {
+                string tableName=sheet.Display();
+                var tableNode=ContentItem(tableName,CommandIconKind.Table);
+                tableNode.Tag=new ResultSheetReference(path,tableName);
+                tableNode.ContextMenu=new ContextMenu();
+                Menu(tableNode,"Abrir tabela",CommandIconKind.Table,()=>OpenTable(path,tableName));
+                child.Items.Add(tableNode);
+            }
             TreeViewItem? parentNode = null;
             string sourceSheet = derived.S("source_sheet");
             if (sourceSheet.Length > 0)
@@ -1178,7 +1194,7 @@ public partial class MainWindow : Window
         {
             Header = "Adicionar raster TIFF ou shapefile…",
             Icon = ContentMenuIcon(CommandIconKind.Add),
-            ToolTip = "Selecione um raster GeoTIFF (.tif/.tiff) ou um vetor shapefile (.shp).",
+            ToolTip = "Selecione um raster GeoTIFF, PNG georreferenciado ou vetor shapefile (.shp).",
         };
         addLayer.Click += async (_, e) => { e.Handled = true; await AddGISLayerFiles(); };
         node.ContextMenu?.Items.Add(addLayer);
@@ -1189,7 +1205,7 @@ public partial class MainWindow : Window
         var picker = new Microsoft.Win32.OpenFileDialog
         {
             Title = "Adicionar raster ou shapefile ao mapa",
-            Filter = "Raster GeoTIFF|*.tif;*.tiff|Shapefile vetorial|*.shp|Todos os formatos aceitos|*.tif;*.tiff;*.shp",
+            Filter = "Raster GeoTIFF ou PNG|*.tif;*.tiff;*.png|Shapefile vetorial|*.shp|Todos os formatos aceitos|*.tif;*.tiff;*.png;*.shp",
             Multiselect = true,
             CheckFileExists = true,
         };
@@ -1249,6 +1265,13 @@ public partial class MainWindow : Window
         string[] selected = selectedContentPaths.Contains(clickedPath)
             ? selectedContentPaths.Where(path => Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)).ToArray()
             : [clickedPath];
+        bool keptProcessingSources = false;
+        if (selected.Length > 1)
+        {
+            string[] safeSelection = Session.RemovalRootsPreservingProcessingSources(selected);
+            keptProcessingSources = safeSelection.Length < selected.Length;
+            selected = safeSelection;
+        }
         if (selected.Length == 0) return;
 
         string[] affected = selected.Length == 1
@@ -1266,6 +1289,8 @@ public partial class MainWindow : Window
         if (descendants.Length > 0)
             message += "\n\nTambém serão removidos os resultados dependentes:\n" +
                 string.Join("\n", descendants.Select(removed => "• " + Session.ContentName(removed)));
+        if (keptProcessingSources)
+            message += "\n\nAs bases de origem dos processamentos selecionados serão mantidas no projeto.";
         message += "\n\nDeseja continuar?";
         if (!ConfirmRemoval(message)) return;
 
@@ -1324,6 +1349,28 @@ public partial class MainWindow : Window
         processor = null;
         ShowTools();
         Log($"Revisão removida: {id}");
+    }
+
+    private async Task RemoveDirectProcessing(string output, string source)
+    {
+        int index = Session.Files.ToList().FindIndex(path => SameProjectPath(path, output));
+        if (index < 0)
+            throw new InvalidOperationException("O resultado deste processamento não existe mais no projeto.");
+        string[] affected = Session.PreviewRemoveFile(index);
+        string[] descendants = affected.Where(path => !SameProjectPath(path, output)).ToArray();
+        string message = $"Remover o processamento ‘{Path.GetFileNameWithoutExtension(output)}’ apagará seus resultados do banco do projeto. A base de origem ‘{Session.ContentName(source)}’ será mantida.";
+        if (descendants.Length > 0)
+            message += "\n\nTambém serão removidos os resultados derivados:\n" +
+                string.Join("\n", descendants.Select(path => "• " + Session.ContentName(path)));
+        message += "\n\nDeseja continuar?";
+        if (!ConfirmRemoval(message)) return;
+        await Session.RemoveFile(index);
+        selectedContentPaths.Clear();
+        contentSelectionAnchorPath = null;
+        CloseDocuments();
+        processor = null;
+        ShowTools();
+        Log($"Processamento removido; base de origem preservada: {Session.ContentName(source)}.");
     }
 
     private static bool SameProjectPath(string first, string second) =>
@@ -1476,51 +1523,34 @@ public partial class MainWindow : Window
 
     private void AttachDocumentNavigator()
     {
-        var control = FindDocumentPaneControl();
-        if (control == null)
+        if (previousDocumentButton == null)
         {
-            if (documentNavigator != null && documentAdornerLayer != null)
-                documentAdornerLayer.Remove(documentNavigator);
-            documentNavigator = null;
-            documentAdornerLayer = null;
-            documentPaneControl = null;
-            return;
+            previousDocumentButton = Ui.IconButton("Janela anterior", CommandIconKind.ArrowLeft, () => NavigateDocument(-1));
+            nextDocumentButton = Ui.IconButton("Próxima janela", CommandIconKind.ArrowRight, () => NavigateDocument(1));
+            foreach (var button in new[] { previousDocumentButton, nextDocumentButton })
+            {
+                button.Width = button.MinWidth = 28;
+                button.Height = button.MinHeight = 26;
+                button.Margin = new Thickness(2, 0, 0, 0);
+                button.Padding = new Thickness(3);
+                DocumentNavigationButtons.Children.Add(button);
+            }
         }
-        if (ReferenceEquals(control, documentPaneControl) && documentNavigator != null)
-        {
-            UpdateDocumentNavigator();
-            return;
-        }
-
-        if (documentNavigator != null && documentAdornerLayer != null)
-            documentAdornerLayer.Remove(documentNavigator);
-        var adornerLayer = AdornerLayer.GetAdornerLayer(control);
-        if (adornerLayer == null)
-        {
-            documentPaneControl = null;
-            documentNavigator = null;
-            documentAdornerLayer = null;
-            return;
-        }
-
-        documentPaneControl = control;
-        documentAdornerLayer = adornerLayer;
-        documentNavigator = new DocumentTabNavigatorAdorner(control,
-            () => NavigateDocument(-1), () => NavigateDocument(1));
-        documentAdornerLayer.Add(documentNavigator);
         UpdateDocumentNavigator();
     }
 
     private void UpdateDocumentNavigator()
     {
-        if (documentNavigator == null)
+        if (previousDocumentButton == null)
         {
             if (IsLoaded) Dispatcher.BeginInvoke(new Action(AttachDocumentNavigator));
             return;
         }
-        documentNavigator.UpdateCount(Documents?.Children.OfType<LayoutDocument>().Count() ?? 0);
+        bool enabled = (Documents?.Children.OfType<LayoutDocument>().Count() ?? 0) > 1;
+        previousDocumentButton.IsEnabled = enabled;
+        nextDocumentButton!.IsEnabled = enabled;
+        DocumentNavigationHost.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
     }
-
     private void NavigateDocument(int direction)
     {
         var tabs = Documents.Children.OfType<LayoutDocument>().ToArray();
@@ -1803,6 +1833,15 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ToolCategoryChanged(object s, SelectionChangedEventArgs e)
+    {
+        if (IsInitialized && ToolContent?.Content is ListBox)
+        {
+            toolSearchTimer.Stop();
+            toolSearchTimer.Start();
+        }
+    }
+
     internal void ShowTools()
     {
         if (ToolContent == null)
@@ -1821,15 +1860,18 @@ public partial class MainWindow : Window
                     ToolSearch.Text, StringComparison.CurrentCultureIgnoreCase);
         bool MatchesTool(string name) => MatchesToolSearch(name)
             || name == "K-means" && "kmeans cluster agrupamento silhouette silhueta elbow cotovelo inertia inércia".Contains(ToolSearch.Text, StringComparison.CurrentCultureIgnoreCase);
+        string selectedGroup = (ToolCategoryFilter.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "";
         var toolGroups = new (string Title, string[] Items)[]
         {
             ("Preparar e revisar dados", ["Processador", "Revisão de inventário", "Auditoria pós-processamento", "Juntar tabelas", "Parear medições", "Gerar coluna", "Estratificar", "Limpeza integrada", "Ativo biológico"]),
             ("Gráficos e modelos", ["Gráficos", "Ajuste de regressão", "Aplicar regressões", "Ajustar rede neural", "Ajustar Random Forest", "Ajustar Gradient Boosting", "Ajustar SVR", "Fronteira de eficiência"]),
             ("Comparar e validar", ["Comparar curvas de produção", "ICA e IMA", "Testes estatísticos", "Validação de modelos", "Isolation Forest", "K-means"]),
             ("Planejamento de campo", ["Amostragem"]),
+            ("Mapa e satélite", ["Imagens NOAA", "Imagens Sentinel-2"]),
         };
         foreach (var (groupTitle, groupTools) in toolGroups)
         {
+            if (selectedGroup.Length > 0 && groupTitle != selectedGroup) continue;
             var visibleTools = groupTools.Where(MatchesTool).ToArray();
             if (visibleTools.Length == 0) continue;
             if (string.IsNullOrWhiteSpace(ToolSearch.Text))
@@ -1866,6 +1908,8 @@ public partial class MainWindow : Window
                         "Testes estatísticos" => "Execute testes de médias, variâncias e identidade de modelos.",
                         "Validação de modelos" => "Compare uma ou várias colunas estimadas com os valores observados, com métricas, dispersão e histograma de erros.",
                         "K-means" => "Agrupe observações numéricas e compare o número de grupos com elbow (inertia) e silhouette.",
+                        "Imagens NOAA" => "Baixe imagens NOAA em RGB natural ou NDVI no mapa do projeto.",
+                        "Imagens Sentinel-2" => "Busque cenas Copernicus e gere RGB natural, falso colorido ou índices espectrais com máscara de nuvens.",
                         _ => null,
                     },
                     IsEnabled = tool switch
@@ -1901,6 +1945,8 @@ public partial class MainWindow : Window
                     "Comparar curvas de produção" => CommandIconKind.CurveComparison,
                     "Isolation Forest" => CommandIconKind.Anomaly,
                     "K-means" => CommandIconKind.Statistics,
+                    "Imagens NOAA" => CommandIconKind.Map,
+                    "Imagens Sentinel-2" => CommandIconKind.Map,
                     "Limpeza integrada" => CommandIconKind.IntegratedCleaning,
                     "Testes estatísticos" => CommandIconKind.Statistics,
                     "Validação de modelos" => CommandIconKind.ModelValidation,
@@ -1909,11 +1955,25 @@ public partial class MainWindow : Window
                 list.Items.Add(entry);
             }
         }
+        if (list.Items.Count == 0)
+            list.Items.Add(new ListBoxItem
+            {
+                Content = "Nenhuma ferramenta encontrada",
+                IsEnabled = false,
+                IsHitTestVisible = false,
+                Focusable = false,
+                Padding = new Thickness(8),
+                Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(104, 122, 137)),
+            });
         list.SelectionChanged += async (_, _) =>
         {
             if (list.SelectedItem is not ListBoxItem i)
                 return;
-            if ((string)i.Tag == "Processador")
+            if ((string)i.Tag == "Imagens NOAA")
+                SetTool(new NoaaNdviView(this, Session));
+            else if ((string)i.Tag == "Imagens Sentinel-2")
+                SetTool(new Sentinel2NdviView(this, Session));
+            else if ((string)i.Tag == "Processador")
             {
                 processor = new ProcessorView(this, Session);
                 SetTool(processor);
@@ -2065,6 +2125,23 @@ public partial class MainWindow : Window
 
     private async void GISClick(object sender, RoutedEventArgs e) => await Execute(() => OpenGIS());
 
+    private void NoaaNdviClick(object sender, RoutedEventArgs e) => SetTool(new NoaaNdviView(this, Session));
+    private void Sentinel2NdviClick(object sender, RoutedEventArgs e) => SetTool(new Sentinel2NdviView(this, Session));
+
+    internal async Task RegisterNoaaNdviImage(string path, string product)
+        => await RegisterSatelliteImage(path, "NOAA", product);
+
+    internal async Task RegisterSentinel2NdviImage(string path, string product)
+        => await RegisterSatelliteImage(path, "Sentinel-2", product);
+
+    private async Task RegisterSatelliteImage(string path, string source, string product)
+    {
+        if (!Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) Session.AddFile(path);
+        RevealAddedContents([path]);
+        await OpenGIS(path);
+        Log($"Imagem {product} {source} salva no projeto e aberta no GIS.");
+    }
+
     private void ManualClick(object sender, RoutedEventArgs e) => new ManualWindow { Owner = this }.ShowDialog();
 
     private async Task OpenForestSampling()
@@ -2166,7 +2243,7 @@ public partial class MainWindow : Window
     {
         var picker = new Microsoft.Win32.OpenFileDialog
         {
-            Filter = vectorOnly ? "Shapefile|*.shp" : "Planilhas Excel|*.xlsx;*.xls|Dados|*.dlb;*.dendrodb;*.db;*.shp;*.tif;*.tiff|Todos|*.*",
+            Filter = vectorOnly ? "Shapefile|*.shp" : "Planilhas Excel|*.xlsx;*.xls|Dados|*.dlb;*.dendrodb;*.db;*.shp;*.tif;*.tiff;*.png|Todos|*.*",
             Multiselect = true,
         };
         if (picker.ShowDialog() != true)
@@ -2242,6 +2319,15 @@ public partial class MainWindow : Window
         Document("table:" + path + (sheet == null ? "" : ":" + sheet),
             "Tabela · " + (sheet ?? Session.ContentName(path)), browser);
         Log($"{browser.Total:N0} linhas. Visualização em páginas de 500 linhas.");
+    }
+
+    private Task OpenVectorAttributeTable(string path)
+    {
+        string resolved = Session.Resolve(path);
+        var view = new VectorAttributeTable(this, resolved);
+        Document("attributes:" + path, "Atributos · " + Session.ContentName(path), view);
+        Log("Tabela de atributos aberta. Edite as células e use ‘Salvar edições’ para gravar no DBF.");
+        return Task.CompletedTask;
     }
 
     internal async Task RefreshUpdatedTable(string path, string sheet)
@@ -2429,6 +2515,7 @@ public partial class MainWindow : Window
     private void RebindLayout()
     {
         var panes = DockManager.Layout.Descendents().OfType<LayoutAnchorable>().ToArray();
+        foreach (var pane in panes) ShellVisuals.EnsureAutoHideSize(pane);
         ContentsPane = panes.First(p => p.ContentId == "contents");
         ToolsPane = panes.First(p => p.ContentId == "tools");
         HistoryPane = panes.First(p => p.ContentId == "history");
@@ -2472,6 +2559,9 @@ public partial class MainWindow : Window
             {
                 try
                 {
+                    if (documents.Values.Select(d => d.Content).OfType<VectorAttributeTable>().Any(v => v.HasUnsavedChanges)
+                        && !Ui.Confirm("Edições não salvas", "A tabela de atributos tem alterações sem salvar. Deseja fechar o DendroLab mesmo assim?", "Fechar sem salvar"))
+                        return;
                     if (!await (CloseConfirmation?.Invoke() ?? MayReplace()))
                         return;
                     try

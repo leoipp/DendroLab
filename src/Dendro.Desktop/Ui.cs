@@ -330,7 +330,9 @@ internal static class Ui
             Child = new ScrollViewer
             {
                 Content = bodyText,
-                MaxHeight = 340,
+                // Keep the action row visible in confirmations with long removal lists.
+                // The message stays scrollable inside the remaining dialog height.
+                MaxHeight = confirmation ? 220 : 340,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             },

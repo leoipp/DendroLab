@@ -18,7 +18,7 @@ técnica para o titular e usuários expressamente autorizados.
 - **Configurações por projeto:** mapeamento de campos, unidades de importação,
   chaves de identificação, altura, cadastro florestal e seleção das colunas
   opcionais de saída. As colunas obrigatórias permanecem protegidas.
-- **Modelagem:** modelos volumétricos VTCC/VCCC, ajuste de altura e RNA,
+- **Modelagem:** modelos volumétricos VTCC/VCCC/VTSC/VCSC, ajuste de altura e RNA,
   regressões 1P, comparação de modelos, curvas de crescimento e produção,
   ICA/IMA e fronteiras de eficiência.
 - **Gráficos:** dispersão, estratos com legenda, transparência dos pontos,
@@ -32,7 +32,8 @@ técnica para o titular e usuários expressamente autorizados.
   comparação de K por elbow (inertia) e silhouette, com grupos exportáveis.
 - **Ativo biológico:** vincula uma tabela aos resultados mais recentes por
   chave e **data da medição**, projeta o volume pela curva vigente de cada ID
-  até 1º de junho do ano final e calcula IMA para idades inteiras por talhão.
+  com referência anual configurável, fontes alternativas e opção de modelo direto.
+  Projeções anuais, IMA por idade, IMA7 e IMA7-Curva ficam na mesma tabela.
 - **Gestão de tabelas:** junção com identificação da fonte, estratificação,
   criação de colunas, filtros, ordenação e remoção de linhas e colunas.
 - **Amostragem GIS:** geração de parcelas em talhões por malha sistemática,

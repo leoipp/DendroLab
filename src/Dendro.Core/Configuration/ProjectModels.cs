@@ -63,21 +63,35 @@ public static class ProjectModels
         string name,
         string formula,
         JsonNode? inputs,
-        string? volumeType = null
+        string? volumeType = null,
+        string? outputMode = null,
+        JsonObject? additionalCoefficients = null
     )
     {
         var models = project.Obj("volume").Arr("equacoes");
         Index(models, index, true);
         string type = volumeType ?? (index >= 0 ? models[index].S("tipo_volume", "VTCC") : "VTCC");
-        if (type is not ("VTCC" or "VCCC")) throw new InvalidDataException("Tipo de volume inválido. Use VTCC ou VCCC.");
+        if (type is not ("VTCC" or "VCCC" or "VCSC" or "VTSC"))
+            throw new InvalidDataException("Tipo de volume inválido. Use VTCC, VCCC, VCSC ou VTSC.");
+        string mode = outputMode ?? (index >= 0
+            ? models[index].S("modo_saida", type == "VCCC" ? "razao" : "direto")
+            : type == "VCCC" ? "razao" : "direto");
+        if (mode is not ("direto" or "razao") || mode == "razao" && type == "VTCC")
+            throw new InvalidDataException("VTCC deve ser direto; os demais tipos podem ser diretos ou razão do volume anterior.");
         if (models.Where((_, i) => i != index).Any(e => e.S("codigo") == id && e.S("tipo_volume", "VTCC") == type))
             throw new InvalidDataException("Já existe um modelo com esse ID e tipo de volume.");
         var model = index >= 0 ? models[index]!.DeepClone().AsObject() : new JsonObject();
         model["codigo"] = id;
         model["tipo_volume"] = type;
+        model["modo_saida"] = mode;
         model["b0"] = b0;
         model["b1"] = b1;
         model["b2"] = b2;
+        foreach (string coefficient in ModelDefinition.Coefficients.Skip(3)) model.Remove(coefficient);
+        if (additionalCoefficients != null)
+            foreach (var pair in additionalCoefficients)
+                if (ModelDefinition.Coefficients.Skip(3).Contains(pair.Key, StringComparer.Ordinal) && pair.Value != null)
+                    model[pair.Key] = pair.Value.DeepClone();
         if (formula.Length > 0)
         {
             model["formula"] = formula;

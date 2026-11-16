@@ -21,7 +21,7 @@ public partial class MainWindow
         SetRibbonExpanded(pinned);
     }
 
-    internal void SetRibbonExpanded(bool expanded) => Ribbon.Height = RibbonPinned || expanded ? 152 : 40;
+    internal void SetRibbonExpanded(bool expanded) => Ribbon.Height = RibbonPinned || expanded ? 140 : 40;
 
     private void RibbonPinClick(object sender, RoutedEventArgs e) => SetRibbonPinned(!RibbonPinned);
     private void RibbonMouseLeave(object sender, MouseEventArgs e)

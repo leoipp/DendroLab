@@ -15,7 +15,10 @@ public sealed record ProcessingRequest(
     string Sheet = ""
 );
 
-public sealed record ProcessingResult(int Trees, int Plots, int Stands, double Volume, int RemovedDuplicates = 0, string[]? InventoryTypes = null);
+public sealed record VolumeAuditItem(string Rule, long Checked, long Violations);
+
+public sealed record ProcessingResult(int Trees, int Plots, int Stands, double Volume, int RemovedDuplicates = 0,
+    string[]? InventoryTypes = null, VolumeAuditItem[]? VolumeAudit = null);
 
 public sealed class InventoryProcessor
 {
@@ -64,6 +67,22 @@ public sealed class InventoryProcessor
 
     private readonly record struct TreeRow(int InputRow, int RegistryRow);
 
+    private readonly record struct VolumeEstimates(double Vtcc, double Vccc, double Vtsc, double Vcsc)
+    {
+        public static VolumeEstimates Empty => new(double.NaN, double.NaN, double.NaN, double.NaN);
+        public double Get(string type) => type switch
+        {
+            "VTCC" => Vtcc, "VCCC" => Vccc, "VTSC" => Vtsc, "VCSC" => Vcsc,
+            _ => double.NaN,
+        };
+        public VolumeEstimates With(string type, double value) => type switch
+        {
+            "VTCC" => this with { Vtcc = value }, "VCCC" => this with { Vccc = value },
+            "VTSC" => this with { Vtsc = value }, "VCSC" => this with { Vcsc = value },
+            _ => this,
+        };
+    }
+
     private readonly record struct Tree(
         int Row,
         int RegistryRow,
@@ -81,15 +100,19 @@ public sealed class InventoryProcessor
         string Measurement,
         string PlotIdentity,
         InventoryContext Inventory,
-        double Volume
+        double Volume,
+        double CommercialVolume,
+        VolumeEstimates Estimates
     );
 
     private sealed class PlotAggregate(Tree first, int dominantTreesPerPlot)
     {
         public Tree First { get; } = first;
         public DominantTreeMetrics Dominant { get; } = new(dominantTreesPerPlot);
-        public int Rows, Stems, DapCount, HeightCount, EffectiveCount, AreaCount, AgeCount, VolumeCount;
-        public double Volume, VolumeSum, AreaSum, AgeSum, EffectiveSum, DapSum, HeightSum;
+        public int Rows, Stems, DapCount, HeightCount, EffectiveCount, AreaCount, AgeCount, VolumeCount, CommercialCount;
+        public double Volume, VolumeSum, CommercialVolumeSum, AreaSum, AgeSum, EffectiveSum, DapSum, HeightSum;
+        public VolumeEstimates EstimateSums = VolumeEstimates.Empty;
+        public readonly int[] EstimateCounts = new int[4];
 
         public void Add(Tree tree)
         {
@@ -97,6 +120,16 @@ public sealed class InventoryProcessor
                 throw new InvalidDataException("A chave de parcela está agrupando talhões, lotes ou números de parcela diferentes. Revise as colunas da chave em Configurações > Identificação.");
             Rows++;
             if (!double.IsNaN(tree.Volume)) { Volume += tree.Volume; VolumeSum += tree.Volume; VolumeCount++; }
+            if (!double.IsNaN(tree.CommercialVolume)) { CommercialVolumeSum += tree.CommercialVolume; CommercialCount++; }
+            foreach (string type in ModelDefinition.VolumeTypes)
+            {
+                double estimate = tree.Estimates.Get(type);
+                if (!double.IsFinite(estimate)) continue;
+                int index = Array.IndexOf(ModelDefinition.VolumeTypes, type);
+                double previous = EstimateSums.Get(type);
+                EstimateSums = EstimateSums.With(type, double.IsFinite(previous) ? previous + estimate : estimate);
+                EstimateCounts[index]++;
+            }
             if (!double.IsNaN(tree.Area)) { AreaSum += tree.Area; AreaCount++; }
             if (!double.IsNaN(tree.Age)) { AgeSum += tree.Age; AgeCount++; }
             if (!double.IsNaN(tree.Effective)) { EffectiveSum += tree.Effective; EffectiveCount++; }
@@ -112,6 +145,8 @@ public sealed class InventoryProcessor
         public double MeanDap => DapCount > 0 ? DapSum / DapCount : double.NaN;
         public double MeanHeight => HeightCount > 0 ? HeightSum / HeightCount : double.NaN;
         public double MeanVolume => VolumeCount > 0 ? VolumeSum / VolumeCount : double.NaN;
+        public double CommercialVolume => CommercialCount > 0 ? CommercialVolumeSum : double.NaN;
+        public double MeanCommercialVolume => CommercialCount > 0 ? CommercialVolumeSum / CommercialCount : double.NaN;
     }
 
     private static readonly string[] ColumnKeys =
@@ -172,9 +207,14 @@ public sealed class InventoryProcessor
             throw new InvalidDataException(
                 $"O modo {mode} ainda não está disponível. Use KEEP_FILE, MODEL_GENERAL ou FINETUNE_MODEL."
             );
-        var equations = cfg["volume"]!["equacoes"]!.AsArray().Where(e => e.S("tipo_volume", "VTCC") == "VTCC").ToArray();
-        if (equations.Length < 1)
-            throw new InvalidDataException("Configure os modelos volumétricos VTCC antes de processar.");
+        var allEquations = cfg["volume"]!["equacoes"]!.AsArray();
+        var equationsByType = ModelDefinition.VolumeTypes.ToDictionary(
+            type => type,
+            type => allEquations.Where(e => e.S("tipo_volume", "VTCC") == type).ToArray(),
+            StringComparer.Ordinal);
+        string[] activeVolumeTypes = ModelDefinition.VolumeTypes.Where(type => equationsByType[type].Length > 0).ToArray();
+        if (activeVolumeTypes.Length == 0)
+            throw new InvalidDataException("Cadastre ao menos um modelo volumétrico.");
         progress?.Invoke(10, "Lendo inventário…");
         var options = ProjectStore.ExcelOptions(cfg, inputPath);
         string selectedSheet = request.Sheet.Length > 0 ? request.Sheet : options.S("sheet");
@@ -422,6 +462,8 @@ public sealed class InventoryProcessor
             : null;
         int processedTrees = 0;
         double processedVolume = 0;
+        (string Higher, string Lower)[] volumeRelations = [("VTCC", "VCCC"), ("VTCC", "VTSC"), ("VCCC", "VCSC"), ("VTSC", "VCSC")];
+        long[] volumeChecks = new long[volumeRelations.Length], volumeViolations = new long[volumeRelations.Length];
         var calc = retainCalculationRows ? new DataTable([
             "Talhão",
             "Parcela",
@@ -433,12 +475,15 @@ public sealed class InventoryProcessor
             "EQ_COD",
             "area_corr",
             "VTCC",
+            "VCCC",
             "CURVA_COD",
             "b0",
             "b1",
             "b2",
             "b3",
             "Fator_Volume",
+            "VTSC",
+            "VCSC",
         ]) : new DataTable(["EQ_COD"]);
         bool temporal = cfg["estatisticas"].B("chave_temporal_ativa");
         int fallbackFlag = input.Column(RegistryAgeFallback.FlagColumn), fallbackDate = input.Column(RegistryAgeFallback.DateColumn);
@@ -462,7 +507,10 @@ public sealed class InventoryProcessor
         int calcFallbackDate = retainCalculationRows && fallbackFlag >= 0 ? calc.Ensure(RegistryAgeFallback.DateColumn) : -1;
         double factor = versioned ? 1 : cfg["volume"].N("fator", 1),
             ageLimit = cfg["volume"].N("idade_limite_equacao_geral", 15);
-        var models = equations.ToDictionary(e => e.S("codigo"), e => e!, StringComparer.Ordinal);
+        var modelsByType = ModelDefinition.VolumeTypes.ToDictionary(
+            type => type,
+            type => equationsByType[type].ToDictionary(e => e.S("codigo"), e => e!, StringComparer.Ordinal),
+            StringComparer.Ordinal);
         var programs = new Dictionary<JsonNode, ModelProgram>();
         ModelProgram Program(JsonNode eq, bool growth)
         {
@@ -485,7 +533,11 @@ public sealed class InventoryProcessor
                 t.Area,
                 t.Effective,
                 volumeHa,
-                stemsHa
+                stemsHa,
+                t.Estimates.Vtcc,
+                t.Estimates.Vccc,
+                t.Estimates.Vtsc,
+                t.Estimates.Vcsc
             );
         Tree FromCalcRow(TreeRow source)
         {
@@ -495,7 +547,9 @@ public sealed class InventoryProcessor
             return new(row, registryRow, calc.Text(row, 0), temporal ? InventoryMath.Year(measured) : 0,
                 calc.Text(row, 1), calc.Text(row, 2), calc.Number(row, 3), calc.Number(row, 5),
                 calc.Number(row, 6), calc.Number(row, 8), registry.Number(registryRow, ca), calc.Text(row, 7),
-                calc.Text(row, 10), measurement, identification.PlotKey(row), identification.Context(row), calc.Number(row, 9));
+                calc.Text(row, 11), measurement, identification.PlotKey(row), identification.Context(row), calc.Number(row, 9), calc.Number(row, 10),
+                new(calc.Number(row, calc.Column("VTCC")), calc.Number(row, calc.Column("VCCC")),
+                    calc.Number(row, calc.Column("VTSC")), calc.Number(row, calc.Column("VCSC"))));
         }
         bool releaseInputRowsAsProcessed = !useCurves
             && !ProcessingHistory.Enabled(cfg)
@@ -537,10 +591,6 @@ public sealed class InventoryProcessor
                 effective = registry.Number(rr, ca);
             string code = InventoryMath.EquationCode(lot, age, ageLimit),
                 curve = InventoryMath.EquationCode(lot, 0);
-            if (!models.TryGetValue(code, out var eq))
-                throw new InvalidDataException(
-                    $"Linha {r + 1}: equação {code} não encontrada na configuração."
-                );
             var t = new Tree(
                 r,
                 rr,
@@ -558,17 +608,58 @@ public sealed class InventoryProcessor
                 DateTime.FromOADate(measured).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                 identification.PlotKey(r),
                 identification.Context(r),
-                0
+                double.NaN,
+                double.NaN,
+                VolumeEstimates.Empty
             );
-            bool custom = eq["entradas"] is not null || eq.S("formula").Length > 0;
-            double volume = custom
-                ? Program(eq, false).Evaluate(Program(eq, false).Values(Context(t)))
-                : InventoryMath.Volume(dap, h, eq.N("b0"), eq.N("b1"), eq.N("b2"));
-            if (custom && !double.IsFinite(volume))
-                throw new InvalidDataException(
-                    $"Modelo volumétrico {code}: resultado inválido na linha {r + 1}."
-                );
-            volume *= factor;
+            bool zeroMeasure = dap == 0 && h == 0;
+            VolumeEstimates estimates = zeroMeasure
+                ? new VolumeEstimates(0, 0, 0, 0)
+                : VolumeEstimates.Empty;
+            string[] codeVolumeTypes = ModelDefinition.VolumeTypes
+                .Where(type => modelsByType[type].ContainsKey(code)).ToArray();
+            if (codeVolumeTypes.Length == 0)
+                throw new InvalidDataException($"Linha {r + 1}: equação volumétrica {code} não encontrada na configuração.");
+            // A record with both measurements at zero represents no stem volume.
+            // Keep it with explicit zero estimates; partial or missing measurements
+            // still go through model validation and produce a diagnostic.
+            if (!zeroMeasure)
+            {
+                foreach (string type in codeVolumeTypes)
+                {
+                    var equation = modelsByType[type][code];
+                    bool custom = equation["entradas"] is not null || equation.S("formula").Length > 0;
+                    double estimate = custom
+                        ? Program(equation, false).Evaluate(Program(equation, false).Values(Context(t with { Estimates = estimates })))
+                        : InventoryMath.Volume(dap, h, equation.N("b0"), equation.N("b1"), equation.N("b2"));
+                    if (!double.IsFinite(estimate))
+                        throw new InvalidDataException($"Modelo volumétrico {type} {code}: resultado inválido na linha {r + 1} (DAP={dap:G8}; H={h:G8}).");
+                    if (equation.S("modo_saida", "direto") == "razao")
+                    {
+                        if (estimate < 0 || estimate > 1)
+                            throw new InvalidDataException($"Modelo {type} {code}: a razão deve estar entre 0 e 1 (linha {r + 1}).");
+                        string baseType = codeVolumeTypes.TakeWhile(candidate => candidate != type).LastOrDefault()
+                            ?? throw new InvalidDataException($"O modelo {type} não possui um volume anterior para calcular a razão.");
+                        double baseEstimate = estimates.Get(baseType);
+                        if (!double.IsFinite(baseEstimate))
+                            throw new InvalidDataException($"Modelo {type} {code}: volume base {baseType} ausente na linha {r + 1}.");
+                        estimate *= baseEstimate;
+                    }
+                    else
+                        estimate *= factor;
+                    estimates = estimates.With(type, estimate);
+                }
+            }
+            for (int i = 0; !zeroMeasure && i < volumeRelations.Length; i++)
+            {
+                double higher = estimates.Get(volumeRelations[i].Higher), lower = estimates.Get(volumeRelations[i].Lower);
+                if (!double.IsFinite(higher) || !double.IsFinite(lower)) continue;
+                volumeChecks[i]++;
+                if (higher <= lower) volumeViolations[i]++;
+            }
+            string primaryVolumeType = codeVolumeTypes[0];
+            double volume = estimates.Get(primaryVolumeType), commercialVolume = estimates.Vccc;
+            var eq = modelsByType[primaryVolumeType][code];
             if (double.IsInfinity(volume))
                 throw new InvalidDataException(
                     $"Linha {r + 1}: volume fora do intervalo numérico."
@@ -576,13 +667,14 @@ public sealed class InventoryProcessor
             if (direct != null)
             {
                 direct.Add(stand, plot, lot, t.Year, r + 1, age, volume, dap > 0, area, effective,
-                    input.Text(r, fallbackFlag), input.Text(r, fallbackDate), dap, h, t.PlotIdentity, t.Inventory, t.Measurement, t.Curve);
+                    input.Text(r, fallbackFlag), input.Text(r, fallbackDate), dap, h, t.PlotIdentity, t.Inventory, t.Measurement, t.Curve,
+                    commercialVolume, estimates.Vtcc, estimates.Vtsc, estimates.Vcsc);
                 if (releaseInputRowsAsProcessed) input.ReleaseRowValues(r);
                 continue;
             }
             processedTrees++;
             if (!double.IsNaN(volume)) processedVolume += volume;
-            var measuredTree = t with { Volume = volume };
+            var measuredTree = t with { Volume = volume, CommercialVolume = commercialVolume, Estimates = estimates };
             if (plotAggregates != null)
             {
                 if (!plotAggregates.TryGetValue(t.PlotIdentity, out var aggregate))
@@ -607,13 +699,16 @@ public sealed class InventoryProcessor
                     age,
                     code,
                     area,
-                    volume,
+                    estimates.Vtcc,
+                    estimates.Vccc,
                     curve,
                     eq.N("b0"),
                     eq.N("b1"),
                     eq.N("b2"),
                     0d,
-                    factor
+                    factor,
+                    estimates.Vtsc,
+                    estimates.Vcsc
                 );
                 if (fallbackFlag >= 0) {
                     calc.Set(calc.Count - 1, calcFallbackFlag, input.Value(r, fallbackFlag));
@@ -635,8 +730,8 @@ public sealed class InventoryProcessor
             else if (spoolCalculationRows)
             {
                 var cells = new object?[] {
-                    stand, plot, lot, dap, Math.PI * Math.Pow(dap / 10, 2) / 40000, h, age, code, area, volume,
-                    curve, eq.N("b0"), eq.N("b1"), eq.N("b2"), 0d, factor
+                    stand, plot, lot, dap, Math.PI * Math.Pow(dap / 10, 2) / 40000, h, age, code, area, estimates.Vtcc, estimates.Vccc,
+                    curve, eq.N("b0"), eq.N("b1"), eq.N("b2"), 0d, factor, estimates.Vtsc, estimates.Vcsc
                 };
                 if (identification.HasContext)
                 {
@@ -668,12 +763,14 @@ public sealed class InventoryProcessor
             "DAP",
             "H",
             "VTCC",
+            "VCCC",
             "Fustes",
             "area_corr",
             "Idade_anos",
             "Área efetiva (ha)",
             "EQ_COD",
             "VTCC_ha",
+            "VCCC_ha",
             "Fustes_ha",
             "VMI",
             "Lote",
@@ -694,6 +791,7 @@ public sealed class InventoryProcessor
             "DAP",
             "H",
             "VTCC_ha",
+            "VCCC_ha",
             "Fustes_ha",
             "VMI",
             "Idade_anos",
@@ -709,8 +807,14 @@ public sealed class InventoryProcessor
             plots.Ensure("IS");
             stands.Ensure("IS");
         }
+        foreach (string type in ModelDefinition.VolumeTypes)
+        {
+            plots.Ensure(type);
+            plots.Ensure(type + "_ha");
+            stands.Ensure(type + "_ha");
+        }
         if (versioned) { plots.Ensure("Data_Medicao"); stands.Ensure("Data_Medicao"); }
-        void AddPlot(Tree first, double volume, double area, int stems, double age, double effective,
+        void AddPlot(Tree first, VolumeEstimates estimates, double volume, double commercialVolume, double area, int stems, double age, double effective,
             double meanDap, double meanHeight, double meanVolume, DominantTreeMetrics dominant,
             IEnumerable<ModelContext>? curveContexts)
         {
@@ -737,13 +841,15 @@ public sealed class InventoryProcessor
                 first.Plot,
                 meanDap,
                 meanHeight,
-                volume,
+                estimates.Vtcc,
+                estimates.Vccc,
                 (double)stems,
                 area,
                 age,
                 effective,
                 first.Code,
-                perHa,
+                estimates.Vtcc * 10000 / area,
+                estimates.Vccc * 10000 / area,
                 stemsHa,
                 stemsHa > 0 ? perHa / stemsHa : double.NaN,
                 first.Lot,
@@ -757,12 +863,18 @@ public sealed class InventoryProcessor
                 dominant.Dap,
                 dominant.Height
             );
+            foreach (string type in ModelDefinition.VolumeTypes)
+            {
+                double estimate = estimates.Get(type);
+                plots.Set(plots.Count - 1, plots.Require(type), estimate);
+                plots.Set(plots.Count - 1, plots.Require(type + "_ha"), area > 0 ? estimate * 10000 / area : double.NaN);
+            }
             if (siteIndex != null)
                 plots.Set(plots.Count - 1, plots.Require("IS"), siteIndex.Calculate(first.Curve, age, dominant.Dap, dominant.Height));
             if (versioned)
             {
                 plots.Set(plots.Count - 1, plots.Require("Data_Medicao"), first.Measurement);
-                plots.Set(plots.Count - 1, plots.Ensure("VTCC_Original"), volume);
+                plots.Set(plots.Count - 1, plots.Ensure("VTCC_Original"), estimates.Vtcc);
                 plots.Set(plots.Count - 1, plots.Ensure("Fator_Volume"), 1d);
             }
             if (versioned || identification.HasContext) plots.Set(plots.Count - 1, plots.Ensure("Parcela_ID"), first.PlotIdentity);
@@ -772,7 +884,7 @@ public sealed class InventoryProcessor
         {
             foreach (var aggregate in plotAggregates.Values.OrderBy(item => item.First.Stand, StringComparer.Ordinal)
                 .ThenBy(item => item.First.Year).ThenBy(item => item.First.Plot, StringComparer.Ordinal).ThenBy(item => item.First.Row))
-                AddPlot(aggregate.First, aggregate.Volume, aggregate.MeanArea, aggregate.Stems, aggregate.MeanAge,
+                AddPlot(aggregate.First, aggregate.EstimateSums, aggregate.Volume, aggregate.CommercialVolume, aggregate.MeanArea, aggregate.Stems, aggregate.MeanAge,
                     aggregate.MeanEffective, aggregate.MeanDap, aggregate.MeanHeight, aggregate.MeanVolume,
                     aggregate.Dominant, null);
         }
@@ -792,7 +904,7 @@ public sealed class InventoryProcessor
                 for (int i = 1; i < rows.Count; i++) aggregate.Add(FromCalcRow(rows[i]));
                 double perHa = aggregate.Volume * 10000 / aggregate.MeanArea,
                     stemsHa = aggregate.Stems * 10000 / aggregate.MeanArea;
-                AddPlot(first, aggregate.Volume, aggregate.MeanArea, aggregate.Stems, aggregate.MeanAge,
+                AddPlot(first, aggregate.EstimateSums, aggregate.Volume, aggregate.CommercialVolume, aggregate.MeanArea, aggregate.Stems, aggregate.MeanAge,
                     aggregate.MeanEffective, aggregate.MeanDap, aggregate.MeanHeight, aggregate.MeanVolume,
                     aggregate.Dominant, rows.Select(row => Context(FromCalcRow(row), perHa, stemsHa)));
             }
@@ -814,7 +926,14 @@ public sealed class InventoryProcessor
             foreach (var group in trees.GroupBy(t => t.PlotIdentity))
             {
                 var first = group.First();
+                var estimates = VolumeEstimates.Empty;
+                foreach (string type in ModelDefinition.VolumeTypes)
+                {
+                    double[] values = group.Select(tree => tree.Estimates.Get(type)).Where(double.IsFinite).ToArray();
+                    estimates = estimates.With(type, values.Length > 0 ? values.Sum() : double.NaN);
+                }
                 double volume = group.Where(t => !double.IsNaN(t.Volume)).Sum(t => t.Volume),
+                    commercialVolume = group.Any(t => !double.IsNaN(t.CommercialVolume)) ? group.Where(t => !double.IsNaN(t.CommercialVolume)).Sum(t => t.CommercialVolume) : double.NaN,
                     area = InventoryMath.Mean(group.Select(t => t.Area)),
                     age = InventoryMath.Mean(group.Select(t => t.Age)),
                     effective = InventoryMath.Mean(group.Select(t => t.Effective)),
@@ -825,11 +944,11 @@ public sealed class InventoryProcessor
                 var dominant = new DominantTreeMetrics(dominantTreesPerPlot);
                 foreach (var tree in group) dominant.Add(tree.Dap, tree.Height);
                 double perHa = volume * 10000 / area, stemsHa = stems * 10000 / area;
-                AddPlot(first, volume, area, stems, age, effective, meanDap, meanHeight, meanVolume, dominant,
+                AddPlot(first, estimates, volume, commercialVolume, area, stems, age, effective, meanDap, meanHeight, meanVolume, dominant,
                     useCurves ? group.Select(tree => Context(tree, perHa, stemsHa)) : null);
             }
         }
-        int[] positions = [3, 4, 11, 12, 13, 8, 9, 16, 17, 18];
+        int[] positions = [3, 4, 12, 13, 14, 15, 9, 10, 18, 19, 20];
         foreach (
             var group in Enumerable
                 .Range(1, plots.Count - 1)
@@ -858,6 +977,9 @@ public sealed class InventoryProcessor
             if (siteIndex != null)
                 stands.Set(stands.Count - 1, stands.Require("IS"), DominantTreeMetrics.AreaWeightedMean(
                     group.Select(r => (plots.Number(r, plots.Require("IS")), plots.Number(r, plots.Require("area_corr"))))));
+            foreach (string type in ModelDefinition.VolumeTypes)
+                stands.Set(stands.Count - 1, stands.Require(type + "_ha"),
+                    InventoryMath.Mean(group.Select(r => plots.Number(r, plots.Require(type + "_ha")))));
             if (versioned) stands.Set(stands.Count - 1, stands.Require("Data_Medicao"), group.Key.Measurement);
             int firstRow = group.First();
             InventoryIdentity.SetContext(stands, stands.Count - 1, new(group.Key.Scope, plots.Text(firstRow, plots.Column("Base_Origem")), plots.Text(firstRow, plots.Column("Tipo_Inventario"))));
@@ -872,6 +994,9 @@ public sealed class InventoryProcessor
                 ?? (plotRows != null ? plotRows.Values.Select(group => FromCalcRow(group[0]).Inventory.Type)
                     : trees.Select(t => t.Inventory.Type)))
                 .Where(t => t.Length > 0).Distinct().Order().ToArray()
+            , volumeRelations.Select((relation, i) => new VolumeAuditItem(
+                $"{relation.Higher} > {relation.Lower}", volumeChecks[i], volumeViolations[i]))
+                .Where(item => item.Checked > 0).ToArray()
         );
         progress?.Invoke(85, compact ? "Gravando tabelas no banco do projeto…" : "Gravando relatório XLSX…");
         ProjectStore.AtomicWrite(

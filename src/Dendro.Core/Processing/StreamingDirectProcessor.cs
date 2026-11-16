@@ -173,6 +173,7 @@ internal static class StreamingDirectProcessor
             || config.At("ajuste_altura").S("h_mode", "KEEP_FILE") != "KEEP_FILE"
             || config.At("cadastro.fallback_idade").B("ativo")) return null;
         var equations = config.Obj("volume").Arr("equacoes").OfType<JsonObject>().Where(e => e.S("tipo_volume", "VTCC") == "VTCC").ToArray();
+        if (config.Obj("volume").Arr("equacoes").OfType<JsonObject>().Any(e => e.S("tipo_volume", "VTCC") != "VTCC")) return null;
         if (equations.Length == 0 || equations.Any(e => e["entradas"] is not null || e.S("formula").Length > 0)) return null;
         _ = SiteIndexCalculator.Create(config);
 
@@ -364,7 +365,8 @@ internal static class StreamingDirectProcessor
             InventoryContext context = identity.Context(row, rowNumber);
             string plotId = identity.PlotKey(row, rowNumber, context);
             summary.Add(stand, plot, lot, temporal ? InventoryMath.Year(measured) : 0, rowNumber, age,
-                volume, dap > 0, area, effective, "", "", dap, height, plotId, context, measurement, curve);
+                volume, dap > 0, area, effective, "", "", dap, height, plotId, context, measurement, curve,
+                vtcc: volume);
         }
         cancellation.ThrowIfCancellationRequested();
         if (rows == 0) throw new InvalidDataException("O inventário não contém árvores.");

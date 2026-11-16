@@ -102,6 +102,7 @@ public static class InventoryReport
             "Vigente",
             "Fórmula",
             "Unidade de t (legado)",
+            "Tipo de volume",
         ]);
         for (int type = 0; type < 2; type++)
             foreach (
@@ -113,7 +114,6 @@ public static class InventoryReport
             {
                 if (type == 1 && !eq.B("vigente", true))
                     continue;
-                if (type == 0 && eq.S("tipo_volume", "VTCC") != "VTCC") continue;
                 var source = type == 0 ? calc : plots;
                 string key = type == 0 ? "EQ_COD" : "CURVA_COD";
                 if (appliedEquationCodes?.Contains(eq.S("codigo")) == false
@@ -131,20 +131,31 @@ public static class InventoryReport
                     eq.N("b2"),
                     "Sim",
                     ModelDefinition.FormulaText(eq!, growth),
-                    growth && eq!["entradas"] is null ? eq.S("unidade_idade", "meses") : ""
+                    growth && eq!["entradas"] is null ? eq.S("unidade_idade", "meses") : "",
+                    growth ? "" : eq.S("tipo_volume", "VTCC")
                 );
                 var inputs = ModelDefinition.Inputs(eq!, growth);
                 for (int i = 0; i < inputs.Count; i++)
                 {
-                    audit.Set(0, 10 + i, $"x{i + 1} - entrada esperada");
+                    audit.Set(0, 11 + i, $"x{i + 1} - entrada esperada");
                     audit.Set(
                         audit.Count - 1,
-                        10 + i,
+                        11 + i,
                         ModelDefinition.Describe(inputs[i]!, growth)
                     );
                 }
             }
         var info = new DataTable(["Item", "Descrição"]);
+        var volumeAudit = VolumeConsistencyAudit(result.VolumeAudit ?? []);
+        foreach (string type in ModelDefinition.VolumeTypes.Where(type =>
+            Enumerable.Range(1, plots.Count - 1).Any(row => double.IsFinite(At(plots, row, type)))))
+        {
+            string label = type switch { "VTCC" => "volume total com casca", "VCCC" => "volume comercial com casca", "VTSC" => "volume total sem casca", _ => "volume comercial sem casca" };
+            info.Add("Estimativa " + type, $"{label}; calculada em sequência, diretamente ou como razão conforme o modelo.");
+        }
+        if (volumeAudit.Count > 1)
+            info.Add("Auditoria de hierarquia dos volumes", string.Join("; ", Enumerable.Range(1, volumeAudit.Count - 1)
+                .Select(row => $"{volumeAudit.Text(row, 0)}: {volumeAudit.Number(row, 2):N0}/{volumeAudit.Number(row, 1):N0} violações")));
         info.Add("Motor", "DENDRO C# / .NET");
         info.Add(
             "Curvas",
@@ -212,6 +223,7 @@ public static class InventoryReport
         Add("estatisticas_inv", "ESTATISTICAS INV", stats);
         if (graphs != null) Add("graficos", "Graficos", graphs);
         Add("modelos_aplicados", "MODELOS APLICADOS", audit);
+        if (volumeAudit.Count > 1) sheets.Add(new("AUDITORIA VOLUMES", volumeAudit));
         Add("informacoes", "INFORMACOES", info);
         if (debug)
             Add("calculos", "CALCULOS", calc);
@@ -341,6 +353,17 @@ public static class InventoryReport
         }
     }
 
+    private static DataTable VolumeConsistencyAudit(VolumeAuditItem[] items)
+    {
+        var audit = new DataTable(["Regra", "Pares avaliados", "Violações", "Resultado"]);
+        foreach (var item in items)
+        {
+            audit.Add(item.Rule, (double)item.Checked, (double)item.Violations,
+                item.Violations == 0 ? "Conforme" : "Revisar estimativas");
+        }
+        return audit;
+    }
+
     private static DataTable Summary(
         DataTable source,
         bool stand,
@@ -360,6 +383,9 @@ public static class InventoryReport
                 "DAPd",
                 "Hd",
                 "VTCC_ha",
+                "VCCC_ha",
+                "VTSC_ha",
+                "VCSC_ha",
                 "Fustes_ha",
                 "VMI",
                 "Idade_anos",
@@ -379,6 +405,9 @@ public static class InventoryReport
                 "DAPd",
                 "Hd",
                 "VTCC",
+                "VCCC",
+                "VTSC",
+                "VCSC",
                 "Fustes",
                 "area_corr",
                 "Idade_anos",
@@ -386,6 +415,9 @@ public static class InventoryReport
                 "EQ_COD",
                 "CURVA_COD",
                 "VTCC_ha",
+                "VCCC_ha",
+                "VTSC_ha",
+                "VCSC_ha",
                 "Fustes_ha",
                 "VMI",
                 "Vol_Esperado_ha",
@@ -397,7 +429,7 @@ public static class InventoryReport
             .Where(
                 (name, i) =>
                     (temporal || name != "Ano_Medicao")
-                    && (curves || i < (stand ? 12 : 17) || name == "IS")
+                    && (curves || i < (stand ? 12 : 17) || name is "IS" or "VCCC" or "VTSC" or "VCSC" or "VCCC_ha" or "VTSC_ha" or "VCSC_ha")
                     && (name != "IS" || source.Column("IS") >= 0)
             )
             .ToList();

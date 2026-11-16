@@ -67,8 +67,10 @@ de arquivo.
 
 Cada conjunto de tabelas tem um identificador de origem (`Dataset`) no catálogo.
 Na árvore aparecem tabelas, não novos arquivos `.dlb`.
-Reprocessar a mesma entrada no mesmo modo atualiza seu conjunto de resultados;
-a árvore apresenta cada nome de aba uma vez, usando a versão mais recente.
+Cada execução do resumo direto cria um conjunto independente sob a base de origem,
+com as tabelas dos níveis selecionados. Resultados históricos usam suas próprias
+versões. Uma saída derivada com uma única tabela abre diretamente pelo nome do
+resultado, sem repetir essa tabela em um nó filho.
 
 A gravação publica o contêiner completo por substituição atômica e mantém os
 blocos comprimidos das tabelas existentes. Salvar como copia o arquivo único e

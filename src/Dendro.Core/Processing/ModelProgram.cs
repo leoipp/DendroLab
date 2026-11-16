@@ -16,7 +16,11 @@ public sealed record ModelContext(
     double Area,
     double Effective,
     double VolumeHa = double.NaN,
-    double StemsHa = double.NaN
+    double StemsHa = double.NaN,
+    double Vtcc = double.NaN,
+    double Vccc = double.NaN,
+    double Vtsc = double.NaN,
+    double Vcsc = double.NaN
 );
 
 public sealed class ModelProgram
@@ -37,7 +41,7 @@ public sealed class ModelProgram
             .ToDictionary(x => x.Item1, x => x.i, StringComparer.Ordinal);
         formula = new(
             ModelDefinition.FormulaText(definition, growth),
-            symbols.Keys.Concat(["b0", "b1", "b2"])
+            symbols.Keys.Concat(ModelDefinition.Coefficients)
         );
         columns = Inputs
             .Select(x =>
@@ -71,6 +75,10 @@ public sealed class ModelProgram
                     "area_efetiva" => c.Effective,
                     "volume_ha" => c.VolumeHa,
                     "fustes_ha" => c.StemsHa,
+                    "volume_vtcc" => c.Vtcc,
+                    "volume_vccc" => c.Vccc,
+                    "volume_vtsc" => c.Vtsc,
+                    "volume_vcsc" => c.Vcsc,
                     _ => double.NaN,
                 },
             };
@@ -86,7 +94,7 @@ public sealed class ModelProgram
     public double Evaluate(double[] values)
     {
         double value = formula.Evaluate(s =>
-            s is "b0" or "b1" or "b2" ? Definition.N(s, double.NaN) : values[symbols[s]]
+            ModelDefinition.IsCoefficient(s) ? Definition.N(s, double.NaN) : values[symbols[s]]
         );
         return double.IsFinite(value) && value >= 0 ? value : double.NaN;
     }

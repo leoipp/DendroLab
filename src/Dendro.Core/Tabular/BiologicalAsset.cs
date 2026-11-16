@@ -6,19 +6,22 @@ namespace Dendro.Core.Tabular;
 public sealed record BiologicalAssetCurve(string Id, string Formula, double[] Coefficients,
     string AgeUnit = "meses", double AgeFactor = 1, IReadOnlyDictionary<string, double>? FixedInputs = null);
 
+public sealed record BiologicalAssetFallback(TableSource Source, string BaseKey, string ProcessingKey, string MeasurementDate,
+    string VolumeColumn, IReadOnlyDictionary<string, string> FieldMap, string InventoryType = "", string Label = "", string CurveIdColumn = "");
+
 public sealed record BiologicalAssetOptions(string BaseKey, string ProcessingKey, string MeasurementDate, string[] Columns,
     string Prefix = "INV_", string InventoryType = "", bool TrimKeys = true,
     string PlantingDate = "", string CurveId = "", string VolumeColumn = "", int ThroughYear = 0,
-    BiologicalAssetCurve[]? Curves = null);
+    BiologicalAssetCurve[]? Curves = null, int ProjectionMonth = 6, int ProjectionDay = 1, BiologicalAssetFallback[]? Fallbacks = null, bool UseModelWhenMissing = false);
 
 public sealed record BiologicalAssetResult(long BaseRows, long Linked, long Missing, long Ambiguous, long InvalidDates,
     string Path, long ProjectedRows = 0, long ImaRows = 0, long MissingPlantingDates = 0,
-    long MissingCurves = 0, long InvalidVolumes = 0);
+    long MissingCurves = 0, long InvalidVolumes = 0, long FallbackLinked = 0, long ModelOnly = 0);
 
 /// <summary>Left join by exact key, selecting the newest measurement. Conflicting latest ties never pick an arbitrary observation.</summary>
 public static class BiologicalAsset
 {
-    private sealed record Latest(double Date, object?[] Values, bool Conflict);
+    private sealed record Latest(double Date, object?[] Values, bool Conflict, string CurveId = "");
     private sealed record PreparedCurve(BiologicalAssetCurve Curve, Formula Formula);
 
     private static double Date(object? value)
@@ -37,6 +40,11 @@ public static class BiologicalAsset
         CancellationToken cancellation = default, IProgress<TableProgress>? progress = null)
     {
         bool project = options.Curves is { Length: > 0 };
+        if(options.UseModelWhenMissing && !project)
+            throw new InvalidDataException("O modelo direto exige curvas de crescimento e produção.");
+        if(project && (options.ProjectionMonth is < 1 or > 12 || options.ProjectionDay < 1
+            || options.ProjectionDay > DateTime.DaysInMonth(2001, options.ProjectionMonth)))
+            throw new InvalidDataException("Informe uma referência anual válida de dia e mês (sem 29/02).");
         if (options.Columns.Length == 0 || options.Columns.Distinct().Count() != options.Columns.Length)
             throw new InvalidDataException("Selecione colunas únicas para trazer do processamento.");
         if (options.InventoryType is not ("" or "IFC" or "IFPC"))
@@ -64,9 +72,22 @@ public static class BiologicalAsset
         if (options.InventoryType.Length > 0 && type < 0)
             throw new InvalidDataException("A tabela processada não contém Tipo_Inventario para aplicar a seleção IFC/IFPC.");
 
-        string[] headers = [.. target.Columns, .. fields.Select(c => options.Prefix + c), "AB_Data_Medicao", "AB_Vinculo"];
-        if (headers.Distinct(StringComparer.Ordinal).Count() != headers.Length)
-            throw new InvalidDataException("As colunas de saída já existem na base. Escolha outro prefixo ou outra tabela base.");
+        var usedHeaders = target.Columns.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        string UniqueHeader(string requested)
+        {
+            if (usedHeaders.Add(requested)) return requested;
+            for (int suffix = 2; ; suffix++)
+            {
+                string candidate = $"{requested}_{suffix}";
+                if (usedHeaders.Add(candidate)) return candidate;
+            }
+        }
+        string[] outputFields = fields.Select(c => UniqueHeader(options.Prefix + c)).ToArray();
+        string measurementOutput = UniqueHeader("AB_Data_Medicao");
+        string linkOutput = UniqueHeader("AB_Vinculo");
+        string originOutput = UniqueHeader("AB_Fonte");
+        string methodOutput = UniqueHeader("AB_Metodo");
+        string[] headers = [.. target.Columns, .. outputFields, measurementOutput, linkOutput, originOutput, methodOutput];
 
         var curves = new Dictionary<string, PreparedCurve>(StringComparer.OrdinalIgnoreCase);
         if (project)
@@ -112,110 +133,201 @@ public static class BiologicalAsset
                 $"Identificando medições mais recentes: {read:N0} linhas", read);
         }
 
+        var alternatives = new List<(int BaseKey, string Label, Dictionary<string, Latest> Latest, HashSet<string> Mixed)>();
+        foreach (var fallback in options.Fallbacks ?? [])
+        {
+            cancellation.ThrowIfCancellationRequested();
+            int baseIndex = Array.IndexOf(target.Columns, fallback.BaseKey);
+            using var cursor = new TableCursor(fallback.Source);
+            int sourceKey = Array.IndexOf(cursor.Columns, fallback.ProcessingKey);
+            int sourceDate = Array.IndexOf(cursor.Columns, fallback.MeasurementDate);
+            int sourceVolume = Array.IndexOf(cursor.Columns, fallback.VolumeColumn);
+            int sourceType = Array.IndexOf(cursor.Columns, "Tipo_Inventario");
+            int sourceCurve = Array.IndexOf(cursor.Columns, fallback.CurveIdColumn);
+            if (baseIndex < 0 || sourceKey < 0 || sourceDate < 0 || project && sourceVolume < 0
+                || fallback.InventoryType.Length > 0 && sourceType < 0
+                || fallback.CurveIdColumn.Length > 0 && sourceCurve < 0)
+                throw new InvalidDataException($"Revise as chaves, data, volume e ID da fonte alternativa {fallback.Label}.");
+            int[] mapping = fields.Select(field => field == options.VolumeColumn && project ? sourceVolume
+                : fallback.FieldMap.TryGetValue(field, out string? mapped) && mapped.Length > 0
+                    ? Array.IndexOf(cursor.Columns, mapped) : -1).ToArray();
+            foreach (var pair in fallback.FieldMap)
+                if (pair.Value.Length > 0 && !cursor.Columns.Contains(pair.Value))
+                    throw new InvalidDataException($"Coluna {pair.Value} ausente na fonte alternativa {fallback.Label}.");
+            var items = new Dictionary<string, Latest>(StringComparer.Ordinal);
+            var mixedKeys = new HashSet<string>(StringComparer.Ordinal);
+            var sourceUnits = new Dictionary<string, string>(StringComparer.Ordinal);
+            int parcelColumn = Array.IndexOf(cursor.Columns, "Parcela"), standColumn = Array.IndexOf(cursor.Columns, "Talhão");
+            foreach (var row in cursor.Rows())
+            {
+                cancellation.ThrowIfCancellationRequested();
+                if (fallback.InventoryType.Length > 0 && TableCursor.Text(row[sourceType]).Trim().ToUpperInvariant() != fallback.InventoryType) continue;
+                string id = Key(row[sourceKey]);
+                if (id.Length == 0) continue;
+                double measured = Date(row[sourceDate]);
+                if (!double.IsFinite(measured)) { invalid++; continue; }
+                if (parcelColumn >= 0 && TableCursor.Text(row[parcelColumn]).Length > 0)
+                {
+                    string unit = System.Text.Json.JsonSerializer.Serialize(new[] { standColumn >= 0 ? Key(row[standColumn]) : "", Key(row[parcelColumn]), sourceType >= 0 ? Key(row[sourceType]) : "" });
+                    if (sourceUnits.TryGetValue(id, out string? previousUnit) && previousUnit != unit) mixedKeys.Add(id);
+                    else sourceUnits[id] = unit;
+                }
+                var values = mapping.Select(index => index < 0 ? null : row[index]).ToArray();
+                string curveCode = sourceCurve >= 0 ? Key(row[sourceCurve]) : "";
+                if (!items.TryGetValue(id, out var previous) || measured > previous.Date) items[id] = new(measured, values, false, curveCode);
+                else if (measured == previous.Date && (curveCode != previous.CurveId || !values.Select(TableCursor.Text).SequenceEqual(previous.Values.Select(TableCursor.Text))))
+                    items[id] = previous with { Conflict = true };
+            }
+            alternatives.Add((baseIndex, fallback.Label.Length > 0 ? fallback.Label : fallback.Source.Path + " / " + fallback.Source.Table, items, mixedKeys));
+        }
+        (Latest? Match, string Origin, bool Mixed, bool Alternative) Resolve(object?[] row)
+        {
+            string id = Key(row[baseKey]);
+            latest.TryGetValue(id, out var primary);
+            bool mixed = mixedUnits.Contains(id);
+            bool Usable(Latest? match, bool isMixed) => match is { Conflict: false } && !isMixed
+                && (!project || TryNumber(match.Values[volumeField], out double v) && v > 0);
+            if (Usable(primary, mixed)) return (primary, processed.Path + " / " + processed.Table, false, false);
+            foreach (var alternative in alternatives)
+            {
+                string alternateId = Key(row[alternative.BaseKey]);
+                alternative.Latest.TryGetValue(alternateId, out var candidate);
+                if (Usable(candidate, alternative.Mixed.Contains(alternateId))) return (candidate, alternative.Label, false, true);
+            }
+            return (primary, primary == null ? "" : processed.Path + " / " + processed.Table, mixed, false);
+        }
+        DateTime Reference(int year) => new(year, options.ProjectionMonth, options.ProjectionDay);
+        var projectionYears = new SortedSet<int>();
+        var imaAges = new SortedSet<int>();
+        if (project)
+        {
+            using var schemaRows = new TableCursor(basis);
+            foreach (var row in schemaRows.Rows())
+            {
+                cancellation.ThrowIfCancellationRequested();
+                var resolved = Resolve(row);
+                var match = resolved.Match;
+                bool hasMeasurement = match is { Conflict: false } && !resolved.Mixed;
+                if (!hasMeasurement && !options.UseModelWhenMissing) continue;
+                double planted = Date(row[plantingCol]);
+                if (!hasMeasurement && (!double.IsFinite(planted) || DateTime.FromOADate(planted).Year >= 9999)) continue;
+                DateTime observation = hasMeasurement ? DateTime.FromOADate(match!.Date) : DateTime.FromOADate(planted).AddYears(1);
+                if (!hasMeasurement && observation > Reference(options.ThroughYear)) continue;
+                projectionYears.Add(observation.Year);
+                for (int year = observation.Year + 1; year <= options.ThroughYear; year++)
+                    projectionYears.Add(year);
+                if (!double.IsFinite(planted) || planted >= observation.ToOADate()) continue;
+                DateTime planting = DateTime.FromOADate(planted);
+                DateTime end = Reference(options.ThroughYear);
+                for (int age = 1; age <= end.Year - planting.Year; age++)
+                {
+                    DateTime anniversary = planting.AddYears(age);
+                    if (anniversary <= end) imaAges.Add(age);
+                }
+            }
+        }
+        int[] years = projectionYears.ToArray();
+        int[] ages = imaAges.ToArray();
+        string statusHeader = project ? UniqueHeader("AB_Projecao_Status") : "";
+        string[] volumeHeaders = years.Select(year => UniqueHeader("AB_Volume_m3_ha_" + year)).ToArray();
+        string[] imaHeaders = ages.SelectMany(age => new[] { UniqueHeader($"AB_IMA_{age}_anos_m3_ha_ano"), UniqueHeader($"AB_IMA_{age}_anos_Data") }).ToArray();
+        headers = [.. headers, .. (project ? new[] { statusHeader } : Array.Empty<string>()), .. volumeHeaders, .. imaHeaders,
+            .. (project ? new[] { UniqueHeader("IMA7"), UniqueHeader("IMA7-Curva") } : Array.Empty<string>())];
         string temporary = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output))!, ".ativo-" + Guid.NewGuid().ToString("N") + ".tmp");
         long count = 0, linked = 0, missing = 0, ambiguous = 0, projected = 0, imaRows = 0;
-        long missingPlanting = 0, missingCurve = 0, invalidVolume = 0;
+        long missingPlanting = 0, missingCurve = 0, invalidVolume = 0, fallbackLinked = 0, modelOnly = 0;
         try
         {
             using (var writer = new CompactBankWriter(temporary))
             {
                 string table = writer.AddTable(headers, "Ativo biológico");
-                string projections = "", ima = "";
-                if (project)
-                {
-                    projections = writer.AddTable([options.BaseKey, "AB_ID_Curva", "AB_Data_Plantio", "AB_Data_Observacao",
-                        "AB_Data_Projecao", "AB_Idade_anos", "AB_Volume_Observado_m3_ha", "AB_Volume_Projetado_m3_ha"], "Projeções");
-                    ima = writer.AddTable([options.BaseKey, "AB_ID_Curva", "AB_Data_Plantio", "AB_Idade_anos", "AB_Data_Idade",
-                        "AB_Volume_m3_ha", "AB_IMA_m3_ha_ano"], "IMA por idade");
-                }
-                var emitted = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var row in target.Rows())
                 {
                     cancellation.ThrowIfCancellationRequested(); count++;
-                    string code = Key(row[baseKey]);
-                    bool exists = code.Length > 0 && latest.TryGetValue(code, out _); var match = exists ? latest[code] : null;
-                    bool mixed = mixedUnits.Contains(code);
+                    var resolved = Resolve(row);
+                    var match = resolved.Match;
+                    bool mixed = resolved.Mixed;
                     string state = match == null ? "Sem medição válida" : mixed ? "Chave reúne parcelas distintas"
                         : match.Conflict ? "Conflito na data mais recente" : "Vinculado";
-                    if (match == null) missing++; else if (match.Conflict || mixed) ambiguous++; else linked++;
-                    writer.Add(table, [.. row, .. (match is { Conflict: false } && !mixed ? match.Values : new object?[fields.Length]),
-                        match == null ? null : DateTime.FromOADate(match.Date).ToString("yyyy-MM-dd"), state]);
-
-                    if (!project || match is not { Conflict: false } || mixed) continue;
-                    double planted = Date(row[plantingCol]);
-                    if (!double.IsFinite(planted)) { missingPlanting++; continue; }
-                    string curveId = Key(row[curveIdCol]);
-                    if (!curves.TryGetValue(curveId, out var curve)) { missingCurve++; continue; }
-                    if (!TryNumber(match.Values[volumeField], out double y1) || !double.IsFinite(y1) || y1 <= 0)
-                    { invalidVolume++; continue; }
-                    double i1 = AgeYears(planted, match.Date);
-                    if (!double.IsFinite(i1) || i1 <= 0) { missingPlanting++; continue; }
-                    double f1 = Evaluate(curve, i1);
-                    if (!double.IsFinite(f1) || f1 == 0) { invalidVolume++; continue; }
-
-                    string standKey = System.Text.Json.JsonSerializer.Serialize(new[] { code, curveId, planted.ToString("G17", CultureInfo.InvariantCulture) });
-                    if (!emitted.Add(standKey)) continue;
-                    double observedVolume = y1;
-                    DateTime observation = DateTime.FromOADate(match.Date);
-                    DateTime lastProjectionDate = new(options.ThroughYear, 6, 1);
-                    for (int year = observation.Year; year <= options.ThroughYear; year++)
+                    bool valid = match is { Conflict: false } && !mixed;
+                    if (match == null) missing++; else if (!valid) ambiguous++; else linked++;
+                    if (valid && resolved.Alternative) fallbackLinked++;
+                    bool model = project && options.UseModelWhenMissing && !valid;
+                    object?[] result = [.. row, .. (valid ? match!.Values : new object?[fields.Length]),
+                        match == null || model ? null : DateTime.FromOADate(match.Date).ToString("yyyy-MM-dd"), state,
+                        model ? "Curva de crescimento e produção" : resolved.Origin, model ? "Modelo direto" : valid ? "Última medição real" : "Sem cálculo",
+                        .. new object?[project ? 3 + years.Length + ages.Length * 2 : 0]];
+                    int statusIndex = row.Length + fields.Length + 4;
+                    if (project)
                     {
-                        DateTime projectionDate = new(year, 6, 1);
-                        if (projectionDate <= observation) continue;
-                        double i2 = AgeYears(planted, projectionDate.ToOADate());
-                        if (i2 <= 0) continue;
-                        double f2 = Evaluate(curve, i2);
-                        double y2 = f2 / f1 * y1;
-                        if (!double.IsFinite(y2) || y2 < 0) continue;
-                        writer.Add(projections, [row[baseKey], curveId, DateTime.FromOADate(planted).ToString("yyyy-MM-dd"),
-                            observation.ToString("yyyy-MM-dd"), projectionDate.ToString("yyyy-MM-dd"), i2, observedVolume, y2]);
-                        projected++;
+                        result[statusIndex] = state;
+                        string curveCode = valid && match!.CurveId.Length > 0 ? match.CurveId : Key(row[curveIdCol]);
+                        if (curves.TryGetValue(curveCode, out var summaryCurve))
+                        {
+                            double curveIma7 = Evaluate(summaryCurve, 7) / 7;
+                            if (double.IsFinite(curveIma7) && curveIma7 >= 0) result[^1] = curveIma7;
+                        }
+                        if (valid || model) ProjectRow();
                     }
-
-                    double endAge = AgeYears(planted, lastProjectionDate.ToOADate());
-                    int maxAge = double.IsFinite(endAge) ? (int)Math.Floor(endAge) : 0;
-                    for (int age = 1; age <= maxAge; age++)
-                    {
-                        double fAge = Evaluate(curve, age);
-                        double volumeAtAge = fAge / f1 * y1;
-                        double imaValue = volumeAtAge / age;
-                        if (!double.IsFinite(volumeAtAge) || volumeAtAge < 0 || !double.IsFinite(imaValue)) continue;
-                        DateTime ageDate = DateTime.FromOADate(planted).AddYears(age);
-                        writer.Add(ima, [row[baseKey], curveId, DateTime.FromOADate(planted).ToString("yyyy-MM-dd"),
-                            age, ageDate.ToString("yyyy-MM-dd"), volumeAtAge, imaValue]);
-                        imaRows++;
-                    }
+                    writer.Add(table, result);
                     if ((count & 2047) == 0) updates.Report(target.TotalRows > 0 ? 35 + 60d * count / target.TotalRows : null,
                         $"Vinculando e projetando ativo biológico: {count:N0} linhas", count);
-                }
 
-                string info = writer.AddTable(["Item", "Resultado"], "INFORMACOES");
-                var details = new List<(string, object?)>
-                {
-                    ("Tabela base", basis.Path + " / " + basis.Table), ("Tabela processada", processed.Path + " / " + processed.Table),
-                    ("Chaves", options.BaseKey + " = " + options.ProcessingKey), ("Data de medição", options.MeasurementDate),
-                    ("Tipo de inventário", options.InventoryType.Length == 0 ? "Todos" : options.InventoryType),
-                    ("Campos trazidos", string.Join("; ", fields)), ("Vinculados", linked), ("Sem medição válida", missing),
-                    ("Conflitos na data mais recente", ambiguous), ("Linhas do processamento com data inválida", invalid),
-                    ("Regra de vínculo", "Maior data de medição por chave. Empates com campos diferentes ficam sem valores vinculados."),
-                };
-                if (project)
-                {
-                    details.Add(("Coluna do ID da curva", options.CurveId)); details.Add(("Data de plantio", options.PlantingDate));
-                    details.Add(("Volume observado", options.VolumeColumn)); details.Add(("Projetar até", new DateTime(options.ThroughYear, 6, 1).ToString("yyyy-MM-dd")));
-                    details.Add(("Curvas ativas por ID", string.Join("; ", curves.Keys.Order(StringComparer.OrdinalIgnoreCase))));
-                    details.Add(("Projeções anuais", projected)); details.Add(("Linhas de IMA", imaRows));
-                    details.Add(("Sem data de plantio/idade válida", missingPlanting)); details.Add(("Sem curva vigente para o ID", missingCurve));
-                    details.Add(("Volume ou curva inválidos", invalidVolume));
-                    details.Add(("Regra de projeção", "Y2 = Y1 × F(I2)/F(I1); cada projeção anual usa 1º de junho e parte da última medição observada."));
-                    details.Add(("Regra de IMA", "Para cada idade inteira até 1º de junho do ano final, V(idade) = Y1 × F(idade)/F(I1) e IMA = V(idade)/idade."));
+                    void ProjectRow()
+                    {
+                        double planted = Date(row[plantingCol]);
+                        if (!double.IsFinite(planted) || model && DateTime.FromOADate(planted).Year >= 9999)
+                        { missingPlanting++; result[statusIndex] = "Data de plantio inválida"; return; }
+                        DateTime observation = model ? DateTime.FromOADate(planted).AddYears(1) : DateTime.FromOADate(match!.Date);
+                        if (!double.IsFinite(planted) || planted >= observation.ToOADate())
+                        { missingPlanting++; result[statusIndex] = "Data de plantio/idade inválida"; return; }
+                        string curveCode = valid && match!.CurveId.Length > 0 ? match.CurveId : Key(row[curveIdCol]);
+                        if (!curves.TryGetValue(curveCode, out var curve))
+                        { missingCurve++; result[statusIndex] = "ID sem curva vigente"; return; }
+                        double y1 = 1;
+                        if (!model && (!TryNumber(match!.Values[volumeField], out y1) || y1 <= 0))
+                        { invalidVolume++; result[statusIndex] = "Volume observado inválido"; return; }
+                        double f1 = model ? 1 : Evaluate(curve, AgeYears(planted, match!.Date));
+                        if (!double.IsFinite(f1) || f1 <= 0)
+                        { invalidVolume++; result[statusIndex] = "Curva inválida na idade de medição"; return; }
+                        if (result[^1] is double curveIma7)
+                        {
+                            double ima7 = y1 * curveIma7 / f1;
+                            if (double.IsFinite(ima7) && ima7 >= 0) result[^2] = ima7;
+                        }
+                        if (model) modelOnly++;
+                        DateTime end = Reference(options.ThroughYear);
+                        if (model && observation > end)
+                        { result[statusIndex] = "Primeiro aniversário após a referência do ano final"; return; }
+                        for (int index = 0; index < years.Length; index++)
+                        {
+                            if (years[index] < observation.Year || years[index] > options.ThroughYear && years[index] != observation.Year) continue;
+                            double y = years[index] == observation.Year ? model ? Evaluate(curve, 1) : y1
+                                : y1 * Evaluate(curve, AgeYears(planted, Reference(years[index]).ToOADate())) / f1;
+                            if (!double.IsFinite(y) || y < 0) continue;
+                            result[statusIndex + 1 + index] = y;
+                            if (model || years[index] > observation.Year) projected++;
+                        }
+                        DateTime planting = DateTime.FromOADate(planted);
+                        for (int index = 0; index < ages.Length; index++)
+                        {
+                            DateTime anniversary = planting.AddYears(ages[index]);
+                            if (anniversary > end) continue;
+                            double ima = y1 * Evaluate(curve, ages[index]) / f1 / ages[index];
+                            if (!double.IsFinite(ima) || ima < 0) continue;
+                            int column = statusIndex + 1 + years.Length + index * 2;
+                            result[column] = ima;
+                            result[column + 1] = anniversary.ToString("yyyy-MM-dd");
+                            imaRows++;
+                        }
+                        result[statusIndex] = model ? "Calculado pelo modelo direto" : end <= observation ? "Ano final anterior à próxima referência anual" : "Calculado";
+                    }
                 }
-                foreach (var pair in details) writer.Add(info, [pair.Item1, pair.Item2]);
                 cancellation.ThrowIfCancellationRequested(); writer.Complete();
             }
             File.Move(temporary, output);
-            updates.Report(100, $"Ativo biológico: {linked:N0} vinculados; {projected:N0} projeções; {imaRows:N0} linhas de IMA.", count, true);
-            return new(count, linked, missing, ambiguous, invalid, output, projected, imaRows, missingPlanting, missingCurve, invalidVolume);
+            updates.Report(100, $"Ativo biológico: {linked:N0} vinculados; {projected:N0} projeções; {imaRows:N0} valores de IMA.", count, true);
+            return new(count, linked, missing, ambiguous, invalid, output, projected, imaRows, missingPlanting, missingCurve, invalidVolume, fallbackLinked, modelOnly);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }

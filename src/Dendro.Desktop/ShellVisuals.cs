@@ -6,6 +6,36 @@ public static class ShellVisuals
 {
     static ShellVisuals()
     {
+        EventManager.RegisterClassHandler(typeof(AvalonDock.Controls.LayoutAnchorableControl),
+            FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, args) =>
+            {
+                if (!ReferenceEquals(sender, args.OriginalSource)) return;
+                var pane = (AvalonDock.Controls.LayoutAnchorableControl)sender;
+                // Auto-hide creates a new control with a local theme Style value.
+                // Apply our frame to the actual content control on each creation;
+                // changing the outer host's style after creation does not update it.
+                if (Application.Current.TryFindResource("RoundedAnchorable") is Style style)
+                    pane.Style = style;
+            }));
+        // Auto-hidden panes are hosted outside the docking manager's resource scope.
+        // Supply the same chrome explicitly to their temporary host.
+        EventManager.RegisterClassHandler(typeof(AvalonDock.Controls.LayoutAutoHideWindowControl),
+            FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, args) =>
+            {
+                if (!ReferenceEquals(sender, args.OriginalSource)) return;
+                var host = (AvalonDock.Controls.LayoutAutoHideWindowControl)sender;
+                if (Application.Current.TryFindResource("RoundedAnchorable") is Style style)
+                    host.AnchorableStyle = style;
+                host.Background = System.Windows.Media.Brushes.Transparent;
+            }));
+        EventManager.RegisterClassHandler(typeof(AvalonDock.Controls.LayoutAnchorControl),
+            FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, args) =>
+            {
+                if (!ReferenceEquals(sender, args.OriginalSource)) return;
+                var anchor = (AvalonDock.Controls.LayoutAnchorControl)sender;
+                if (anchor.Model is AvalonDock.Layout.LayoutAnchorable pane)
+                    EnsureAutoHideSize(pane);
+            }));
         // AvalonDock assigns an explicit theme style to panes as it creates them,
         // including floating/restored panes. Apply the shell chrome at Loaded so
         // all hosts use the same single rounded frame without replacing docking templates.
@@ -17,6 +47,16 @@ public static class ShellVisuals
                 pane.Background = System.Windows.Media.Brushes.Transparent;
                 pane.BorderThickness = new Thickness(0);
             }));
+    }
+
+    internal static void EnsureAutoHideSize(AvalonDock.Layout.LayoutAnchorable pane)
+    {
+        double minimumWidth = pane.ContentId == "tools" ? 320 : 260;
+        double defaultWidth = pane.ContentId == "tools" ? 380 : 320;
+        pane.AutoHideMinWidth = Math.Max(pane.AutoHideMinWidth, minimumWidth);
+        if (pane.AutoHideWidth < minimumWidth) pane.AutoHideWidth = defaultWidth;
+        pane.AutoHideMinHeight = Math.Max(pane.AutoHideMinHeight, 150);
+        if (pane.AutoHideHeight < 150) pane.AutoHideHeight = 220;
     }
 
     internal static void Initialize() { }

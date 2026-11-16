@@ -98,7 +98,9 @@ A idade em anos é calculada a partir da diferença entre datas, com dias dividi
 Se Y₁ = 200 m³/ha, F(I₁) = 250 e F(I₂) = 300, a projeção é 240 m³/ha. O quociente das avaliações é adimensional; a unidade da projeção permanece a de Y₁. O resultado passa pelo valor observado inicial mesmo que F(I₁) não seja igual a Y₁.
 ### Incremento e base observada
 > IMA(t) = Y(t)/t
-A ferramenta busca a medição mais recente por chave; ela não tira a média de todas as campanhas para formar Y₁. Nas projeções anuais, I₂ corresponde à idade em 1º de junho do ano de referência; para IMA por idade, avaliam-se idades inteiras.
+A ferramenta busca a medição mais recente por chave; ela não tira a média de todas as campanhas para formar Y₁. Nas projeções anuais, I₂ corresponde à idade na referência escolhida (30/06, 31/12 ou dia e mês personalizados). Os volumes ocupam uma coluna por ano na tabela do ativo, em ordem crescente. O ano da medição contém o valor observado e a razão de curvas usa a data real dessa medição como origem. Os anos seguintes usam a referência anual escolhida. O IMA é V(n) / n para todas as idades inteiras desde 1 até a referência do ano final, incluindo idades anteriores à medição. Usa-se V(n) = Y₁ × F(n)/F(I₁), com n exato em anos (convertido para meses quando necessário) e I₁ calculado pelas datas reais de plantio e medição. A data de cada idade é plantio + n anos. Tanto o IMA quanto as projeções anuais usam sempre a última medição real como origem fixa.
+Fontes alternativas são consultadas em ordem de prioridade, cada uma com suas chaves e campos. O volume da primeira fonte com medição válida é a referência fixa da linha. No modo somente modelo, V(t) = F(t), começando no primeiro aniversário do plantio; IMA(n) = F(n)/n. As colunas finais IMA7 e IMA7-Curva usam respectivamente [Y₁ × F(7)/F(I₁)]/7 e F(7)/7, independentemente do ano final. Em curvas em meses, F(7) é avaliada em 84 meses.
+
 F(I₁) nulo, negativo ou não finito compromete a razão. Previsões de volume não são avaliações monetárias, e a ferramenta não adiciona intervalo de predição ao redor de cada projeção.
 
 ## Gráficos
@@ -289,6 +291,16 @@ Isso usa logaritmo natural. Substituir exp(b₀) por 10^b₀ sem mudar a formula
 Mantida a altura, dobrar o diâmetro multiplica o volume por `2^b₁`. Se b₁ = 2, o multiplicador é 4. Para uma equação didática `v = 0,00005 × d² × h`, d = 20 cm e h = 15 m dão 0,30 m³. Os coeficientes são apenas de demonstração, não uma recomendação de modelo florestal.
 ### Regressão em log e viés
 Estimar uma regressão em ln(v) e depois exponenciar não garante a média de v na escala original: em geral, `E[exp(Z)] ≠ exp(E[Z])`. Não presuma que existe um fator de correção lognormal automático. Confira a forma de ajuste, as regras do modelo e a validação na unidade final antes de adotar qualquer correção externa.
+
+### Coeficientes e fórmulas personalizadas de VCCC
+Os coeficientes ficam cadastrados como `b0`, `b1`, `b2` e, quando necessários, `b3` até `b31`. A expressão deve referenciar os betas; por exemplo, em vez de repetir as estimativas numéricas, use `((b0*b1 + b2*vtcc^b3)/(b1 + vtcc^b3))*vtcc`. Para o modelo CR1R cadastrado, `b0 = -0,403408296254`, `b1 = 0,0013197951064`, `b2 = 0,994107227962` e `b3 = 1,63461630134`. Como a expressão já multiplica por `vtcc`, o modo de saída é direto; o modo razão multiplicaria novamente pelo volume anterior.
+
+### Limite inferior com `max`
+`max(a,b)` devolve o maior valor entre `a` e `b`. Nos modelos VCCC, `max(0, expressão)` estabelece zero como limite inferior: uma previsão positiva permanece igual, e uma previsão negativa vira zero. Os coeficientes não são alterados e a equação não é reajustada; é uma restrição física explícita para impedir volume comercial negativo. O limite pode afetar árvores pequenas ou observações fora da faixa de calibração, então confira essa faixa ao interpretar os resultados.
+
+No registro CR1R com DAP de 52 mm e altura de 97 dm, a VTCC calculada é aproximadamente `0,0096538 m³`. A expressão VCCC sem limite retorna cerca de `−0,0001454 m³`; com `max(0, expressão)`, a VCCC gravada é `0 m³`. O caso mostra por que um modelo pode produzir resultado inválido mesmo com DAP e altura positivos.
+
+Quando DAP e H são ambos exatamente zero, o Processador grava zero para VTCC, VCCC, VTSC e VCSC e exclui esse registro da auditoria de hierarquia entre volumes. Essa regra não converte medidas parciais ausentes em zero: DAP ou H inválidos isoladamente ainda precisam ser conferidos.
 
 ## Crescimento e produção
 ### Forma da curva e coerência

@@ -105,11 +105,30 @@ internal sealed partial class ProjectSession
 
     internal string[] PreviewRemoveFiles(IEnumerable<string> paths) => PrepareFileRemoval(paths).Removed;
 
+    /// <summary>
+    /// If a batch removes processing outputs, keep their source tables in place even
+    /// when those sources are also selected. Removing a processing result must not
+    /// implicitly remove the input the user needs to run it again.
+    /// </summary>
+    internal string[] RemovalRootsPreservingProcessingSources(IEnumerable<string> paths)
+    {
+        static string Key(string path) => path.Replace('/', '\\');
+        string[] requested = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var keys = requested.Select(Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selectedOutputs = Meta.Arr("processing_results").OfType<JsonObject>()
+            .Where(result => keys.Contains(Key(result.S("path"))))
+            .ToArray();
+        var protectedSources = selectedOutputs.Select(result => Key(result.S("source_path")))
+            .Where(source => source.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return requested.Where(path => !protectedSources.Contains(Key(path))).ToArray();
+    }
+
     private (JsonObject Updated, string[] Removed) PrepareFileRemoval(IEnumerable<string> paths)
     {
         static string Key(string path) => path.Replace('/', '\\');
         var updated = Data!.DeepClone().AsObject();
-        var requested = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var requested = RemovalRootsPreservingProcessingSources(paths);
         var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (string selected in requested)
         {
