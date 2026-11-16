@@ -32,14 +32,19 @@ public class VolumeTypeTests
         {
             var project = ProjectStore.Create("Tipos");
             ProjectModels.SetVolume(project, -1, "AL1R", 0, 1, 1, "VTCC", "", null, "VTCC");
-            ProjectModels.SetVolume(project, -1, "AL1R", 5, 1, 1, "VCCC", "", null, "VCCC");
+            ProjectModels.SetVolume(project, -1, "AL1R", Math.Log(.5), 1, 1, "VCCC", "", null, "VCCC", "direto");
             project.Obj("processador")["modo"] = "resumo_direto";
+            project.Obj("processador").Obj("colunas_direto").Obj("parcela")["VCCC_m3_ha"] = true;
             string config = Path.Combine(folder, "types.dendro"), output = Path.Combine(folder, "types.dlb");
             ProjectStore.Save(config, project);
             var result = new InventoryProcessor().Process(new(Path.Combine(MigrationTests.Fixtures, "inventário.xlsx"), config,
                 Path.Combine(MigrationTests.Fixtures, "cadastro.xlsx"), output, "Inventário"));
             Assert.Equal(11d, result.Volume, 10);
             Assert.Contains("DIRETO - PARCELAS", TableStore.Tables(output));
+            var plots = TableStore.Read(new(output, "DIRETO - PARCELAS"));
+            for (int row = 1; row < plots.Count; row++)
+                Assert.Equal(plots.Number(row, plots.Require("Volume_m3_ha")) * .5,
+                    plots.Number(row, plots.Require("VCCC_m3_ha")), 10);
         }
         finally { Directory.Delete(folder, true); }
     }

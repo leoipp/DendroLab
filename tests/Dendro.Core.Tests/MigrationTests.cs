@@ -137,6 +137,13 @@ public class MigrationTests
                 );
                 var actual = SpreadsheetReader.Read(output, sheet);
                 Assert.Equal(expected.Count, actual.Count);
+                bool volumeType = sheet == "MODELOS APLICADOS" && expected.Column("Tipo de volume") < 0;
+                if (volumeType)
+                {
+                    Assert.Equal(10, actual.Require("Tipo de volume"));
+                    for (int row = 1; row < actual.Count; row++)
+                        Assert.Equal(actual.Text(row, 0) == "Volume individual" ? "VTCC" : "", actual.Text(row, 10));
+                }
                 bool ages = sheet is "RESUMO - BYPLOT" or "RESUMO - BYTALHAO";
                 bool expectedDominant = expected.Rows.SelectMany(row => row).Any(cell => cell?.ToString() is "DAPd" or "DAPd Med");
                 bool actualDominant = actual.Rows.SelectMany(row => row).Any(cell => cell?.ToString() is "DAPd" or "DAPd Med");
@@ -148,12 +155,13 @@ public class MigrationTests
                         ?? expected.Rows.First(row => row.Any(cell => cell?.ToString() == "H"));
                     dominantAfter = Array.FindIndex(header, cell => cell?.ToString() == (header.Any(cell => cell?.ToString() == "H Med") ? "H Med" : "H"));
                 }
-                Assert.Equal(expected.Width + (ages ? 1 : 0) + (dominant ? 2 : 0), actual.Width);
+                Assert.Equal(expected.Width + (ages ? 1 : 0) + (dominant ? 2 : 0) + (volumeType ? 1 : 0), actual.Width);
                 for (int r = 0; r < expected.Count; r++)
                 for (int c = 0; c < expected.Width; c++)
                 {
                     int ac = c + (ages && c > expected.Require("Idade_anos") ? 1 : 0)
-                        + (dominant && c > dominantAfter ? 2 : 0);
+                        + (dominant && c > dominantAfter ? 2 : 0)
+                        + (volumeType && c >= 10 ? 1 : 0);
                     double a = actual.Number(r, ac),
                         e = expected.Number(r, c);
                     if (double.IsFinite(e))

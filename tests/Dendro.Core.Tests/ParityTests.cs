@@ -100,6 +100,13 @@ public class ParityTests
             var expected = SpreadsheetReader.Read(expectedPath, name);
             var actual = SpreadsheetReader.Read(actualPath, name);
             Assert.Equal(expected.Count, actual.Count);
+            bool volumeType = name == "MODELOS APLICADOS" && expected.Column("Tipo de volume") < 0;
+            if (volumeType)
+            {
+                Assert.Equal(10, actual.Require("Tipo de volume"));
+                for (int row = 1; row < actual.Count; row++)
+                    Assert.Equal(actual.Text(row, 0) == "Volume individual" ? "VTCC" : "", actual.Text(row, 10));
+            }
             bool ages = name is "RESUMO - BYPLOT" or "RESUMO - BYTALHAO";
             bool basal = expected.Column("AS") < 0 && actual.Column("AS") >= 0;
             bool expectedDominant = expected.Rows.SelectMany(row => row).Any(cell => cell?.ToString() is "DAPd" or "DAPd Med");
@@ -113,14 +120,15 @@ public class ParityTests
                 string heightHeader = header.Any(cell => cell?.ToString() == "H Med") ? "H Med" : "H";
                 dominantAfter = Array.FindIndex(header, cell => cell?.ToString() == heightHeader);
             }
-            Assert.True(expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0) == actual.Width,
-                $"{name}: expected {expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0)} columns; actual {actual.Width}; ages={ages}, basal={basal}, dominant={dominant}; expected headers={string.Join("|", expected.Rows[0])}; actual headers={string.Join("|", actual.Rows[0])}");
+            Assert.True(expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0) + (volumeType ? 1 : 0) == actual.Width,
+                $"{name}: expected {expected.Width + (ages ? 1 : 0) + (basal ? 1 : 0) + (dominant ? 2 : 0) + (volumeType ? 1 : 0)} columns; actual {actual.Width}; ages={ages}, basal={basal}, dominant={dominant}; expected headers={string.Join("|", expected.Rows[0])}; actual headers={string.Join("|", actual.Rows[0])}");
             for (int r = 0; r < expected.Count; r++)
             for (int c = 0; c < expected.Width; c++)
             {
                 int ac = c + (ages && c > expected.Require("Idade_anos") ? 1 : 0)
                     + (basal && c > expected.Require("DAP") ? 1 : 0)
-                    + (dominant && c > dominantAfter ? 2 : 0);
+                    + (dominant && c > dominantAfter ? 2 : 0)
+                    + (volumeType && c >= 10 ? 1 : 0);
                 double e = expected.Number(r, c),
                     a = actual.Number(r, ac);
                 if (double.IsFinite(e))

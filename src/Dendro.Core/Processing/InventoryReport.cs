@@ -76,8 +76,10 @@ public static class InventoryReport
                 for (int r = 1; r < calc.Count; r++)
                     adjusted.Set(r, dest, calc.Value(r, from));
             }
-        var byplot = Summary(plots, false, temporal, curves, debug);
-        var bystand = Summary(stands, true, temporal, curves, debug);
+        var activeVolumeTypes = (cfg["volume"]?["equacoes"] as JsonArray ?? [])
+            .Select(equation => equation.S("tipo_volume", "VTCC")).ToHashSet(StringComparer.Ordinal);
+        var byplot = Summary(plots, false, temporal, curves, debug, activeVolumeTypes);
+        var bystand = Summary(stands, true, temporal, curves, debug, activeVolumeTypes);
         bool includeHeight = ProcessingHistory.Enabled(cfg) || cfg.At("saida.sheets").B("h_ajuste", true);
         var height = includeHeight ? Height(input, cfg, keepFileFilledHeightCount) : new DataTable();
         var stats = new DataTable();
@@ -226,7 +228,15 @@ public static class InventoryReport
         if (volumeAudit.Count > 1) sheets.Add(new("AUDITORIA VOLUMES", volumeAudit));
         Add("informacoes", "INFORMACOES", info);
         if (debug)
-            Add("calculos", "CALCULOS", calc);
+        {
+            int[] calculationColumns = Enumerable.Range(0, calc.Width).Where(column =>
+                !ModelDefinition.VolumeTypes.Contains(calc.Text(0, column))
+                || activeVolumeTypes.Contains(calc.Text(0, column))).ToArray();
+            var calculations = new DataTable();
+            for (int row = 0; row < calc.Count; row++)
+                calculations.Add(calculationColumns.Select(column => calc.Value(row, column)).ToArray());
+            Add("calculos", "CALCULOS", calculations);
+        }
         ProcessingHistory.AddCanonicalSheets(sheets, cfg, input, original, calc, plots, stands);
         if (!compact && ReferenceEquals(adjusted, input))
             input.TrimWidth(original);
@@ -369,7 +379,8 @@ public static class InventoryReport
         bool stand,
         bool temporal,
         bool curves,
-        bool debug
+        bool debug,
+        IReadOnlySet<string> activeVolumeTypes
     )
     {
         string[] names = stand
@@ -427,9 +438,11 @@ public static class InventoryReport
             ];
         var columns = names
             .Where(
-                (name, i) =>
+                name =>
                     (temporal || name != "Ano_Medicao")
-                    && (curves || i < (stand ? 12 : 17) || name is "IS" or "VCCC" or "VTSC" or "VCSC" or "VCCC_ha" or "VTSC_ha" or "VCSC_ha")
+                    && (curves || name is not ("Vol_Esperado_ha" or "Dif_IFC_pct" or "IcV"))
+                    && (!ModelDefinition.VolumeTypes.Contains(name.Replace("_ha", "", StringComparison.Ordinal))
+                        || activeVolumeTypes.Contains(name.Replace("_ha", "", StringComparison.Ordinal)))
                     && (name != "IS" || source.Column("IS") >= 0)
             )
             .ToList();
