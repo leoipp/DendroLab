@@ -3,6 +3,7 @@ name: Build DendroLab Windows
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
@@ -12,33 +13,164 @@ permissions:
 
 jobs:
   build:
+    name: Build Windows x64
     runs-on: windows-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    defaults:
+      run:
+        shell: pwsh
 
-      - name: Install .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+    env:
+      APP_VERSION: '1.3.0'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: 'true'
+
+    steps:
+      # 1. Baixar o codigo
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # 2. Instalar SDK .NET 10
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
 
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup -y --no-progress
-
-      - name: Check SDK
-        run: dotnet --info
-
-      - name: Build installer and ZIP
-        shell: pwsh
+      # 3. Instalar Inno Setup
+      - name: Install Inno Setup 6
         run: |
-          ./scripts/package.ps1 -Version 1.3.0 -Format Both
+          choco install innosetup -y --no-progress
 
-      - name: Upload artifacts
+          if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao instalar Inno Setup."
+          }
+
+      # 4. Preparar ambiente NuGet
+      - name: Configure NuGet
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Criar fallback existente para package.ps1
+          $fallback = Join-Path $env:RUNNER_TEMP 'nuget-fallback'
+          New-Item -ItemType Directory `
+            -Force -Path $fallback | Out-Null
+
+          # O package.ps1 usa NUGET_PACKAGES
+          # como origem de fallback.
+          # Forcamos um caminho existente.
+          $env:NUGET_PACKAGES = $fallback
+          $env:NUGET_FALLBACK_PACKAGES = ''
+
+          # Configurar fonte oficial NuGet
+          $config = @'
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+          </configuration>
+          '@
+
+          $configPath = Join-Path $env:GITHUB_WORKSPACE 'NuGet.Config'
+
+          Set-Content -Path $configPath `
+            -Value $config `
+            -Encoding utf8
+
+          # Persistir variaveis para proximas etapas
+          "NUGET_PACKAGES=$fallback" >> $env:GITHUB_ENV
+          "NUGET_FALLBACK_PACKAGES=" >> $env:GITHUB_ENV
+
+          Write-Host "NuGet configurado."
+          Write-Host "Fallback: $fallback"
+
+      # 5. Validar ambiente
+      - name: Validate build environment
+        run: |
+          Write-Host "=== .NET SDK ==="
+          dotnet --list-sdks
+
+          Write-Host "=== NuGet Sources ==="
+          dotnet nuget list source
+
+          Write-Host "=== Inno Setup ==="
+
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+
+          $iscc = $candidates |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+
+          if (-not $iscc) {
+            throw "ISCC.exe nao encontrado."
+          }
+
+          Write-Host "Inno Setup encontrado: $iscc"
+
+          "INNO_COMPILER=$iscc" >> $env:GITHUB_ENV
+
+      # 6. Restaurar dependencias
+      - name: Restore NuGet packages
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          dotnet restore `
+            src/Dendro.Desktop/Dendro.Desktop.csproj `
+            --source https://api.nuget.org/v3/index.json `
+            --packages .build/nuget-packages `
+            --verbosity minimal
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Falha no restore NuGet."
+          }
+
+      # 7. Gerar aplicativo e instalador
+      - name: Build installer and ZIP
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          ./scripts/package.ps1 `
+            -Version $env:APP_VERSION `
+            -Format Both `
+            -InnoCompiler $env:INNO_COMPILER
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao gerar instalador."
+          }
+
+      # 8. Validar arquivos gerados
+      - name: Verify distribution
+        run: |
+          $dist = Join-Path 'dist' $env:APP_VERSION
+
+          if (-not (Test-Path $dist)) {
+            throw "Pasta de distribuicao nao encontrada."
+          }
+
+          Get-ChildItem $dist |
+            Select-Object Name, Length |
+            Format-Table -AutoSize
+
+          $installer = Get-ChildItem $dist `
+            -Filter '*-Setup.exe' `
+            -File
+
+          if (-not $installer) {
+            throw "Instalador EXE nao encontrado."
+          }
+
+          Write-Host "Instalador gerado com sucesso!"
+
+      # 9. Disponibilizar downloads
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: DendroLab-Windows
+          name: DendroLab-Windows-v1.3.0
           path: dist/1.3.0/
           if-no-files-found: error
           retention-days: 30
+          compression-level: 0
