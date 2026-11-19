@@ -10,7 +10,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class MachineLearningView : ScrollViewer
+internal sealed class MachineLearningView : ToolFormView
 {
     private sealed record SourceChoice(string Path, string Name, TableSource Table);
 
@@ -35,8 +35,8 @@ internal sealed class MachineLearningView : ScrollViewer
         this.owner = owner;
         this.session = session;
         fixedModelType = modelType;
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-        var form = Ui.Form(); Content = form;
+
+        var form = Ui.Form(); SetForm(form);
         string toolName = modelType switch { "neural_net" => "Ajustar rede neural", "random_forest" => "Ajustar Random Forest", "gradient_boosting" => "Ajustar Gradient Boosting", "svr" => "Ajustar SVR", _ => "Ajustar modelo" };
         form.Children.Add(owner.ToolHeader(toolName));
         Ui.AddHelp(form, "Ajuste o modelo com dados do projeto. A saída é um único arquivo ZIP que pode ser selecionado diretamente no Processador.");
@@ -81,7 +81,7 @@ internal sealed class MachineLearningView : ScrollViewer
         kernel.SelectionChanged += (_, _) => UpdateParameters();
         UpdateParameters();
 
-        form.Children.Add(Ui.AsyncButton("Ajustar e salvar ZIP para o Processador", () => owner.Execute(Train)));
+        SetPrimaryAction(Ui.AsyncButton("Ajustar e salvar ZIP para o Processador", () => owner.Execute(Train)));
         form.Children.Add(status);
 
         ifpcRoot.Text = DetectIfpcRoot() ?? "";

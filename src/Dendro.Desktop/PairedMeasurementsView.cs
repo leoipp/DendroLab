@@ -5,7 +5,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class PairedMeasurementsView : ScrollViewer
+internal sealed class PairedMeasurementsView : ToolFormView
 {
     private sealed record SourceChoice(string Name, string ProjectPath, TableSource Table);
 
@@ -30,8 +30,8 @@ internal sealed class PairedMeasurementsView : ScrollViewer
     {
         this.owner = owner;
         this.session = session;
-        Content = BuildForm();
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        SetForm(BuildForm());
+
         source.SelectionChanged += async (_, _) =>
         {
             if (!loading) await owner.Execute(LoadColumns);
@@ -61,7 +61,7 @@ internal sealed class PairedMeasurementsView : ScrollViewer
         Ui.AddHelp(form, "Soma é adequada a volumes por árvore quando o resultado é por parcela. Para indicadores por hectare ou valores repetidos da parcela, escolha Média. Exigir um único valor evita agregar e interrompe a operação ao encontrar duplicatas.");
         Ui.Section(form, "Resultado");
         Ui.Field(form, "Nome base das tabelas", outputName);
-        form.Children.Add(Ui.AsyncButton("Gerar dados pareados", () => owner.Execute(Run)));
+        SetPrimaryAction(Ui.AsyncButton("Gerar dados pareados", () => owner.Execute(Run)));
         form.Children.Add(status);
         return form;
     }

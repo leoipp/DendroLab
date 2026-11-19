@@ -28,8 +28,8 @@ public sealed class HelpIcon : Border
 
     public HelpIcon(string text)
     {
-        Width = Height = 16;
-        CornerRadius = new CornerRadius(8);
+        Width = Height = 20;
+        CornerRadius = new CornerRadius(10);
         BorderThickness = new Thickness(1);
         BorderBrush = new SolidColorBrush(Color.FromRgb(151, 174, 194));
         Background = new SolidColorBrush(Color.FromRgb(243, 247, 251));

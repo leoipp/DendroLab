@@ -117,7 +117,11 @@ public partial class MainWindow : Window
         );
         InputBindings.Add(new KeyBinding(ApplicationCommands.Save, Key.S, ModifierKeys.Control));
         PreviewKeyDown += (_, e) => {
-            if (e.Key == Key.Escape && chartFullScreen)
+            if (e.Key == Key.K && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            { ToolsPane.Show(); ShowTools(); ToolSearch.Focus(); e.Handled = true; }
+            else if (e.Key == Key.L && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            { ContentsPane.Show(); ContentSearch.Focus(); e.Handled = true; }
+            else if (e.Key == Key.Escape && chartFullScreen)
             { ExitChartFullScreen(); e.Handled = true; }
             else if (e.Key == Key.F1 && Keyboard.Modifiers == ModifierKeys.Control)
             { SetRibbonPinned(!RibbonPinned); e.Handled = true; }
@@ -262,11 +266,12 @@ public partial class MainWindow : Window
     {
         DockManager.IsEnabled = !busy;
         foreach (
-            var b in new[] { SaveButton, SaveAsButton, SettingsButton, VolumeButton, GrowthButton, SiteIndexButton, SavedRegressionsButton, GISButton }
+            var b in new[] { SaveButton, SaveAsButton, SettingsButton, TaperButton, VolumeButton, GrowthButton, SiteIndexButton, SavedRegressionsButton, GISButton }
         )
             b.IsEnabled = Session.IsOpen && !busy;
         ToolContent.IsEnabled = Session.IsOpen && !busy;
         ContentsTree.IsEnabled = Session.IsOpen && !busy;
+        AddDataButton.IsEnabled = Session.IsOpen && !busy;
     }
 
     private void Refresh()
@@ -439,7 +444,7 @@ public partial class MainWindow : Window
         Menu(node, "Renomear grupo…", CommandIconKind.Rename, () => RenameContentGroup(id));
         Menu(node, "Excluir grupo…", CommandIconKind.Remove, () =>
         {
-            if (!Ui.Confirm("Excluir grupo", $"O grupo ‘{group.S("name")}’ será removido. Os conteúdos voltarão para a lista de { (type == "spreadsheet" ? "planilhas" : "dados vetoriais")}.", "Excluir grupo", destructive: true))
+            if (!Ui.Confirm("Excluir grupo", $"O grupo '{group.S("name")}' será removido. Os conteúdos voltarão para a lista de { (type == "spreadsheet" ? "planilhas" : "dados vetoriais")}.", "Excluir grupo", destructive: true))
                 return Task.CompletedTask;
             Session.Meta.Arr("content_groups").Remove(group);
             Session.Touch(); RefreshTree();
@@ -774,6 +779,10 @@ public partial class MainWindow : Window
             string? itemGroupType = ContentGroupType(Session, path);
             if (itemGroupType == "vector" && !missingSource)
             {
+                Menu(item, "Simbologia…", CommandIconKind.Settings, async () =>
+                {
+                    if (VectorSymbology.Edit(this, Session, path) && gisView != null) await gisView.RefreshSymbology(path);
+                });
                 Menu(item, "Abrir tabela de atributos", CommandIconKind.Table, () => OpenVectorAttributeTable(path));
                 Menu(item, "Abrir no GIS", CommandIconKind.Map, () => OpenGIS(path));
             }
@@ -818,7 +827,7 @@ public partial class MainWindow : Window
                     () =>
                     {
                         string title = chart.S("title", "gráfico sem título");
-                        if (!Ui.Confirm("Remover gráfico", $"O gráfico ‘{title}’ será removido do projeto e sua janela será fechada. Deseja continuar?", "Remover", destructive: true))
+                        if (!Ui.Confirm("Remover gráfico", $"O gráfico '{title}' será removido do projeto e sua janela será fechada. Deseja continuar?", "Remover gráfico", destructive: true))
                             return Task.CompletedTask;
                         var charts = Session.Meta.Arr("charts");
                         var match = charts.FirstOrDefault(c => JsonNode.DeepEquals(c, chart));
@@ -915,8 +924,8 @@ public partial class MainWindow : Window
                         string[] descendants = Session.PreviewRemoveResultTable(output, name);
                         string bank = Session.IsManagedTable(output)
                             ? "arquivo .dlb do projeto"
-                            : $"arquivo .dlb de origem ‘{Path.GetFileName(Session.Resolve(output))}’";
-                        string message = $"Excluir a tabela ‘{name}’ apagará seus dados do {bank}.";
+                            : $"arquivo .dlb de origem '{Path.GetFileName(Session.Resolve(output))}'";
+                        string message = $"Excluir a tabela '{name}' apagará seus dados do {bank}.";
                         if (descendants.Length > 0)
                             message += "\n\nTambém serão removidos os resultados dependentes:\n" +
                                 string.Join("\n", descendants.Select(removed => "• " + Session.ContentName(removed)));
@@ -1032,7 +1041,7 @@ public partial class MainWindow : Window
             () =>
             {
                 string title = analysis.S("title", "análise sem título");
-                if (!Ui.Confirm("Remover análise", $"A análise ‘{title}’ será removida do projeto e suas janelas abertas serão fechadas. Deseja continuar?", "Remover", destructive: true))
+                if (!Ui.Confirm("Remover análise", $"A análise '{title}' será removida do projeto e suas janelas abertas serão fechadas. Deseja continuar?", "Remover análise", destructive: true))
                     return Task.CompletedTask;
                 Session.Meta.Arr("analyses").Remove(analysis);
                 CloseDocument("analysis:" + analysis.S("id"));
@@ -1258,7 +1267,7 @@ public partial class MainWindow : Window
         });
     }
 
-    private bool ConfirmRemoval(string message) => Ui.Confirm("Confirmar remoção", message, "Remover", destructive: true);
+    private bool ConfirmRemoval(string message, string objectName = "conteúdos do projeto") => Ui.Confirm("Remover " + objectName + "?", message, "Remover " + objectName, destructive: true);
 
     private async Task RemoveContentFiles(string clickedPath)
     {
@@ -1292,7 +1301,7 @@ public partial class MainWindow : Window
         if (keptProcessingSources)
             message += "\n\nAs bases de origem dos processamentos selecionados serão mantidas no projeto.";
         message += "\n\nDeseja continuar?";
-        if (!ConfirmRemoval(message)) return;
+        if (!ConfirmRemoval(message, selected.Length == 1 ? "conteúdo" : $"{selected.Length} conteúdos")) return;
 
         if (selected.Length == 1)
             await Session.RemoveFile(Session.Files.ToList().FindIndex(path => SameProjectPath(path, selected[0])));
@@ -1343,7 +1352,7 @@ public partial class MainWindow : Window
         if (Session.Meta.Arr("processing_results").Any(record => record.S("parent_id") == id))
             throw new InvalidOperationException("Esta versão tem revisões posteriores. Remova primeiro as revisões descendentes.");
         string message = $"Remover {revision.S("inventory_type")} V{revision.N("number")} e apagar os dados desta revisão do arquivo DLB do projeto? Esta ação não pode ser desfeita.";
-        if (!ConfirmRemoval(message)) return;
+        if (!ConfirmRemoval(message, "revisão de inventário")) return;
         await Session.RemoveProcessingRevision(revision, OperationCancellation);
         CloseDocuments();
         processor = null;
@@ -1358,12 +1367,12 @@ public partial class MainWindow : Window
             throw new InvalidOperationException("O resultado deste processamento não existe mais no projeto.");
         string[] affected = Session.PreviewRemoveFile(index);
         string[] descendants = affected.Where(path => !SameProjectPath(path, output)).ToArray();
-        string message = $"Remover o processamento ‘{Path.GetFileNameWithoutExtension(output)}’ apagará seus resultados do banco do projeto. A base de origem ‘{Session.ContentName(source)}’ será mantida.";
+        string message = $"Remover o processamento '{Path.GetFileNameWithoutExtension(output)}' apagará seus resultados do banco do projeto.";
         if (descendants.Length > 0)
             message += "\n\nTambém serão removidos os resultados derivados:\n" +
                 string.Join("\n", descendants.Select(path => "• " + Session.ContentName(path)));
         message += "\n\nDeseja continuar?";
-        if (!ConfirmRemoval(message)) return;
+        if (!ConfirmRemoval(message, "processamento")) return;
         await Session.RemoveFile(index);
         selectedContentPaths.Clear();
         contentSelectionAnchorPath = null;
@@ -1759,6 +1768,9 @@ public partial class MainWindow : Window
     private void VolumeClick(object s, RoutedEventArgs e) =>
         Document("volumes", "Modelos volumétricos", new ModelsView(this, Session, false));
 
+    private void TaperClick(object sender, RoutedEventArgs e) =>
+        Document("taper-models", "Modelos de Afilamento", new TaperModelsView(this, Session));
+
     private void GrowthClick(object s, RoutedEventArgs e) =>
         Document("growth", "Crescimento e produção", new ModelsView(this, Session, true));
 
@@ -1775,6 +1787,19 @@ public partial class MainWindow : Window
     private void HistoryClick(object s, RoutedEventArgs e) => HistoryPane.Show();
 
     private void ClearHistoryClick(object s, RoutedEventArgs e) => HistoryText.Clear();
+
+    private async void AddDataClick(object sender, RoutedEventArgs e)
+    {
+        if (Session.IsOpen && !busy) await AddData();
+    }
+
+    private void ClearToolSearchClick(object sender, RoutedEventArgs e)
+    {
+        ToolSearch.Clear();
+        ToolCategoryFilter.SelectedIndex = 0;
+        ShowTools();
+        ToolSearch.Focus();
+    }
 
     private void ResetLayoutClick(object s, RoutedEventArgs e)
     {
@@ -1867,7 +1892,7 @@ public partial class MainWindow : Window
             ("Gráficos e modelos", ["Gráficos", "Ajuste de regressão", "Aplicar regressões", "Ajustar rede neural", "Ajustar Random Forest", "Ajustar Gradient Boosting", "Ajustar SVR", "Fronteira de eficiência"]),
             ("Comparar e validar", ["Comparar curvas de produção", "ICA e IMA", "Testes estatísticos", "Validação de modelos", "Isolation Forest", "K-means"]),
             ("Planejamento de campo", ["Amostragem"]),
-            ("Mapa e satélite", ["Imagens NOAA", "Imagens Sentinel-2"]),
+            ("Mapa e satélite", ["Imagens NOAA", "Imagens Sentinel-2", "Catálogo temporal Sentinel-2", "Série de pixels Sentinel-2", "Explorar série temporal Sentinel-2"]),
         };
         foreach (var (groupTitle, groupTools) in toolGroups)
         {
@@ -1922,6 +1947,14 @@ public partial class MainWindow : Window
                         _ => true,
                     },
                 };
+                if (!entry.IsEnabled)
+                {
+                    string requirement = !Session.IsOpen ? "Abra um projeto para usar esta ferramenta."
+                        : "Crie um gráfico para usar esta ferramenta.";
+                    entry.ToolTip = requirement + "\n" + entry.ToolTip;
+                    ToolTipService.SetShowOnDisabled(entry, true);
+                    System.Windows.Automation.AutomationProperties.SetItemStatus(entry, requirement);
+                }
                 if (entry.ToolTip is string description)
                     System.Windows.Automation.AutomationProperties.SetHelpText(entry, description);
                 ShellVisuals.SetIcon(entry, tool switch
@@ -1947,6 +1980,9 @@ public partial class MainWindow : Window
                     "K-means" => CommandIconKind.Statistics,
                     "Imagens NOAA" => CommandIconKind.Map,
                     "Imagens Sentinel-2" => CommandIconKind.Map,
+                    "Catálogo temporal Sentinel-2" => CommandIconKind.Map,
+                    "Série de pixels Sentinel-2" => CommandIconKind.Map,
+                    "Explorar série temporal Sentinel-2" => CommandIconKind.Map,
                     "Limpeza integrada" => CommandIconKind.IntegratedCleaning,
                     "Testes estatísticos" => CommandIconKind.Statistics,
                     "Validação de modelos" => CommandIconKind.ModelValidation,
@@ -1958,11 +1994,30 @@ public partial class MainWindow : Window
         if (list.Items.Count == 0)
             list.Items.Add(new ListBoxItem
             {
-                Content = "Nenhuma ferramenta encontrada",
+                Content = new StackPanel
+                {
+                    Margin = new Thickness(4, 14, 4, 0),
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = "Nenhuma ferramenta encontrada",
+                            FontWeight = FontWeights.SemiBold,
+                            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(48, 74, 96)),
+                            Margin = new Thickness(0, 0, 0, 4),
+                        },
+                        new TextBlock
+                        {
+                            Text = "Tente outro termo ou selecione outra categoria.",
+                            TextWrapping = TextWrapping.Wrap,
+                            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(104, 122, 137)),
+                        },
+                    },
+                },
                 IsEnabled = false,
                 IsHitTestVisible = false,
                 Focusable = false,
-                Padding = new Thickness(8),
+                Padding = new Thickness(8, 0, 8, 8),
                 Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(104, 122, 137)),
             });
         list.SelectionChanged += async (_, _) =>
@@ -1973,6 +2028,12 @@ public partial class MainWindow : Window
                 SetTool(new NoaaNdviView(this, Session));
             else if ((string)i.Tag == "Imagens Sentinel-2")
                 SetTool(new Sentinel2NdviView(this, Session));
+            else if ((string)i.Tag == "Explorar série temporal Sentinel-2")
+                SetTool(new Sentinel2SeriesExplorerView(this, Session));
+            else if ((string)i.Tag == "Série de pixels Sentinel-2")
+                SetTool(new Sentinel2PixelSeriesView(this, Session));
+            else if ((string)i.Tag == "Catálogo temporal Sentinel-2")
+                SetTool(new Sentinel2TemporalCatalogView(this, Session));
             else if ((string)i.Tag == "Processador")
             {
                 processor = new ProcessorView(this, Session);
@@ -2326,7 +2387,7 @@ public partial class MainWindow : Window
         string resolved = Session.Resolve(path);
         var view = new VectorAttributeTable(this, resolved);
         Document("attributes:" + path, "Atributos · " + Session.ContentName(path), view);
-        Log("Tabela de atributos aberta. Edite as células e use ‘Salvar edições’ para gravar no DBF.");
+        Log("Tabela de atributos aberta. Edite as células e use 'Salvar edições' para gravar no DBF.");
         return Task.CompletedTask;
     }
 

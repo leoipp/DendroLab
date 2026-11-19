@@ -78,6 +78,32 @@ internal sealed class CopernicusDataSpaceClient : IDisposable
         return scenes.OrderByDescending(scene => scene.Acquired).ToArray();
     }
 
+    internal async Task<Sentinel2Scene[]> SearchTemporalCatalogAsync(
+        double xmin, double ymin, double xmax, double ymax, DateTime from, DateTime to,
+        double cloud, CancellationToken cancellation, Action<DateTime>? progress = null)
+    {
+        var result = new Dictionary<string, Sentinel2Scene>(StringComparer.Ordinal);
+        async Task Search(DateTime start, DateTime end)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            progress?.Invoke(start);
+            var found = await SearchSentinel2Async(xmin, ymin, xmax, ymax, start, end, cloud, cancellation);
+            if (found.Length >= 100)
+            {
+                if (start.Date == end.Date)
+                    throw new InvalidDataException("O catálogo atingiu o limite de cenas em um único dia. Reduza a área para evitar uma série incompleta.");
+                var middle = start.Date.AddDays((end.Date - start.Date).Days / 2);
+                await Search(start.Date, middle);
+                await Search(middle.AddDays(1), end.Date);
+                return;
+            }
+            foreach (var scene in found) result[scene.Id] = scene;
+        }
+        if (from.Date > to.Date) throw new InvalidOperationException("A data inicial precisa ser anterior à data final.");
+        await Search(from.Date, to.Date);
+        return result.Values.OrderBy(s => s.Acquired).ThenBy(s => s.Id, StringComparer.Ordinal).ToArray();
+    }
+
     internal async Task<byte[]> DownloadImagePngAsync(
         double xmin, double ymin, double xmax, double ymax,
         DateTime from, DateTime to, double maxCloudCoverage,
@@ -137,6 +163,42 @@ internal sealed class CopernicusDataSpaceClient : IDisposable
         if (png.Length < 8 || png[0] != 137 || png[1] != 80 || png[2] != 78 || png[3] != 71)
             throw new InvalidDataException("O Process API não retornou uma imagem PNG válida para conversão GeoTIFF.");
         return png;
+    }
+
+    internal async Task<byte[]> DownloadNumericNdviAsync(double xmin, double ymin, double xmax, double ymax,
+        int width, int height, DateTimeOffset acquired, CancellationToken cancellation)
+    {
+        EnsureActive();
+        if (width is < 1 or > 2500 || height is < 1 or > 2500) throw new InvalidOperationException("A grade deve ter até 2500 pixels por dimensão.");
+        string token = await GetAccessTokenAsync(cancellation);
+        // Lossless numeric packing: RG = round((NDVI + 1) * 10000), B = SCL, A = dataMask.
+        const string script = """
+            //VERSION=3
+            function setup() { return {input:[{bands:["B04","B08","SCL","dataMask"]}],output:{bands:4,sampleType:"UINT8"}}; }
+            function evaluatePixel(s) {
+              if (!s.dataMask || s.B08+s.B04===0) return [0,0,0,0];
+              let n=(s.B08-s.B04)/(s.B08+s.B04);
+              if (!Number.isFinite(n) || n < -1 || n > 1) return [0,0,0,0];
+              let v=Math.round((n+1)*10000);
+              return [Math.floor(v/256),v%256,s.SCL,255];
+            }
+            """;
+        var body = new {
+            input = new {
+                bounds = new { bbox = new[]{xmin,ymin,xmax,ymax}, properties = new { crs = "http://www.opengis.net/def/crs/EPSG/0/3857" } },
+                data = new[]{new { type="sentinel-2-l2a", dataFilter = new { timeRange = new {
+                    from=acquired.AddMinutes(-30).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
+                    to=acquired.AddMinutes(30).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture) }, mosaickingOrder="leastCC" },
+                    processing = new { upsampling="NEAREST", downsampling="NEAREST" } } }
+            },
+            output = new { width, height, responses = new[]{new { identifier="default", format=new { type="image/png" } }} },
+            evalscript=script
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Post, ProcessEndpoint) { Content=JsonContent.Create(body) };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer",token);
+        using var response = await Http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,cancellation);
+        await EnsureSuccess(response,"extrair NDVI numérico");
+        return await response.Content.ReadAsByteArrayAsync(cancellation);
     }
 
     private async Task<string> GetAccessTokenAsync(CancellationToken cancellation)

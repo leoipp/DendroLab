@@ -19,7 +19,7 @@ using Dendro.Core;
 
 namespace Dendro.Desktop;
 
-internal sealed record GisFeature(int Type, Point[][] Parts, int Round = 0);
+internal sealed record GisFeature(int Type, Point[][] Parts, int Round = 0, int RecordIndex = -1);
 internal sealed record GisRasterLayer(string Path, string Name, BitmapSource Image, Rect Extent)
 {
     internal bool Visible { get; set; } = true;
@@ -33,6 +33,9 @@ internal sealed class GisLayer(string path, string name, GisFeature[] features, 
     internal Rect Extent { get; } = extent;
     internal string? Warning { get; } = warning;
     internal bool Visible { get; set; } = true;
+    internal VectorSymbology? Symbology { get; set; }
+    internal string?[]? CategoryKeys { get; set; }
+    internal string? CategoryWarning { get; set; }
 }
 
 internal sealed class GisView : DockPanel, IDisposable
@@ -92,13 +95,19 @@ internal sealed class GisView : DockPanel, IDisposable
         foreach (var layer in layers)
         {
             layer.Visible = LayerIsVisible(layer.Path);
+            string styleKey = session.Files.FirstOrDefault(path => string.Equals(session.Resolve(path), layer.Path, StringComparison.OrdinalIgnoreCase)) ?? layer.Path;
+            layer.Symbology = VectorSymbology.Load(session, styleKey);
+            await ReadCategories(layer);
             var sampling = session.Meta.Arr("sampling_results").FirstOrDefault(entry =>
                 string.Equals(session.Resolve(entry.S("path")), layer.Path, StringComparison.OrdinalIgnoreCase));
             if (sampling != null)
             {
                 var rounds = sampling.AsObject().Arr("rounds");
-                for (int i = 0; i < Math.Min(rounds.Count, layer.Features.Length); i++)
-                    layer.Features[i] = layer.Features[i] with { Round = rounds[i]?.GetValue<int>() ?? 1 };
+                for (int i = 0; i < layer.Features.Length; i++)
+                {
+                    int row = layer.Features[i].RecordIndex >= 0 ? layer.Features[i].RecordIndex : i;
+                    if (row < rounds.Count) layer.Features[i] = layer.Features[i] with { Round = rounds[row]?.GetValue<int>() ?? 1 };
+                }
             }
         }
         foreach (var raster in rasters)
@@ -106,7 +115,7 @@ internal sealed class GisView : DockPanel, IDisposable
         map.SetLayers(layers, rasters);
         var failures = loadedVectors.Where(result => result.Error != null).Select(result => result.Error!)
             .Concat(loadedRasters.Where(result => result.Error != null).Select(result => result.Error!)).ToArray();
-        var warnings = layers.Where(layer => layer.Warning != null).Select(layer => layer.Name + ": " + layer.Warning).ToArray();
+        var warnings = layers.SelectMany(layer => new[] { layer.Warning, layer.CategoryWarning }.Where(w => w != null).Select(w => layer.Name + ": " + w)).ToArray();
         if (failures.Length > 0 || warnings.Length > 0)
             MessageBox.Show(string.Join("\n", failures.Concat(warnings)), "Camadas do mapa", MessageBoxButton.OK, MessageBoxImage.Warning);
         map.Fit(layers.Where(layer => selectedVector == null || string.Equals(layer.Path, selectedVector, StringComparison.OrdinalIgnoreCase)).Select(layer => layer.Extent)
@@ -131,6 +140,26 @@ internal sealed class GisView : DockPanel, IDisposable
     {
         string key = session.Files.FirstOrDefault(path => string.Equals(session.Resolve(path), resolvedPath, StringComparison.OrdinalIgnoreCase)) ?? resolvedPath;
         return session.Meta.Obj("gis_layer_visibility")[key]?.GetValue<bool>() ?? true;
+    }
+
+    private static async Task ReadCategories(GisLayer layer)
+    {
+        layer.CategoryKeys = null; layer.CategoryWarning = null;
+        if (layer.Symbology is not { CategoryField.Length: > 0 } symbol) return;
+        try { layer.CategoryKeys = await Task.Run(() => VectorSymbology.ReadCategoryKeys(layer.Path, symbol.CategoryField)); }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException)
+        { layer.CategoryWarning = ex.Message + " Usando o símbolo de outros valores."; }
+    }
+
+    internal async Task RefreshSymbology(string path)
+    {
+        foreach (var layer in layers.Where(layer => string.Equals(layer.Path, session.Resolve(path), StringComparison.OrdinalIgnoreCase)))
+        {
+            layer.Symbology = VectorSymbology.Load(session, path);
+            await ReadCategories(layer);
+            if (layer.CategoryWarning != null) Ui.Alert("Simbologia", layer.CategoryWarning, Ui.MessageTone.Warning);
+        }
+        map.InvalidateVisual();
     }
 
     internal bool HasLayer(string path) => layers.Any(layer => string.Equals(layer.Path, path, StringComparison.OrdinalIgnoreCase))
@@ -375,21 +404,46 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
     {
         double scale = PixelScale(zoom);
         var matrix = new Matrix(scale, 0, 0, -scale, ActualWidth / 2 - center.X * scale, ActualHeight / 2 + center.Y * scale);
-        var colors = new[] { Color.FromRgb(220, 57, 70), Color.FromRgb(26, 125, 185), Color.FromRgb(30, 145, 97), Color.FromRgb(140, 78, 172), Color.FromRgb(226, 132, 36) };
         for (int li = 0; li < layers.Count; li++)
         {
             var layer = layers[li]; if (!layer.Visible) continue;
-            var stroke = new SolidColorBrush(colors[li % colors.Length]); stroke.Freeze();
-            var fill = new SolidColorBrush(Color.FromArgb(45, stroke.Color.R, stroke.Color.G, stroke.Color.B)); fill.Freeze();
-            var pen = new Pen(stroke, Math.Clamp(1.2 * Math.Pow(2, zoom - Math.Floor(zoom)), 1, 3) / scale); pen.Freeze();
+            var style = layer.Symbology ?? VectorSymbology.Default(li);
             var geometries = GetGeometries(layer);
-            foreach (var feature in layer.Features.Where(feature => feature.Type is 1 or 8))
-            foreach (var point in feature.Parts.SelectMany(part => part))
+            var symbols = new Dictionary<(string Key, bool Line), (VectorSymbology Style, Brush? Fill, Pen? Pen)?>();
+            (VectorSymbology Style, Brush? Fill, Pen? Pen)? Symbol(GisFeature feature)
             {
-                Point p = Screen(point, scale);
-                if (p.X < -6 || p.Y < -6 || p.X > ActualWidth + 6 || p.Y > ActualHeight + 6) continue;
-                var pointBrush = feature.Round > 0 ? SamplingPointBrush(feature.Round) : stroke;
-                dc.DrawEllipse(Brushes.White, new Pen(pointBrush, 1.2), p, 5, 5); dc.DrawEllipse(pointBrush, null, p, 3.5, 3.5);
+                string key = "";
+                bool missing = false;
+                if (style.CategoryField.Length > 0)
+                {
+                    if (layer.CategoryKeys != null && feature.RecordIndex >= 0 && feature.RecordIndex < layer.CategoryKeys.Length)
+                    {
+                        if (layer.CategoryKeys[feature.RecordIndex] == null) return null; // deleted DBF row
+                        key = layer.CategoryKeys[feature.RecordIndex]!;
+                    }
+                    else missing = true;
+                }
+                var cacheKey = (missing ? "\0other" : key, feature.Type == 3);
+                if (symbols.TryGetValue(cacheKey, out var cached)) return cached;
+                var resolved = style.CategoryField.Length == 0 ? style : style.ResolveCategory(missing ? null : key, feature.Type == 3);
+                (VectorSymbology Style, Brush? Fill, Pen? Pen)? symbol = resolved == null ? null : (resolved, resolved.Fill(scale), resolved.Pen(scale));
+                symbols[cacheKey] = symbol;
+                return symbol;
+            }
+            foreach (var feature in layer.Features.Where(feature => feature.Type is 1 or 8))
+            {
+                var item = Symbol(feature); if (item == null) continue;
+                var pointStyle = item.Value.Style;
+                var pointFill = pointStyle.FillEnabled ? new SolidColorBrush((Color)ColorConverter.ConvertFromString(pointStyle.FillColor)) { Opacity = pointStyle.FillOpacity } : null;
+                var pointPen = pointStyle.Pen(1);
+                if (feature.Round > 0 && pointStyle.SamplingColors && pointStyle.FillEnabled)
+                    pointFill = (SolidColorBrush)SamplingPointBrush(feature.Round);
+                foreach (var point in feature.Parts.SelectMany(part => part))
+                {
+                    Point p = Screen(point, scale);
+                    if (p.X < -pointStyle.PointSize || p.Y < -pointStyle.PointSize || p.X > ActualWidth + pointStyle.PointSize || p.Y > ActualHeight + pointStyle.PointSize) continue;
+                    dc.DrawEllipse(pointFill, pointPen, p, pointStyle.PointSize / 2, pointStyle.PointSize / 2);
+                }
             }
             dc.PushTransform(new MatrixTransform(matrix));
             for (int fi = 0; fi < layer.Features.Length; fi++)
@@ -398,7 +452,8 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
                 if (feature.Type is 1 or 8) continue;
                 var geometry = geometries[fi];
                 if (geometry == null) continue;
-                dc.DrawGeometry(feature.Type == 5 ? fill : null, pen, geometry);
+                var item = Symbol(feature); if (item == null) continue;
+                dc.DrawGeometry(feature.Type == 5 ? item.Value.Fill : null, item.Value.Pen, geometry);
             }
             dc.Pop();
         }
@@ -713,9 +768,11 @@ internal static class ShapefileReader
         stream.Position = 100;
         var features = new List<GisFeature>();
         Rect? bounds = null;
+        int recordIndex = 0;
         while (stream.Position + 8 <= Math.Min(stream.Length, declaredWords * 2L))
         {
             _ = ReadBigEndianInt32(reader);
+            int rowIndex = recordIndex++;
             int bytes = checked(ReadBigEndianInt32(reader) * 2);
             long end = stream.Position + bytes;
             if (bytes < 4 || end > stream.Length) throw new InvalidDataException("Registro vetorial truncado.");
@@ -757,7 +814,7 @@ internal static class ShapefileReader
                 if (bounds == null) bounds = new Rect(world, new Size(0, 0));
                 else { var currentBounds = bounds.Value; currentBounds.Union(world); bounds = currentBounds; }
             }
-            features.Add(new GisFeature(family, parts));
+            features.Add(new GisFeature(family, parts, RecordIndex: rowIndex));
             stream.Position = end;
         }
         if (features.Count == 0 || bounds == null) throw new InvalidDataException("O shapefile não contém feições.");

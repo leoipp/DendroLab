@@ -31,7 +31,8 @@ public static class InventoryReport
         int[]? originalSourceRows = null,
         CompactBankReader? calculationSourceReader = null,
         CompactTable? calculationSourceTable = null,
-        IReadOnlySet<string>? appliedEquationCodes = null
+        IReadOnlySet<string>? appliedEquationCodes = null,
+        DiameterClassDistribution? classDistribution = null
     )
     {
         bool debug = cfg["ajuste_altura"].B("debug"),
@@ -227,6 +228,11 @@ public static class InventoryReport
         Add("modelos_aplicados", "MODELOS APLICADOS", audit);
         if (volumeAudit.Count > 1) sheets.Add(new("AUDITORIA VOLUMES", volumeAudit));
         Add("informacoes", "INFORMACOES", info);
+        if (classDistribution != null)
+        {
+            info.Add("Distribuição por classes", $"Frequências de árvores por classes independentes de DAP e volume; intervalo de DAP {cfg.At("processador").N("largura_classe_dap_mm", 20):G} mm e volume {cfg.At("processador").N("intervalo_classe_volume_m3", 0.1):G} m³. Cada nível divide a contagem de indivíduos da classe pelo total de indivíduos válidos do grupo.");
+            foreach (var (name, table) in classDistribution.CreateTables()) sheets.Add(new(name, table));
+        }
         if (debug)
         {
             int[] calculationColumns = Enumerable.Range(0, calc.Width).Where(column =>

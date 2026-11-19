@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -34,6 +34,22 @@ internal sealed class ProcessingReviewView : ScrollViewer
     private JsonObject? selected;
     private DataTable? template;
     private bool loading;
+    private readonly TextBlock versionHeading = Ui.Text("Selecione uma versão", 17);
+    private readonly TextBlock versionOrigin = Ui.Text("");
+    private readonly TextBlock pendingSummary = Ui.Text("");
+    private readonly Dictionary<string, string> loadedFactors = new();
+
+    private int PendingFactorCount => factors.Count(row => !loadedFactors.TryGetValue(row.Code, out var prior)
+        || !double.TryParse(row.Factor, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out var value)
+        || !double.TryParse(prior, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out var original)
+        || value != original);
+
+    private void RefreshPendingSummary()
+    {
+        int count = PendingFactorCount;
+        pendingSummary.Text = count == 0 ? "Os fatores correspondem à versão selecionada."
+            : $"{count} fator(es) alterado(s) ainda não publicado(s). Use Criar nova versão corrigida para aplicar as alterações.";
+    }
 
     public ProcessingReviewView(MainWindow owner, ProjectSession session)
     {
@@ -45,6 +61,10 @@ internal sealed class ProcessingReviewView : ScrollViewer
         Ui.Section(panel,"Selecionar versão");
         Ui.Field(panel, "Versão do processamento", versions);
         panel.Children.Add(Ui.AsyncButton("Atualizar histórico da rede", () => owner.Execute(() => Initialize(selected?.S("id")))));
+        versionHeading.FontWeight = FontWeights.SemiBold;
+        panel.Children.Add(versionHeading);
+        panel.Children.Add(versionOrigin);
+        status.FontSize = 12;
         panel.Children.Add(status);
         removeRevision = Ui.AsyncButton("Remover revisão selecionada…", () => owner.Execute(RemoveSelected));
         panel.Children.Add(removeRevision);
@@ -60,16 +80,19 @@ internal sealed class ProcessingReviewView : ScrollViewer
         grid.Columns.Add(new DataGridTextColumn { Header = "Árvores", Binding = new Binding(nameof(FactorRow.Trees)), IsReadOnly = true });
         grid.Columns.Add(new DataGridTextColumn { Header = "VTCC original", Binding = new Binding(nameof(FactorRow.Volume)) { StringFormat = "N3" }, IsReadOnly = true });
         panel.Children.Add(grid);
+        panel.Children.Add(pendingSummary);
+        grid.CellEditEnding += (_, _) => Dispatcher.BeginInvoke(new Action(RefreshPendingSummary));
         var factorActions = new WrapPanel();
         factorActions.Children.Add(Ui.AsyncButton("Exportar tabela de fatores…", () => owner.Execute(ExportFactors)));
         factorActions.Children.Add(Ui.AsyncButton("Importar fatores…", () => owner.Execute(ImportFactors))); panel.Children.Add(factorActions);
         Ui.Field(panel, "Motivo da revisão / observações", note);
-        panel.Children.Add(Ui.AsyncButton("Criar nova versão corrigida", () => owner.Execute(Correct)));
+        panel.Children.Add(Ui.AsyncButton("Criar nova versão corrigida", () => owner.Execute(Correct), Ui.ActionEmphasis.Primary));
         Ui.AddHelp(panel, "A grade prepara uma NOVA versão. Aprovar a versão selecionada não aplica edições ainda não publicadas. O cálculo usa sempre o VTCC original, sem repetir o ajuste de altura.");
         Ui.Section(panel,"Status e exportação");
+        panel.Children.Add(Ui.Text("A aprovação se aplica à versão selecionada. Fatores editados na grade só entram no resultado após criar uma nova versão corrigida.", 12));
         var approvals = new WrapPanel();
         approvals.Children.Add(Ui.AsyncButton("Marcar em análise", () => owner.Execute(() => ChangeStatus("em_analise"))));
-        approvals.Children.Add(Ui.AsyncButton("Aprovar versão selecionada", () => owner.Execute(() => ChangeStatus("aprovado")))); panel.Children.Add(approvals);
+        approvals.Children.Add(Ui.AsyncButton("Aprovar versão selecionada", () => owner.Execute(() => ChangeStatus("aprovado")), Ui.ActionEmphasis.Secondary)); panel.Children.Add(approvals);
         Ui.Field(panel, "Abas para o Excel (somente versão aprovada vigente)", exports);
         panel.Children.Add(Ui.AsyncButton("Exportar Excel aprovado…", () => owner.Execute(ExportApproved)));
         versions.SelectionChanged += async (_, _) => { if (!loading && versions.SelectedIndex >= 0) await owner.Execute(LoadSelected); };
@@ -89,7 +112,7 @@ internal sealed class ProcessingReviewView : ScrollViewer
         }
         finally { loading = false; }
         if (versions.SelectedIndex >= 0) await LoadSelected();
-        else { status.Text = "Nenhum processamento completo versionado. Crie o original no Processador."; removeRevision.IsEnabled = false; }
+        else { selected = null; versionHeading.Text = "Nenhuma versão disponível"; versionOrigin.Text = ""; status.Text = "Crie o processamento original no Processador."; factors.Clear(); loadedFactors.Clear(); pendingSummary.Text = ""; removeRevision.IsEnabled = false; }
     }
 
     internal static string Status(JsonObject run) => run.S("status") switch { "aprovado" => run.B("current_approved") ? "Aprovado vigente" : "Aprovado histórico", "em_analise" => "Em análise", _ => "Processado" };
@@ -99,7 +122,9 @@ internal sealed class ProcessingReviewView : ScrollViewer
         selected = records[versions.SelectedIndex].DeepClone().AsObject();
         removeRevision.IsEnabled = selected.S("status") != "aprovado" && !selected.B("current_approved")
             && !records.Any(r => r.S("parent_id") == selected.S("id"));
-        status.Text = $"{selected.S("inventory_type")} · V{selected.N("number")} · {Status(selected)}\nProcessado por {selected.S("user")} em {selected.S("created")}\n"
+        versionHeading.Text = $"{selected.S("inventory_type")} · V{selected.N("number")} · {Status(selected)}";
+        versionOrigin.Text = session.ContentName(selected.S("source_path"));
+        status.Text = $"Processado por {selected.S("user")} em {selected.S("created")}\n"
             + (selected.S("approved_by").Length > 0 ? $"Aprovado por {selected.S("approved_by")} em {selected.S("approved_at")}" : "Aguardando revisão/aprovação.");
         loading = true; scope.SelectedIndex = selected.S("factor_scope") == "lote" ? 1 : 0; loading = false;
         exports.Children.Clear();
@@ -123,6 +148,14 @@ internal sealed class ProcessingReviewView : ScrollViewer
         for (int r = 1; r < template.Count; r++) factors.Add(new() { Code = ProcessingHistory.FactorKey(template, r),
             Label = string.Join(" · ", new[] { template.Text(r, 2), template.Text(r, template.Column("Base_Origem")), template.Text(r, template.Column("Tipo_Inventario")) }.Where(s => s.Length > 0)),
             Factor = prior.GetValueOrDefault(ProcessingHistory.FactorKey(template, r), 1).ToString(System.Globalization.CultureInfo.CurrentCulture), Trees = template.Number(r, 4), Volume = template.Number(r, 5) });
+        CaptureLoadedFactors();
+    }
+
+    private void CaptureLoadedFactors()
+    {
+        loadedFactors.Clear();
+        foreach (var row in factors) loadedFactors[row.Code] = row.Factor;
+        RefreshPendingSummary();
     }
 
     private DataTable FactorTable()
@@ -147,6 +180,7 @@ internal sealed class ProcessingReviewView : ScrollViewer
         var values = ProcessingHistory.ValidateFactors(data, template);
         foreach (var row in factors) row.Factor = values[row.Code].ToString(System.Globalization.CultureInfo.CurrentCulture);
         grid.Items.Refresh();
+        RefreshPendingSummary();
     }
 
     private async Task Correct()
@@ -185,6 +219,12 @@ internal sealed class ProcessingReviewView : ScrollViewer
     private async Task ChangeStatus(string state)
     {
         if (selected == null) throw new InvalidOperationException("Selecione uma versão.");
+        grid.CommitEdit(DataGridEditingUnit.Cell, true);
+        grid.CommitEdit(DataGridEditingUnit.Row, true);
+        if (state == "aprovado" && !Ui.Confirm("Aprovar versão selecionada?",
+            $"A aprovação será aplicada a {selected.S("inventory_type")} V{selected.N("number")} · {session.ContentName(selected.S("source_path"))}."
+            + (PendingFactorCount > 0 ? $"\n\nHá {PendingFactorCount} fator(es) editado(s) na grade que NÃO entrarão nesta aprovação. Para aplicá-los, cancele e crie uma nova versão corrigida." : ""),
+            "Aprovar esta versão")) return;
         string id = selected.S("id");
         await session.ChangeProcessingStatus(selected, state, note.Text, owner.OperationCancellation);
         await Initialize(id); owner.Log("Estado atualizado por " + ProcessingCatalog.User);

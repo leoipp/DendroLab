@@ -11,7 +11,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class ModelValidationView : ScrollViewer
+internal sealed class ModelValidationView : ToolFormView
 {
     private sealed record SourceChoice(string Path, string Name, TableSource Table);
     private readonly MainWindow owner;
@@ -27,9 +27,9 @@ internal sealed class ModelValidationView : ScrollViewer
     {
         this.owner = owner;
         this.session = session;
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+
         var form = Ui.Form();
-        Content = form;
+        SetForm(form);
         form.Children.Add(owner.ToolHeader("Validação de modelos"));
         Ui.AddHelp(form, "Compare uma coluna observada com uma ou várias colunas estimadas na mesma tabela. Cada modelo é avaliado nas linhas em que Y observado e sua estimativa são numéricos.");
         Ui.Section(form, "Dados observados e estimados");
@@ -46,7 +46,7 @@ internal sealed class ModelValidationView : ScrollViewer
         };
         Ui.Field(form, "Colunas estimadas (selecione um ou mais modelos)", choiceScroll);
         Ui.AddHelp(form, "Erro = estimado − observado. R² = 1 − SQ(resíduos)/SQ(total), pode ser negativo. Erro médio (%) mantém o sinal; MAE e MAPE usam valores absolutos. Bias é o erro médio nas unidades de Y.");
-        form.Children.Add(Ui.AsyncButton("Comparar modelos", () => owner.Execute(Compare)));
+        SetPrimaryAction(Ui.AsyncButton("Comparar modelos", () => owner.Execute(Compare)));
         form.Children.Add(status);
         source.SelectionChanged += async (_, _) => { if (!loading) await owner.Execute(LoadColumns); };
         observed.SelectionChanged += (_, _) => UpdateEstimateChoices();

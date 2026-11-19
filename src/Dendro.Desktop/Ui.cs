@@ -11,6 +11,9 @@ namespace Dendro.Desktop;
 internal static class Ui
 {
     internal enum MessageTone { Information, Warning, Error }
+    internal enum ActionEmphasis { Primary, Secondary, Tertiary }
+    internal enum ActionTone { Neutral, Critical }
+    internal enum ActionSize { Small, Medium, Large }
 
     private sealed class FieldGroup : StackPanel { }
 
@@ -41,6 +44,7 @@ internal static class Ui
                     return;
                 }
                 var label = (TextBlock)group.Children[labelIndex];
+                label.VerticalAlignment = VerticalAlignment.Center;
                 group.Children.RemoveAt(labelIndex);
                 var labelRow = new HelpRow { Icon = icon, LastChildFill = true };
                 DockPanel.SetDock(icon, Dock.Left);
@@ -58,6 +62,23 @@ internal static class Ui
             return;
         }
         UIElement target = panel.Children[index];
+        if (target is Panel nested && nested.Children.Count > 0 && nested.Children[nested.Children.Count - 1] is TextBlock)
+        {
+            AddHelp(nested, icon);
+            return;
+        }
+        if (target is Border section && section.Child is TextBlock sectionTitle)
+        {
+            section.Child = null;
+            var sectionRow = new HelpRow { Icon = icon };
+            DockPanel.SetDock(icon, Dock.Left);
+            sectionRow.Children.Add(icon);
+            sectionTitle.VerticalAlignment = VerticalAlignment.Center;
+            sectionRow.Children.Add(sectionTitle);
+            section.Child = sectionRow;
+            return;
+        }
+        if (target is TextBlock textLabel) textLabel.VerticalAlignment = VerticalAlignment.Center;
         panel.Children.RemoveAt(index);
         var row = new HelpRow { Icon = icon, LastChildFill = true };
         DockPanel.SetDock(icon, Dock.Left);
@@ -77,9 +98,10 @@ internal static class Ui
 
     public static TextBox Input(string text = "") => new() { Text = text };
 
-    public static Button Button(string label, Action click)
+    public static Button Button(string label, Action click, ActionEmphasis? emphasis = null, ActionTone tone = ActionTone.Neutral, ActionSize size = ActionSize.Medium)
     {
         var b = CreateActionButton(label);
+        if (emphasis.HasValue) StyleAction(b, emphasis.Value, tone, size);
         b.Click += (_, _) =>
         {
             try
@@ -94,9 +116,10 @@ internal static class Ui
         return b;
     }
 
-    public static Button AsyncButton(string label, Func<Task> click)
+    public static Button AsyncButton(string label, Func<Task> click, ActionEmphasis? emphasis = null, ActionTone tone = ActionTone.Neutral, ActionSize size = ActionSize.Medium)
     {
         var b = CreateActionButton(label);
+        if (emphasis.HasValue) StyleAction(b, emphasis.Value, tone, size);
         b.Click += async (_, _) =>
         {
             b.IsEnabled = false;
@@ -196,6 +219,24 @@ internal static class Ui
         return group;
     }
 
+    public static Border ActionFooter(params Button[] buttons)
+    {
+        var row = new Grid();
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            row.ColumnDefinitions.Add(new ColumnDefinition());
+            var button = buttons[i];
+            button.HorizontalAlignment = HorizontalAlignment.Right;
+            button.HorizontalContentAlignment = HorizontalAlignment.Center;
+            button.ContentTemplate = Application.Current.FindResource("ActionLabel") as DataTemplate;
+            System.Windows.Controls.Grid.SetColumn(button, i);
+            row.Children.Add(button);
+        }
+        return new Border { Child = row, Background = System.Windows.Media.Brushes.White,
+            BorderBrush = (Brush)Application.Current.FindResource("Ui.Border"), BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(12, 8, 12, 8) };
+    }
+
     public static void Section(Panel panel, string title)
     {
         var heading = new TextBlock
@@ -238,6 +279,22 @@ internal static class Ui
         return button;
     }
 
+    // Legacy calls retain their existing appearance until each view declares its hierarchy.
+    internal static void StyleAction(Button button, ActionEmphasis emphasis, ActionTone tone = ActionTone.Neutral, ActionSize size = ActionSize.Medium)
+    {
+        string key = tone == ActionTone.Critical ? (emphasis == ActionEmphasis.Primary ? "CriticalPrimaryActionButton" : "DangerActionButton")
+            : emphasis == ActionEmphasis.Primary ? "PrimaryActionButton" : "SecondaryActionButton";
+        button.Style = Application.Current.FindResource(key) as Style;
+        button.MinWidth = 0;
+        button.MinHeight = size == ActionSize.Small ? 30 : size == ActionSize.Large ? 44 : 36;
+        button.Padding = size == ActionSize.Small ? new Thickness(9, 4, 9, 4) : new Thickness(13, 8, 13, 8);
+        if (emphasis == ActionEmphasis.Tertiary)
+        {
+            button.Background = Brushes.Transparent;
+            button.BorderThickness = new Thickness(0);
+        }
+    }
+
     private static bool IsPrimaryAction(string label) =>
         label.StartsWith("Executar", StringComparison.OrdinalIgnoreCase)
         || label.StartsWith("Gerar", StringComparison.OrdinalIgnoreCase)
@@ -271,8 +328,30 @@ internal static class Ui
     public static bool Confirm(string title, string message, string confirmLabel = "Confirmar", bool destructive = false) =>
         App.IsSelfTest || ShowMessage(title, message, true, confirmLabel, destructive, destructive ? MessageTone.Warning : MessageTone.Information);
 
-    private static bool ShowMessage(string title, string message, bool confirmation, string acceptLabel, bool destructive, MessageTone tone)
+    private static ImageSource CreateMessageIcon()
     {
+        // Draw directly at title-bar size so the exclamation remains crisp.
+        var drawing = new DrawingGroup();
+        using (var dc = drawing.Open())
+        {
+            var amber = new SolidColorBrush(Color.FromRgb(170, 101, 22));
+            dc.DrawEllipse(new SolidColorBrush(Color.FromRgb(252, 245, 232)),
+                new Pen(amber, 1), new Point(8, 8), 7, 7);
+            dc.DrawRoundedRectangle(amber, null, new Rect(7, 3, 2, 6), 0.6, 0.6);
+            dc.DrawEllipse(amber, null, new Point(8, 11.5), 1.1, 1.1);
+        }
+        drawing.Freeze();
+        var image = new DrawingImage(drawing);
+        image.Freeze();
+        return image;
+    }
+
+    internal static bool ShowMessage(string title, string message, bool confirmation, string acceptLabel, bool destructive, MessageTone tone)
+    {
+        bool compactRemoval = confirmation && destructive
+            && (title.StartsWith("Remover", StringComparison.OrdinalIgnoreCase)
+                || title.StartsWith("Excluir", StringComparison.OrdinalIgnoreCase));
+        string actionLabel = compactRemoval ? "Remover" : acceptLabel;
         var (accent, tint, glyph) = tone switch
         {
             MessageTone.Error => (Color.FromRgb(178, 53, 65), Color.FromRgb(253, 238, 239), "×"),
@@ -340,9 +419,9 @@ internal static class Ui
 
         var accept = new Button
         {
-            Content = acceptLabel,
+            Content = actionLabel,
             MinWidth = 96,
-            IsDefault = true,
+            IsDefault = !destructive,
             Background = new SolidColorBrush(destructive ? Color.FromRgb(178, 53, 65) : Color.FromRgb(33, 102, 157)),
             BorderBrush = new SolidColorBrush(destructive ? Color.FromRgb(153, 42, 54) : Color.FromRgb(28, 88, 137)),
             Foreground = Brushes.White,
@@ -354,15 +433,17 @@ internal static class Ui
             cancel = new Button { Content = "Cancelar", MinWidth = 96, IsCancel = true };
             actions.Children.Add(cancel);
         }
+        StyleAction(accept, ActionEmphasis.Primary, destructive ? ActionTone.Critical : ActionTone.Neutral);
         actions.Children.Add(accept);
 
         var content = new StackPanel();
-        content.Children.Add(header);
+        if (!compactRemoval) content.Children.Add(header);
         content.Children.Add(body);
         content.Children.Add(actions);
         var window = new Window
         {
             Title = title,
+            Icon = compactRemoval ? CreateMessageIcon() : null,
             Content = new Border
             {
                 Background = Brushes.White,
@@ -383,10 +464,10 @@ internal static class Ui
             ShowInTaskbar = false,
             Owner = ActiveWindow,
         };
-        System.Windows.Automation.AutomationProperties.SetName(accept, acceptLabel);
+        System.Windows.Automation.AutomationProperties.SetName(accept, actionLabel);
         accept.Click += (_, _) => window.DialogResult = true;
         if (cancel != null) cancel.Click += (_, _) => window.DialogResult = false;
-        window.Loaded += (_, _) => accept.Focus();
+        window.Loaded += (_, _) => { if (destructive && cancel != null) cancel.Focus(); else accept.Focus(); };
         bool? result = window.ShowDialog();
         return !confirmation || result == true;
     }

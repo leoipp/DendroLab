@@ -246,6 +246,8 @@ public sealed class InventoryProcessor
         int original = projectedInput?.SourceWidth ?? input.Width;
         bool directMode = cfg["processador"].S("modo", "completo") == "resumo_direto";
         using var direct = directMode ? new DirectInventorySummary(output, cfg) : null;
+        var classDistribution = !directMode && cfg.At("processador").B("distribuicao_classes")
+            ? new DiameterClassDistribution(cfg.At("processador").N("largura_classe_dap_mm", 20), cfg.At("processador").N("intervalo_classe_volume_m3", 0.1)) : null;
         bool versioned = !directMode && ProcessingHistory.Enabled(cfg);
         var areaColumns = cfg.At("arquivo_entrada.colunas");
         int lengthColumn = input.Require(areaColumns.S("comprimento_parcela", "Compr")),
@@ -664,6 +666,7 @@ public sealed class InventoryProcessor
                 throw new InvalidDataException(
                     $"Linha {r + 1}: volume fora do intervalo numérico."
                 );
+            classDistribution?.Add(stand, plot, lot, t.Year, t.PlotIdentity, t.Inventory.Id, dap, volume, t.Inventory);
             if (direct != null)
             {
                 direct.Add(stand, plot, lot, t.Year, r + 1, age, volume, dap > 0, area, effective,
@@ -1009,7 +1012,8 @@ public sealed class InventoryProcessor
                 streamAdjustedInput ? originalSourceRows : null,
                 calcSpoolReader,
                 calcSpoolTable,
-                usedEquationCodes)
+                usedEquationCodes,
+                classDistribution)
         );
         progress?.Invoke(100, "Relatório gerado com sucesso.");
         return result;

@@ -9,7 +9,7 @@ using Dendro.Core.Statistics;
 
 namespace Dendro.Desktop;
 
-internal sealed class GrowthValidationView : ScrollViewer
+internal sealed class GrowthValidationView : ToolFormView
 {
     internal sealed class CurveChoice
     {
@@ -57,9 +57,9 @@ internal sealed class GrowthValidationView : ScrollViewer
     {
         this.owner = owner;
         this.session = session;
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+
         var form = Ui.Form();
-        Content = form;
+        SetForm(form);
         form.Children.Add(owner.ToolHeader("ICA e IMA"));
         Ui.AddHelp(form, "Selecione curvas ajustadas ou versões cadastradas em Crescimento e produção. As idades do intervalo e os incrementos do resultado são expressos em anos.");
         Ui.Section(form,"Curvas de origem");
@@ -100,7 +100,7 @@ internal sealed class GrowthValidationView : ScrollViewer
         Ui.Field(form, "Idade máxima (anos)", maximum);
         Ui.Field(form, "Definição do ICA", method);
         Ui.AddHelp(form, "IMA = produção / idade. O cruzamento do ICA instantâneo com o IMA pode ser máximo ou mínimo; ausência de cruzamento vale apenas para o intervalo informado.");
-        form.Children.Add(Ui.AsyncButton("Analisar ICA e IMA", () => owner.Execute(Run)));
+        SetPrimaryAction(Ui.AsyncButton("Analisar ICA e IMA", () => owner.Execute(Run)));
         Refresh();
         if (initialChart != null)
         {

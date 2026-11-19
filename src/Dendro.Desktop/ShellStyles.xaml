@@ -1,11 +1,11 @@
-﻿<ResourceDictionary
+<ResourceDictionary
   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   xmlns:local="clr-namespace:Dendro.Desktop"
   xmlns:adc="clr-namespace:AvalonDock.Controls;assembly=AvalonDock"
 >
   <Style x:Key="RibbonGroupLabel" TargetType="TextBlock">
-    <Setter Property="Foreground" Value="#788B9A" />
+    <Setter Property="Foreground" Value="{StaticResource Ui.Muted}" />
     <Setter Property="FontSize" Value="10.5" />
     <Setter Property="HorizontalAlignment" Value="Center" />
     <Setter Property="Margin" Value="0,2,0,0" />
@@ -20,6 +20,7 @@
                 Visibility="Collapsed" ToolTip="Exibir camada no mapa"
                 IsChecked="{Binding Path=(local:ShellVisuals.LayerVisible), RelativeSource={RelativeSource AncestorType=TreeViewItem}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
       <local:CommandIcon
+        x:Name="ContentIcon"
         Kind="{Binding Path=(local:ShellVisuals.Icon), RelativeSource={RelativeSource AncestorType=TreeViewItem}}"
         Width="16"
         Height="16"
@@ -32,7 +33,7 @@
         <TextBlock Text="!" Foreground="White" FontSize="10" FontWeight="Bold"
                    HorizontalAlignment="Center" VerticalAlignment="Center" />
       </Border>
-      <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+      <TextBlock x:Name="ContentLabel" Text="{Binding}" Foreground="#304A60" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
     </DockPanel>
     </Border>
     <DataTemplate.Triggers>
@@ -40,7 +41,14 @@
         <Setter TargetName="LayerVisibilityToggle" Property="Visibility" Value="Visible" />
       </DataTrigger>
       <DataTrigger Binding="{Binding Path=(local:ShellVisuals.MultiSelected), RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
-        <Setter TargetName="SelectionBackground" Property="Background" Value="#DFEAF5" />
+        <Setter TargetName="SelectionBackground" Property="Background" Value="{StaticResource Ui.Accent}" />
+        <Setter TargetName="ContentLabel" Property="Foreground" Value="White" />
+        <Setter TargetName="ContentIcon" Property="Tint" Value="White" />
+      </DataTrigger>
+      <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
+        <Setter TargetName="SelectionBackground" Property="Background" Value="{StaticResource Ui.Accent}" />
+        <Setter TargetName="ContentLabel" Property="Foreground" Value="White" />
+        <Setter TargetName="ContentIcon" Property="Tint" Value="White" />
       </DataTrigger>
       <DataTrigger Binding="{Binding Path=(local:ShellVisuals.Missing), RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
         <Setter TargetName="MissingBadge" Property="Visibility" Value="Visible" />
@@ -48,6 +56,12 @@
     </DataTemplate.Triggers>
   </DataTemplate>
   <Style TargetType="TreeViewItem">
+    <Style.Resources>
+      <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#21669D" />
+      <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="White" />
+      <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#21669D" />
+      <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="White" />
+    </Style.Resources>
     <Setter Property="Padding" Value="4,2" />
     <Setter Property="Foreground" Value="#304A60" />
     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -99,7 +113,7 @@
                          HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" />
               <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True"
                                 VerticalAlignment="Center" Margin="3,0,18,0" />
-              <TextBlock Grid.Column="2" Text="{TemplateBinding InputGestureText}" Foreground="#788B9A"
+              <TextBlock Grid.Column="2" Text="{TemplateBinding InputGestureText}" Foreground="#5B7082"
                          VerticalAlignment="Center" Margin="12,0,8,0" />
               <Path x:Name="SubmenuArrow" Grid.Column="3" Data="M0,0 L4,4 L0,8" Stroke="#71879A"
                     StrokeThickness="1.4" Width="5" Height="8" HorizontalAlignment="Center"
@@ -203,6 +217,7 @@
               </Grid.RowDefinitions>
               <Border
                 x:Name="Header"
+                local:ShellVisuals.PaneHeaderMenu="True"
                 Background="#F5F8FB"
                 BorderBrush="#E4EAF1"
                 BorderThickness="0,0,0,1"
@@ -259,29 +274,12 @@
   <DataTemplate x:Key="ToolCard">
     <Grid>
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="40" />
-        <ColumnDefinition Width="*" />
-        <ColumnDefinition Width="18" />
+        <ColumnDefinition Width="20" /><ColumnDefinition Width="8" />
+        <ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" />
       </Grid.ColumnDefinitions>
-      <Border Background="#F3F5FA" BorderBrush="#E3E8F0" BorderThickness="1" CornerRadius="8" Width="32" Height="34" VerticalAlignment="Top">
-        <local:CommandIcon
-          Kind="{Binding Path=(local:ShellVisuals.Icon),RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
-          Width="20"
-          Height="20"
-        />
-      </Border>
-      <DockPanel Grid.Column="1" Margin="4,1,5,0" VerticalAlignment="Center">
-        <local:HelpIcon x:Name="Description" DockPanel.Dock="Left" />
-        <TextBlock Text="{Binding}" FontWeight="SemiBold" Foreground="#26465F" FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap" />
-      </DockPanel>
-      <Path
-        Grid.Column="2"
-        Data="M0,0 L4,4 L0,8"
-        Stroke="#7990A3"
-        StrokeThickness="1.4"
-        VerticalAlignment="Center"
-        HorizontalAlignment="Center"
-      />
+      <local:CommandIcon Kind="{Binding Path=(local:ShellVisuals.Icon),RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Width="20" Height="20" VerticalAlignment="Center" />
+      <TextBlock Grid.Column="2" Text="{Binding}" Foreground="#26465F" FontSize="13" LineHeight="20" VerticalAlignment="Center" TextWrapping="Wrap" />
+      <local:HelpIcon x:Name="Description" Grid.Column="3" Margin="4,0" />
     </Grid>
     <DataTemplate.Triggers>
       <DataTrigger Binding="{Binding}" Value="Fronteira de eficiência"><Setter TargetName="Description" Property="Text" Value="Calcular envelopes por extremos, percentis ou médias de cauda" /></DataTrigger>
@@ -348,7 +346,7 @@
   <Style x:Key="ToolCardItem" TargetType="ListBoxItem">
     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
     <Setter Property="ContentTemplate" Value="{StaticResource ToolCard}" />
-    <Setter Property="Margin" Value="0,0,0,5" />
+    <Setter Property="Margin" Value="0,0,0,2" />
     <Setter Property="Cursor" Value="Hand" />
     <Setter Property="Template">
       <Setter.Value>
@@ -356,10 +354,10 @@
           <Border
             x:Name="Card"
             Background="White"
-            BorderBrush="#E0E7EE"
+            BorderBrush="Transparent"
             BorderThickness="1"
-            CornerRadius="12"
-            Padding="8"
+            CornerRadius="6"
+            Padding="8,7"
           >
             <ContentPresenter />
           </Border>
@@ -367,6 +365,9 @@
             <Trigger Property="IsMouseOver" Value="True">
               <Setter TargetName="Card" Property="Background" Value="#F2F7FC" />
               <Setter TargetName="Card" Property="BorderBrush" Value="#A9C5DD" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+              <Setter TargetName="Card" Property="BorderBrush" Value="#21669D" />
             </Trigger>
             <Trigger Property="IsSelected" Value="True">
               <Setter TargetName="Card" Property="Background" Value="#E8F2FB" />

@@ -112,7 +112,7 @@ internal static class StreamingDirectProcessor
             if (!contexts.TryGetValue(key, out var context))
             {
                 string id = InventoryIdentity.Hash(JsonSerializer.Serialize(new[] { key.Item1, key.Item2 }));
-                contexts[key] = context = new(id, origin, type);
+                contexts[key] = context = new(id, origin, type) { KeyFields = originColumns.ToDictionary(c => columns[c], c => Text(row[c])) };
             }
             return context;
         }

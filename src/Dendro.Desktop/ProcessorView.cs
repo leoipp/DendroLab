@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
@@ -9,7 +9,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class ProcessorView : ScrollViewer
+internal sealed class ProcessorView : DockPanel
 {
     internal bool SourcesChanged =>
         choicesLoaded && !choices
@@ -20,15 +20,19 @@ internal sealed class ProcessorView : ScrollViewer
             );
     private readonly MainWindow owner;
     private readonly ProjectSession session;
-    private readonly TextBox prefix,
-        factor;
+    private readonly TextBox factor;
     private readonly Button inventory;
     private readonly ContextMenu inventoryMenu;
     private readonly HashSet<string> selectedInputs;
     private readonly ComboBox mode = Ui.Combo(["Inventário com revisão e aprovação", "Resumo direto por nível"]);
+    private readonly CheckBox classDistribution = new() { Content = "Calcular distribuição por classes de DAP e volume" };
+    private readonly TextBox classWidth = Ui.Input("20"), volumeClassInterval = Ui.Input("0.1");
     private readonly ComboBox inventoryType = Ui.Combo(["IFC", "IFPC", "MISTO"]), factorScope = Ui.Combo(["Talhão", "Lote"]);
     private readonly Dictionary<string, CheckBox> summaryLevels = new();
     private readonly List<(string Path, CheckBox Box)> choices = new();
+    private readonly TextBlock validation = Ui.Text("");
+    private readonly WrapPanel selectionSummary = new() { Margin = new Thickness(0, 4, 0, 8) };
+    private readonly TextBox inputSearch = Ui.Input();
     private bool choicesLoaded;
     private bool suppressSelectionChange;
     private Task? choicesPopulation;
@@ -52,9 +56,9 @@ internal sealed class ProcessorView : ScrollViewer
         Ui.Field(versionSettings, "Aplicação dos fatores nas revisões", factorScope);
         versionSettings.Visibility = mode.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         form.Children.Add(versionSettings);
-        Ui.AddHelp(form, "Usa as chaves de árvore, base e tipo de inventário definidas em Configurações > Identificação. A opção de remover árvores duplicadas também fica em Projeto > Configurações > Processador; a remoção ocorre antes do ajuste de altura e das somas, nos dois modos, sem alterar o arquivo de entrada.");
         var summaries = new StackPanel();
         summaries.Children.Add(Ui.Text("Saídas do resumo direto"));
+        Ui.AddHelp(summaries, "Por árvore: DAP, H e AS. Por parcela: DAP médio, diâmetro quadrático, H médio e AB (soma de AS), sem volume/fustes amostrados. Os níveis superiores mantêm os indicadores por hectare e totais estimados.");
         summaries.Children.Add(Ui.Button("Configurar colunas por nível…",()=>DirectColumnsView.Show(owner,session)));
         foreach (var (key, title) in new[] { ("arvore", "Por árvore"), ("parcela", "Por parcela"), ("talhao", "Por talhão"), ("lote", "Por lote"), ("projeto", "Por projeto") })
         {
@@ -64,9 +68,18 @@ internal sealed class ProcessorView : ScrollViewer
             summaries.Children.Add(check);
             check.Click += (_, _) => TryCapture();
         }
-        Ui.AddHelp(summaries, "Por árvore: DAP, H e AS. Por parcela: DAP médio, diâmetro quadrático, H médio e AB (soma de AS), sem volume/fustes amostrados. Os níveis superiores mantêm os indicadores por hectare e totais estimados.");
         summaries.Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         form.Children.Add(summaries);
+        var classSettings = new StackPanel();
+        classDistribution.IsChecked = session.Data.At("processador").B("distribuicao_classes");
+        System.Windows.Automation.AutomationProperties.SetAutomationId(classDistribution, "Processor.ClassDistribution");
+        classWidth.Text = session.Data.At("processador").N("largura_classe_dap_mm", 20).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        classSettings.Children.Add(classDistribution);
+        Ui.AddHelp(classSettings, "Gera tabelas de distribuição para parcela, talhão, lote e projeto. Cada nível soma os indivíduos por classe e divide pelo total de indivíduos válidos do grupo. DAP e volume têm intervalos próprios. Cada frequência conta as árvores da classe e divide pelo total de árvores com valor válido na parcela.");
+        Ui.Field(classSettings, "Intervalo de classe de DAP (mm)", classWidth);
+        volumeClassInterval.Text = session.Data.At("processador").N("intervalo_classe_volume_m3", 0.1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Ui.Field(classSettings, "Intervalo de classe de volume (m³/árvore)", volumeClassInterval);
+        form.Children.Add(classSettings);
         Ui.Section(form,"Inventários de entrada");
         inventory = new Button { HorizontalContentAlignment = HorizontalAlignment.Left };
         var menu = inventoryMenu = new ContextMenu { StaysOpen = true };
@@ -74,6 +87,16 @@ internal sealed class ProcessorView : ScrollViewer
         var allItem = new MenuItem { Header = all, StaysOpenOnClick = true };
         menu.Items.Add(allItem);
         menu.Items.Add(new Separator());
+        inputSearch.MinWidth = 220;
+        inputSearch.ToolTip = "Pesquisar inventários";
+        System.Windows.Automation.AutomationProperties.SetName(inputSearch, "Pesquisar inventários");
+        menu.Items.Add(new MenuItem { Header = inputSearch, StaysOpenOnClick = true });
+        inputSearch.TextChanged += (_, _) =>
+        {
+            foreach (var item in menu.Items.OfType<MenuItem>().Where(item => item.Header is CheckBox box && !ReferenceEquals(box, all)))
+                item.Visibility = ((CheckBox)item.Header).Content.ToString()!.Contains(inputSearch.Text, StringComparison.CurrentCultureIgnoreCase)
+                    ? Visibility.Visible : Visibility.Collapsed;
+        };
         var selected = selectedInputs = session
             .Meta.Arr("batch_inputs")
             .Select(n => n.Display())
@@ -93,23 +116,28 @@ internal sealed class ProcessorView : ScrollViewer
             SelectionChanged();
         };
         form.Children.Add(inventory);
+        form.Children.Add(selectionSummary);
         UpdateSummary();
-        Ui.AddHelp(form, "Resultados ficam no mesmo arquivo DLB do projeto. Excel e CSV ficam disponíveis na exportação das tabelas.");
         Ui.Section(form,"Saídas e execução");
-        prefix = Ui.Input(session.Meta.S("output_prefix"));
-        Ui.Field(form, "Prefixo dos resultados", prefix);
         factor = Ui.Input(session.Data!.Obj("volume")["fator"].Display());
         var factorSettings = new StackPanel { Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed };
         Ui.Field(factorSettings, "Fator do resumo direto (opcional, de 0 a 1)", factor);
         Ui.AddHelp(factorSettings, "Vazio = 1. Aplica equação × fator por árvore, antes das somas.");
         form.Children.Add(factorSettings);
-        prefix.LostKeyboardFocus += (_, _) => TryCapture();
-        factor.LostKeyboardFocus += (_, _) => TryCapture();
+        factor.LostKeyboardFocus += (_, _) => TryCapture(); classWidth.LostKeyboardFocus += (_, _) => TryCapture(); volumeClassInterval.LostKeyboardFocus += (_, _) => TryCapture();
+        classDistribution.Click += (_, _) => TryCapture();
         inventoryType.SelectionChanged += (_, _) => TryCapture(); factorScope.SelectionChanged += (_, _) => TryCapture();
         mode.SelectionChanged += (_, _) => { summaries.Visibility = factorSettings.Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
             versionSettings.Visibility = mode.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed; TryCapture(); };
-        form.Children.Add(Ui.AsyncButton("Executar selecionados", () => owner.Execute(Process)));
-        Content = form;
+        validation.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(140, 41, 52));
+        validation.Visibility = Visibility.Collapsed;
+        form.Children.Add(validation);
+        var execute = Ui.AsyncButton("Executar", () => owner.Execute(Process), Ui.ActionEmphasis.Primary);
+        execute.MinWidth = 100;
+        var footer = Ui.ActionFooter(execute);
+        DockPanel.SetDock(footer, Dock.Bottom);
+        Children.Add(footer);
+        Children.Add(Ui.Scroll(form));
     }
 
     private Task PopulateChoices(ContextMenu menu, HashSet<string> selected)
@@ -162,10 +190,38 @@ internal sealed class ProcessorView : ScrollViewer
             ? choices.Where(c => c.Box.IsChecked == true).Select(c => c.Path).ToArray()
             : session.Files.Where(session.IsTabular).Where(selectedInputs.Contains).ToArray();
         int count = selected.Length;
-        inventory.Content =
-            count == 1 ? session.ContentName(selected[0])
-            : count > 0 ? $"{count} inventários selecionados  ▾"
-            : "Selecionar inventários  ▾";
+        selectionSummary.Children.Clear();
+        if (count == 0)
+            selectionSummary.Children.Add(Ui.Text("Selecione os inventários que deseja processar.", 12));
+        foreach (string path in selected)
+        {
+            var row = new DockPanel();
+            var remove = Ui.Button("×", () =>
+            {
+                if (choicesLoaded) choices.First(choice => choice.Path == path).Box.IsChecked = false;
+                else
+                {
+                    selectedInputs.Remove(path);
+                    session.Meta["batch_inputs"] = new JsonArray(selectedInputs.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
+                    session.Touch();
+                    UpdateSummary();
+                }
+            }, Ui.ActionEmphasis.Tertiary, size: Ui.ActionSize.Small);
+            remove.ToolTip = "Retirar " + session.ContentName(path) + " da seleção";
+            System.Windows.Automation.AutomationProperties.SetName(remove, remove.ToolTip.ToString());
+            remove.Margin = new Thickness(4, 0, 0, 0);
+            remove.Padding = new Thickness(3, 0, 3, 0);
+            remove.MinHeight = 24;
+            DockPanel.SetDock(remove, Dock.Right);
+            row.Children.Add(remove);
+            row.Children.Add(new TextBlock { Text = session.ContentName(path), MaxWidth = 220,
+                TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = session.ContentName(path), VerticalAlignment = VerticalAlignment.Center });
+            selectionSummary.Children.Add(new Border { Child = row, CornerRadius = new CornerRadius(5),
+                Background = (System.Windows.Media.Brush)Application.Current.FindResource("Ui.Surface"),
+                Padding = new Thickness(8, 2, 3, 2), Margin = new Thickness(0, 0, 6, 6) });
+        }
+        inventory.Content = count == 0 ? "Selecionar inventários  ▾"
+            : count == 1 ? "1 inventário selecionado  ▾" : $"{count} inventários selecionados  ▾";
     }
 
     internal void RefreshContentNames()
@@ -180,9 +236,13 @@ internal sealed class ProcessorView : ScrollViewer
         try
         {
             Capture();
+            validation.Text = "";
+            validation.Visibility = Visibility.Collapsed;
         }
         catch (Exception ex)
         {
+            validation.Text = ex.Message;
+            validation.Visibility = Visibility.Visible;
             factor.ToolTip = ex.Message;
         }
     }
@@ -196,14 +256,21 @@ internal sealed class ProcessorView : ScrollViewer
         processing["modo"] = mode.SelectedIndex == 1 ? "resumo_direto" : "completo";
         processing["inventory_type"] = inventoryType.SelectedItem?.ToString() ?? "";
         processing["factor_scope"] = factorScope.SelectedIndex == 1 ? "lote" : "talhao";
+        processing["distribuicao_classes"] = classDistribution.IsChecked == true;
+        double classWidthValue = Ui.Number(classWidth.Text);
+        if (classDistribution.IsChecked == true && (!double.IsFinite(classWidthValue) || classWidthValue < 1 || classWidthValue > 1000))
+            throw new InvalidOperationException("O intervalo de classe de DAP deve estar entre 1 e 1000 mm.");
+        if (double.IsFinite(classWidthValue)) processing["largura_classe_dap_mm"] = classWidthValue;
+        double volumeInterval = Ui.Number(volumeClassInterval.Text);
+        if (classDistribution.IsChecked == true && (!double.IsFinite(volumeInterval) || volumeInterval <= 0))
+            throw new InvalidOperationException("O intervalo de classe de volume deve ser maior que zero.");
+        if (double.IsFinite(volumeInterval)) processing["intervalo_classe_volume_m3"] = volumeInterval;
         foreach (var pair in summaryLevels) processing.Obj("saidas")[pair.Key] = pair.Value.IsChecked == true;
         DirectInventorySummary.Validate(processing);
         bool changed =
             !JsonNode.DeepEquals(processing, session.Data!["processador"])
-            || session.Meta.S("output_prefix") != prefix.Text
             || session.Data!.Obj("volume").At("fator")?.Display()
                 != (value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? null);
-        session.Meta["output_prefix"] = prefix.Text;
         session.Data!["processador"] = processing;
         if (value.HasValue)
             session.Data!.Obj("volume")["fator"] = value.Value;
@@ -227,8 +294,6 @@ internal sealed class ProcessorView : ScrollViewer
             throw new InvalidOperationException("Selecione um ou mais inventários.");
         string outputFolder = session.ProjectWorkFolder();
         if (versioned && session.IsDirty) await session.Save(session.FilePath);
-        if (prefix.Text.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-            throw new InvalidOperationException("O prefixo contém caracteres inválidos.");
         string registry = session.Resolve(session.RegistryPath);
         if (!Dendro.Core.Tabular.CompactBankFile.Exists(registry))
             throw new InvalidOperationException(
@@ -257,12 +322,12 @@ internal sealed class ProcessorView : ScrollViewer
                 var suffix = config.At("saida.sufixo_arquivo")?.Display() ?? "_DENDRO";
                 string output = Path.Combine(
                     outputFolder,
-                    prefix.Text + Path.GetFileNameWithoutExtension(path) + suffix + ".dlb"
+                    Path.GetFileNameWithoutExtension(path) + suffix + ".dlb"
                 );
                 for (int n = 2; File.Exists(output); n++)
                     output = Path.Combine(
                         outputFolder,
-                        prefix.Text + Path.GetFileNameWithoutExtension(path) + suffix + $"_{n}.dlb"
+                        Path.GetFileNameWithoutExtension(path) + suffix + $"_{n}.dlb"
                     );
                 try
                 {

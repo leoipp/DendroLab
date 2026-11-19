@@ -8,7 +8,10 @@ using Dendro.Core.Spreadsheets;
 
 namespace Dendro.Core.Processing;
 
-public sealed record InventoryContext(string Id, string Origin, string Type);
+public sealed record InventoryContext(string Id, string Origin, string Type)
+{
+    public IReadOnlyDictionary<string, string> KeyFields { get; init; } = new Dictionary<string, string>();
+}
 
 internal readonly record struct InventoryKeyFingerprint(ulong A, ulong B, ulong C, ulong D)
 {
@@ -106,7 +109,7 @@ public sealed class InventoryIdentity
             if (type == "MISTO") throw new InvalidDataException($"Linha {row + 1}: não foi possível identificar IFC/IFPC pela origem. Configure a coluna de tipo em Identificação.");
         }
         var key = (type, origins.Length > 1 ? JsonSerializer.Serialize(origins) : origin);
-        if (!contexts.TryGetValue(key, out var context)) contexts[key] = context = new(Hash(JsonSerializer.Serialize(new[] { key.Item1, key.Item2 })), origin, type);
+        if (!contexts.TryGetValue(key, out var context)) contexts[key] = context = new(Hash(JsonSerializer.Serialize(new[] { key.Item1, key.Item2 })), origin, type) { KeyFields = originColumns.ToDictionary(c => input.Text(0, c), c => input.Text(row, c)) };
         return context;
     }
     private InventoryKeyFingerprint RawKey(int row, int[] columns)

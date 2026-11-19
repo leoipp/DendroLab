@@ -184,6 +184,16 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
             }
         }
         ReplaceReferences(Data);
+        if (Meta["gis_symbology"] is JsonObject symbols)
+        {
+            string? styleKey = symbols.Select(pair => pair.Key).FirstOrDefault(Matches);
+            if (styleKey != null)
+            {
+                var style = symbols[styleKey]?.DeepClone();
+                symbols.Remove(styleKey);
+                symbols[newPath] = style;
+            }
+        }
         Touch();
     }
 

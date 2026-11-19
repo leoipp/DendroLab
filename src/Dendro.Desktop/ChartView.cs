@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -116,17 +116,20 @@ internal sealed partial class ChartView : DockPanel
             primaryActions.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
 
             StyleChartAction(generateGraph, "Gerar / atualizar gráfico");
+            Ui.StyleAction(generateGraph, Ui.ActionEmphasis.Primary);
             Grid.SetColumn(generateGraph, 0);
             primaryActions.Children.Add(generateGraph);
 
             fitCurrentGraph = Ui.AsyncButton("Ajustar este gráfico", () => owner.Execute(() => owner.OpenChart(config.S("path"), true, config)));
             StyleChartAction(fitCurrentGraph, "Ajustar este gráfico");
+            Ui.StyleAction(fitCurrentGraph, Ui.ActionEmphasis.Secondary);
             fitCurrentGraph.IsEnabled = false;
             Grid.SetColumn(fitCurrentGraph, 1);
             primaryActions.Children.Add(fitCurrentGraph);
             data.Children.Add(primaryActions);
 
             var batchButton = Ui.AsyncButton("Gerar gráficos em lote…", () => owner.Execute(GenerateBatch));
+            Ui.StyleAction(batchButton, Ui.ActionEmphasis.Secondary);
             batchButton.HorizontalAlignment = HorizontalAlignment.Stretch;
             batchButton.HorizontalContentAlignment = HorizontalAlignment.Center;
             batchButton.MinWidth = 0;

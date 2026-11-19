@@ -20,12 +20,13 @@ internal sealed class AppDatePicker : Grid
 
     internal AppDatePicker()
     {
-        Height = 35;
+        MinHeight = 36;
         Language = XmlLanguage.GetLanguage("pt-BR");
 
         input = Ui.Input();
         input.Margin = new Thickness(0);
-        input.Padding = new Thickness(9, 5, 38, 5);
+        input.MinHeight = 36;
+        input.Padding = new Thickness(9, 0, 38, 0);
         input.VerticalContentAlignment = VerticalAlignment.Center;
         Children.Add(input);
 

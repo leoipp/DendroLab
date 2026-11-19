@@ -9,7 +9,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class StatisticalTestsView : ScrollViewer
+internal sealed class StatisticalTestsView : ToolFormView
 {
     private readonly MainWindow owner;
     private readonly ProjectSession session;
@@ -49,7 +49,7 @@ internal sealed class StatisticalTestsView : ScrollViewer
     {
         this.owner = owner;
         this.session = session;
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+
         paths = session.Files.Where(session.IsTabular).ToArray();
         source = Ui.Combo(paths.Select(p => session.ContentName(p)));
         if (path != null)
@@ -67,7 +67,7 @@ internal sealed class StatisticalTestsView : ScrollViewer
                 families.Length > 0 ? Math.Max(0, Array.FindIndex(families, m => m.Id == id)) : -1;
         };
         form = Ui.Form();
-        Content = form;
+        SetForm(form);
         form.Children.Add(
             owner.ToolHeader("Testes estatísticos")
         );
@@ -106,7 +106,7 @@ internal sealed class StatisticalTestsView : ScrollViewer
         Field("Grupos incluídos", groupChoices);
         Field("Modelo 1P do projeto", model);
         Field("Significância α (0 a 1)", alpha);
-        form.Children.Add(Ui.AsyncButton("Executar teste", () => owner.Execute(Run)));
+        SetPrimaryAction(Ui.AsyncButton("Executar teste", () => owner.Execute(Run)));
         source.SelectionChanged += async (_, _) =>
         {
             if (!loading)

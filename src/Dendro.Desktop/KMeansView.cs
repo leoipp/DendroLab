@@ -8,7 +8,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class KMeansView : ScrollViewer
+internal sealed class KMeansView : ToolFormView
 {
     private readonly MainWindow owner;
     private readonly ProjectSession session;
@@ -24,8 +24,8 @@ internal sealed class KMeansView : ScrollViewer
     {
         this.owner = owner;
         this.session = session;
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-        var form = Ui.Form(); Content = form;
+
+        var form = Ui.Form(); SetForm(form);
         form.Children.Add(owner.ToolHeader("K-means · agrupamento"));
         Ui.AddHelp(form, "Agrupa linhas numéricas semelhantes. Compare a curva elbow (inertia) e a silhouette média para escolher K; por padrão, o app seleciona o K com maior silhouette.");
         Ui.Section(form, "Dados");
@@ -45,7 +45,7 @@ internal sealed class KMeansView : ScrollViewer
         Ui.Field(form, "Máximo de linhas para ajustar e avaliar", trainingLimit);
         Ui.Field(form, "Tamanho da amostra silhouette", silhouetteSample);
         Ui.AddHelp(form, "K-means++ é repetido com várias inicializações para reduzir a dependência do centro inicial. Quando a tabela excede o limite, os centros e métricas são ajustados numa amostra uniforme determinística; depois todas as linhas completas recebem um grupo. A silhouette é estimada numa amostra estratificada por grupo.");
-        form.Children.Add(Ui.AsyncButton("Calcular elbow e silhouette e gerar grupos", () => owner.Execute(Run)));
+        SetPrimaryAction(Ui.AsyncButton("Calcular elbow e silhouette e gerar grupos", () => owner.Execute(Run)));
 
         source.SelectionChanged += async (_, _) => { if (!loading && source.SelectedIndex >= 0) await owner.Execute(() => LoadSource()); };
         sheet.SelectionChanged += async (_, _) => { if (!loading && sheet.SelectedIndex >= 0) await owner.Execute(LoadColumns); };

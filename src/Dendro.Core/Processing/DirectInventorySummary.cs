@@ -15,6 +15,7 @@ public sealed class DirectInventorySummary : IDisposable
         ["modo"] = "completo", ["remover_duplicadas"] = false, ["inventory_type"]="",["factor_scope"]="talhao",["n_dominantes_parcela"] = 5,["calcular_is"] = false,["colunas_direto"]=columns,["saidas"] = new JsonObject {
             ["arvore"] = false, ["parcela"] = true, ["talhao"] = true, ["lote"] = true, ["projeto"] = true,
         },
+        ["distribuicao_classes"] = false, ["largura_classe_dap_mm"] = 20, ["intervalo_classe_volume_m3"] = 0.1,
         };
     }
     public static void Validate(JsonNode? config)
@@ -26,6 +27,7 @@ public sealed class DirectInventorySummary : IDisposable
             throw new InvalidDataException("N de árvores dominantes por parcela deve ser um inteiro entre 1 e 10.000.");
         if (config["calcular_is"] is { } enabled && enabled.GetValueKind() is not (System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False))
             throw new InvalidDataException("A opção de cálculo de IS deve estar marcada ou desmarcada.");
+        if (config.B("distribuicao_classes")) _ = new DiameterClassDistribution(config.N("largura_classe_dap_mm", 20), config.N("intervalo_classe_volume_m3", 0.1));
         if (config.S("modo", "completo") is not ("completo" or "resumo_direto"))
             throw new InvalidDataException("Modo do Processador inválido.");
         if (config["saidas"] is not null && config["saidas"] is not JsonObject)
@@ -78,6 +80,7 @@ public sealed class DirectInventorySummary : IDisposable
     private readonly string? trees;
     private readonly JsonNode? processing;
     private readonly int dominantTreesPerPlot;
+    private readonly DiameterClassDistribution? classDistribution;
     private readonly double confidence, minimumPlots;
     private readonly SiteIndexCalculator? siteIndex;
     private readonly Dictionary<string,int[]> projections=new();
@@ -99,6 +102,8 @@ public sealed class DirectInventorySummary : IDisposable
         confidence=config.At("estatisticas").N("nivel_confianca",.95);
         minimumPlots=config.At("estatisticas").N("min_parcelas_estatistica",3);
         dominantTreesPerPlot=(int)(processing?.N("n_dominantes_parcela",5)??5);
+        if (processing?.B("distribuicao_classes") == true)
+            classDistribution = new(processing.N("largura_classe_dap_mm", 20), processing.N("intervalo_classe_volume_m3", 0.1));
         siteIndex = SiteIndexCalculator.Create(config);
         if (!Path.GetExtension(output).Equals(CompactBankReader.Extension, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Resumo direto deve ser gravado em DLB.");
@@ -155,6 +160,7 @@ public sealed class DirectInventorySummary : IDisposable
             p.DapSum += dap; p.DapSquareSum += dap * dap; p.ValidDap++;
             p.BasalArea += Math.PI * Math.Pow(dap / 10, 2) / 40000;
         }
+        classDistribution?.Add(stand, plot, lot, year, key, context.Id, dap, treeVolume, context);
         if (double.IsFinite(height) && height > 0) { p.HeightSum += height; p.ValidHeight++; }
         p.Dominant.Add(dap, height);
         if (double.IsFinite(treeVolume)) p.Volume += treeVolume; else if (stem) p.Invalid++;
@@ -272,6 +278,12 @@ public sealed class DirectInventorySummary : IDisposable
         Write("talhao", "DIRETO - TALHOES", values.GroupBy(p => (p.Context.Id, p.Stand, p.Year)).Select(g => (g.Key.Stand, (IEnumerable<Plot>)g)));
         Write("lote", "DIRETO - LOTES", values.GroupBy(p => (p.Context.Id, p.Lot, p.Year)).Select(g => (g.Key.Lot, (IEnumerable<Plot>)g)));
         Write("projeto", "DIRETO - PROJETO", values.GroupBy(p => (p.Context.Id, p.Year)).Select(g => (projectName, (IEnumerable<Plot>)g)));
+        if (classDistribution != null)
+            foreach (var (name, table) in classDistribution.CreateTables(processing?["saidas"] as JsonObject))
+            {
+                string id = writer.AddTable(Enumerable.Range(0, table.Width).Select(c => table.Text(0, c)).ToArray(), name);
+                for (int row = 1; row < table.Count; row++) writer.Add(id, Enumerable.Range(0, table.Width).Select(c => table.Value(row, c)).ToArray());
+            }
         string info = writer.AddTable(["Item", "Descrição"], "INFORMACOES");
         if (vcccPairs > 0)
         {

@@ -9,7 +9,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class InventoryAuditView : ScrollViewer
+internal sealed class InventoryAuditView : ToolFormView
 {
     private readonly MainWindow owner;
     private readonly ProjectSession session;
@@ -26,7 +26,7 @@ internal sealed class InventoryAuditView : ScrollViewer
     internal InventoryAuditView(MainWindow owner,ProjectSession session)
     {
         this.owner=owner; this.session=session;
-        var form=Ui.Form(); Content=form; VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
+        var form=Ui.Form(); SetForm(form);
         form.Children.Add(owner.ToolHeader("Auditoria pós-processamento"));
         Ui.Section(form,"Origens da auditoria");
         Ui.Field(form,"Processamento para auditar",result);
@@ -46,7 +46,7 @@ internal sealed class InventoryAuditView : ScrollViewer
         Ui.Section(form,"Executar auditoria");
         Ui.AddHelp(form,"O vínculo temporal normalmente usa talhão, parcela, lote e tipo. Fonte pode mudar de ano para ano; inclua um identificador permanente quando houver parcelas diferentes com o mesmo nome. Mostra volume anterior/atual, diferença, incremento anual e mudanças em densidade e VMI. Datas/idades repetidas ficam ambíguas e interrompem a sequência.");
         Ui.AddHelp(form,"Os valores iniciais são filtros de triagem editáveis, sem significado de limite biológico. Sinaliza volume > limiar, volume > Q3 + multiplicador × IQR, densidade alta e inconsistências aritméticas. Confere na origem as parcelas sinalizadas de maior volume, até o limite escolhido; as demais ficam identificadas como não conferidas.");
-        form.Children.Add(Ui.AsyncButton("Auditar e salvar evidências",()=>owner.Execute(Run)));
+        SetPrimaryAction(Ui.AsyncButton("Auditar e salvar evidências",()=>owner.Execute(Run)));
         result.SelectionChanged+=async(_,_)=>{if(!loading)await owner.Execute(()=>SelectResult());};
         origin.SelectionChanged+=async(_,_)=>{if(!loading)await owner.Execute(()=>LoadTables(true));};
         resultSheet.SelectionChanged+=async(_,_)=>{if(!loading)await owner.Execute(LoadColumns);};

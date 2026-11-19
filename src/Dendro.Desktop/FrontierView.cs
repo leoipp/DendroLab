@@ -5,7 +5,7 @@ using Dendro.Core.Regression;
 
 namespace Dendro.Desktop;
 
-internal sealed class FrontierView : ScrollViewer
+internal sealed class FrontierView : ToolFormView
 {
     private readonly MainWindow owner;
     private readonly ProjectSession session;
@@ -37,8 +37,8 @@ internal sealed class FrontierView : ScrollViewer
         form.Children.Add(observations);
         Ui.Section(form,"Gerar resultado");
         Ui.AddHelp(form, "Usa X, Y, estratos, filtro de grupo e exclusões do gráfico. Máximos/mínimos mantêm o X observado; percentis usam o X médio da faixa; médias de cauda usam o X médio dos pontos selecionados. Faixas insuficientes são omitidas.");
-        form.Children.Add(Ui.AsyncButton("Calcular fronteira", () => owner.Execute(Calculate)));
-        Content = form;
+        SetPrimaryAction(Ui.AsyncButton("Calcular fronteira", () => owner.Execute(Calculate)));
+        SetForm(form);
         void RefreshSources()
         {
             string? selected = source.SelectedIndex >= 0 && source.SelectedIndex < graphs.Length ? ChartView.Identity(graphs[source.SelectedIndex]) : null;

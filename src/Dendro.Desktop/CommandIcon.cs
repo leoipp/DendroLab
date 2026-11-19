@@ -63,6 +63,7 @@ public enum CommandIconKind
     ModelValidation,
     FullScreen,
     ExitFullScreen,
+    Broom,
 }
 
 public sealed class CommandIcon : FrameworkElement
@@ -100,6 +101,7 @@ public sealed class CommandIcon : FrameworkElement
     };
     private static readonly Dictionary<CommandIconKind, string[]> Paths = new()
     {
+        [CommandIconKind.Broom] = ["M14 11 L20 3 Q21 2 22 3 Q23 4 22 5 L16 13 M9 11 L17 15 L13 22 L2 17 Z", "M6 17 L5 19 M9 18 L8 20 M12 19 L11 21"],
         [CommandIconKind.Updates] = ["M4 8 A9 9 0 0 1 20 7 M21 3 V8 H16 M20 16 A9 9 0 0 1 4 17 M3 21 V16 H8", "M12 7 V16 M8.5 12.5 L12 16 15.5 12.5"],
         [CommandIconKind.IntegratedCleaning] = ["M2 4 H10 V14 H2 Z M14 10 H22 V20 H14 Z M4 11 L8 7 M16 17 L20 13", "M10 8 H13 Q16 8 16 5 V3 M13 5 L16 2 19 5 M8 18 H11 M9.5 16.5 V19.5"],
         [CommandIconKind.New] = ["M6 3.5 Q6 2.5 7 2.5 H14 L19 7.5 V20 Q19 21.5 17.5 21.5 H7.5 Q6 21.5 6 20 Z M14 2.5 V7.5 H19", "M9 14 H16 M12.5 10.5 V17.5"],

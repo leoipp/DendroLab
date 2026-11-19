@@ -4,8 +4,45 @@ namespace Dendro.Desktop;
 
 public static class ShellVisuals
 {
+    public static readonly DependencyProperty PaneHeaderMenuProperty = DependencyProperty.RegisterAttached(
+        "PaneHeaderMenu", typeof(bool), typeof(ShellVisuals), new PropertyMetadata(false, (element, args) =>
+        {
+            if (element is not System.Windows.Controls.Border header) return;
+            header.PreviewMouseRightButtonUp -= OpenPaneHeaderMenu;
+            if ((bool)args.NewValue) header.PreviewMouseRightButtonUp += OpenPaneHeaderMenu;
+        }));
+    public static bool GetPaneHeaderMenu(DependencyObject element) => (bool)element.GetValue(PaneHeaderMenuProperty);
+    public static void SetPaneHeaderMenu(DependencyObject element, bool value) => element.SetValue(PaneHeaderMenuProperty, value);
+
+    private static void OpenPaneHeaderMenu(object sender, System.Windows.Input.MouseButtonEventArgs args)
+    {
+        if (args.Handled || sender is not System.Windows.Controls.Border header
+            || header.Child is not AvalonDock.Controls.AnchorablePaneTitle title) return;
+        var menu = title.Model?.Root?.Manager?.AnchorableContextMenu;
+        if (menu == null) return;
+        menu.DataContext = title.LayoutItem;
+        menu.PlacementTarget = header;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.HorizontalOffset = menu.VerticalOffset = 0;
+        menu.IsOpen = true;
+        args.Handled = true;
+    }
+
     static ShellVisuals()
     {
+        // AvalonDock already opens the same menu on right-click over the title.
+        // Remove only the redundant options arrow, including floating single panes.
+        EventManager.RegisterClassHandler(typeof(AvalonDock.Controls.DropDownButton),
+            FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, args) =>
+            {
+                if (!ReferenceEquals(sender, args.OriginalSource)) return;
+                var button = (AvalonDock.Controls.DropDownButton)sender;
+                DependencyObject? parent = button;
+                while (parent != null && parent is not AvalonDock.Controls.AnchorablePaneTitle)
+                    parent = System.Windows.Media.VisualTreeHelper.GetParent(parent);
+                if (parent != null || button.Name == "SinglePaneContextMenu")
+                    button.Visibility = Visibility.Collapsed;
+            }));
         EventManager.RegisterClassHandler(typeof(AvalonDock.Controls.LayoutAnchorableControl),
             FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, args) =>
             {
