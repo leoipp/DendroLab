@@ -1,4 +1,5 @@
 using System.IO;
+using System.Buffers.Binary;
 using System.Data;
 using System.Globalization;
 using System.Text;
@@ -16,31 +17,43 @@ internal sealed class VectorAttributeTable : DockPanel
     private readonly MainWindow owner;
     private readonly DbfTable dbf;
     private readonly DataTable table = new("Atributos");
-    private readonly DataGrid grid = new() { AutoGenerateColumns = false, CanUserAddRows = false, IsReadOnly = false, SelectionUnit = DataGridSelectionUnit.FullRow, SelectionMode = DataGridSelectionMode.Extended, GridLinesVisibility = DataGridGridLinesVisibility.All, RowHeight = 26, HeadersVisibility = DataGridHeadersVisibility.All };
+    private readonly DataView view;
+    private readonly DataGrid grid = new() { AutoGenerateColumns = false, CanUserAddRows = false, IsReadOnly = false, SelectionUnit = DataGridSelectionUnit.FullRow, SelectionMode = DataGridSelectionMode.Extended, GridLinesVisibility = DataGridGridLinesVisibility.Horizontal, HorizontalGridLinesBrush = new SolidColorBrush(Color.FromRgb(224,230,236)), VerticalGridLinesBrush = Brushes.Transparent, RowHeight = 26, HeadersVisibility = DataGridHeadersVisibility.All, EnableRowVirtualization = true, EnableColumnVirtualization = true };
     private readonly TextBlock editStatus = Ui.Text("");
     private readonly TextBlock selectionStatus = Ui.Text("");
     private bool dirty;
+    private bool updatingSelection;
+    private bool selectedOnly;
+    private const string SelectionColumn="_DendroSelected";
     internal bool HasUnsavedChanges => dirty;
 
-    internal VectorAttributeTable(MainWindow owner, string shapefile)
+    internal static (DbfTable Dbf,DataTable Table) Prepare(string shapefile)
     {
-        this.owner = owner;
-        dbf = DbfTable.Read(Path.ChangeExtension(shapefile, ".dbf"));
-        Background = Brushes.White;
-        foreach (var field in dbf.Fields)
+        var dbf=DbfTable.Read(Path.ChangeExtension(shapefile,".dbf"));
+        var table=new DataTable("Atributos");
+        foreach(var field in dbf.Fields)table.Columns.Add(field.Name,typeof(string));
+        foreach(var row in dbf.Rows)
         {
-            table.Columns.Add(field.Name, typeof(string));
-            grid.Columns.Add(new DataGridTextColumn { Header = field.Name, Binding = new Binding("[" + field.Name + "]") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.LostFocus }, IsReadOnly = !field.Editable, MinWidth = 100, Width = DataGridLength.SizeToHeader });
-        }
-        foreach (var row in dbf.Rows)
-        {
-            var values = table.NewRow();
-            for (int c = 0; c < dbf.Fields.Count; c++) values[c] = dbf.ReadValue(row, c);
+            var values=table.NewRow();
+            for(int c=0;c<dbf.Fields.Count;c++)values[c]=dbf.ReadValue(row,c);
             table.Rows.Add(values);
         }
-        grid.ItemsSource = table.DefaultView;
+        table.Columns.Add(SelectionColumn,typeof(bool));
+        return(dbf,table);
+    }
+
+    internal VectorAttributeTable(MainWindow owner, DbfTable dbf,DataTable table)
+    {
+        this.owner=owner;this.dbf=dbf;this.table=table;
+        Background = Brushes.White;
+        VirtualizingPanel.SetIsVirtualizing(grid,true);VirtualizingPanel.SetVirtualizationMode(grid,VirtualizationMode.Recycling);
+        foreach (var field in dbf.Fields)
+        {
+            grid.Columns.Add(new DataGridTextColumn { Header = field.Name, Binding = new Binding("[" + field.Name + "]") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.LostFocus }, IsReadOnly = !field.Editable, MinWidth = 100, Width = DataGridLength.SizeToHeader });
+        }
+        view=table.DefaultView;grid.ItemsSource = view;
         grid.CellEditEnding += (_, e) => { if (e.EditAction == DataGridEditAction.Commit) MarkDirty(); };
-        grid.SelectionChanged += (_, _) => UpdateSelectionStatus();
+        grid.SelectionChanged += (_, e) => { if(!updatingSelection)UpdateSelectionStatus(e); };
         grid.PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Enter) { grid.CommitEdit(); } };
         var toolbar = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(247, 249, 251)), LastChildFill = true, Margin = new Thickness(0, 0, 0, 1) };
         editStatus.Margin = new Thickness(8, 0, 12, 0); editStatus.VerticalAlignment = VerticalAlignment.Center; editStatus.HorizontalAlignment = HorizontalAlignment.Right;
@@ -48,11 +61,20 @@ internal sealed class VectorAttributeTable : DockPanel
         var commandGroups = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 2, 4, 2) };
         commandGroups.Children.Add(CommandGroup("Campo", CommandButton("Adicionar", CommandIconKind.Add, AddColumn), CommandButton("Calcular", CommandIconKind.CalculateColumn, Calculate)));
         commandGroups.Children.Add(new Border { Width = 1, Background = new SolidColorBrush(Color.FromRgb(212, 219, 226)), Margin = new Thickness(6, 2, 6, 2) });
-        commandGroups.Children.Add(CommandGroup("Seleção", CommandButton("Selecionar por atributos", CommandIconKind.Filter, SelectByAttributes), CommandButton("Limpar", CommandIconKind.ClearSelection, () => grid.SelectedItems.Clear())));
+        commandGroups.Children.Add(CommandGroup("Seleção", CommandButton("Selecionar por atributos", CommandIconKind.Filter, SelectByAttributes), CommandButton("Inverter", CommandIconKind.SelectRows, InvertSelection), CommandButton("Excluir selecionadas…", CommandIconKind.Remove, () => _=owner.Execute(DeleteSelectedToNewShapefile)), CommandButton("Limpar", CommandIconKind.ClearSelection, () => grid.SelectedItems.Clear())));
         commandGroups.Children.Add(new Border { Width = 1, Background = new SolidColorBrush(Color.FromRgb(212, 219, 226)), Margin = new Thickness(6, 2, 6, 2) });
         commandGroups.Children.Add(CommandGroup("Edição", CommandButton("Salvar", CommandIconKind.Save, Save)));
         toolbar.Children.Add(commandGroups);
         var footer = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(247, 249, 251)), MinHeight = 30 };
+        Button? selectedOnlyButton=null;
+        selectedOnlyButton=Ui.IconButton("Mostrar somente os selecionados",CommandIconKind.SelectRows,()=>
+        {
+            selectedOnly=!selectedOnly;updatingSelection=true;
+            try{view.RowFilter=selectedOnly?$"[{SelectionColumn}] = true":"";selectedOnlyButton!.ToolTip=selectedOnly?"Mostrar todos os registros":"Mostrar somente os selecionados";}
+            finally{updatingSelection=false;}
+        });
+        selectedOnlyButton.Width=selectedOnlyButton.MinWidth=30;selectedOnlyButton.Height=selectedOnlyButton.MinHeight=28;selectedOnlyButton.Margin=new Thickness(5,1,8,1);
+        selectedOnlyButton.ToolTip="Mostrar somente os selecionados";DockPanel.SetDock(selectedOnlyButton,Dock.Left);footer.Children.Add(selectedOnlyButton);
         selectionStatus.Margin = new Thickness(10, 4, 10, 4); selectionStatus.VerticalAlignment = VerticalAlignment.Center;
         DockPanel.SetDock(selectionStatus, Dock.Left); footer.Children.Add(selectionStatus);
         var count = Ui.Text($"{dbf.Rows.Count:N0} registros · {dbf.Fields.Count} campos"); count.Margin = new Thickness(10, 4, 10, 4); count.VerticalAlignment = VerticalAlignment.Center; count.HorizontalAlignment = HorizontalAlignment.Right;
@@ -85,7 +107,28 @@ internal sealed class VectorAttributeTable : DockPanel
         return button;
     }
 
-    private void UpdateSelectionStatus() => selectionStatus.Text = $"{grid.SelectedItems.Count:N0} de {dbf.Rows.Count:N0} selecionados";
+    private void UpdateSelectionStatus(SelectionChangedEventArgs? e=null)
+    {
+        if(e!=null)
+        {
+            foreach(DataRowView row in e.RemovedItems.OfType<DataRowView>())row[SelectionColumn]=false;
+            foreach(DataRowView row in e.AddedItems.OfType<DataRowView>())row[SelectionColumn]=true;
+        }
+        selectionStatus.Text = $"{grid.SelectedItems.Count:N0} de {dbf.Rows.Count:N0} selecionados";
+    }
+    private void InvertSelection()
+    {
+        var selected=grid.SelectedItems.OfType<DataRowView>().Select(row=>row.Row).ToHashSet();
+        updatingSelection=true;
+        try
+        {
+            foreach(DataRow row in table.Rows)row[SelectionColumn]=!selected.Contains(row);
+            if(selectedOnly)view.RowFilter=$"[{SelectionColumn}] = true";
+            grid.SelectedItems.Clear();foreach(DataRowView row in view)if(row[SelectionColumn] is true)grid.SelectedItems.Add(row);
+        }
+        finally{updatingSelection=false;}
+        UpdateSelectionStatus();
+    }
     private void MarkDirty() { dirty = true; editStatus.Text = "Alterações não salvas"; }
 
     private void Save()
@@ -99,6 +142,56 @@ internal sealed class VectorAttributeTable : DockPanel
             owner.Log("Tabela de atributos salva no shapefile.");
         }
         catch (Exception ex) { Ui.Alert("Não foi possível salvar a tabela de atributos", ex.Message, Ui.MessageTone.Error); }
+    }
+
+    private async Task DeleteSelectedToNewShapefile()
+    {
+        if(dirty)throw new InvalidOperationException("Salve as edições do DBF antes de criar um novo shapefile.");
+        var excluded=table.Rows.Cast<DataRow>().Select((row,index)=>(row,index)).Where(pair=>pair.row[SelectionColumn] is true).Select(pair=>pair.index).ToHashSet();
+        if(excluded.Count==0)throw new InvalidOperationException("Selecione as linhas que deseja excluir do novo shapefile.");
+        if(excluded.Count>=dbf.Rows.Count)throw new InvalidOperationException("A seleção excluiria todas as feições. Mantenha ao menos uma linha.");
+        if(!Ui.Confirm("Excluir selecionadas em uma cópia","Será criado um novo shapefile sem as feições selecionadas. O original será preservado.","Criar shapefile",destructive:true))return;
+        string original=Path.ChangeExtension(dbf.FilePath,".shp");
+        string folder=owner.Session.FilePath.Length>0
+            ?Path.Combine(Path.GetDirectoryName(owner.Session.FilePath)!,Path.GetFileNameWithoutExtension(owner.Session.FilePath)+"_camadas")
+            :Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DENDRO","camadas");
+        string stem=Path.GetFileNameWithoutExtension(original)+"_sem_selecionados";
+        Directory.CreateDirectory(folder);string target=Path.Combine(folder,stem+".shp");
+        for(int suffix=2;File.Exists(target);suffix++)target=Path.Combine(folder,stem+"_"+suffix+".shp");
+        try{await Task.Run(()=>WriteSubset(original,target,excluded));}
+        catch{foreach(string extension in new[]{".shp",".shx",".dbf",".prj",".cpg"}){string partial=Path.ChangeExtension(target,extension);if(File.Exists(partial))File.Delete(partial);}throw;}
+        await owner.RegisterVectorOutput(target,original);
+    }
+
+    private void WriteSubset(string source,string target,HashSet<int> excluded)
+    {
+        string sourceShx=Path.ChangeExtension(source,".shx");if(!File.Exists(sourceShx))throw new FileNotFoundException("O shapefile precisa do arquivo .shx para criar a cópia.",sourceShx);
+        using var input=new FileStream(source,FileMode.Open,FileAccess.Read,FileShare.Read);using var reader=new BinaryReader(input);
+        byte[] header=reader.ReadBytes(100);if(header.Length!=100||BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(0,4))!=9994)throw new InvalidDataException("Cabeçalho SHP inválido.");
+        string shx=Path.ChangeExtension(target,".shx");string dbfPath=Path.ChangeExtension(target,".dbf");
+        using var shpOut=new FileStream(target,FileMode.CreateNew,FileAccess.Write,FileShare.None);using var shpWriter=new BinaryWriter(shpOut);shpWriter.Write(header);
+        using var shxOut=new FileStream(shx,FileMode.CreateNew,FileAccess.Write,FileShare.None);using var shxWriter=new BinaryWriter(shxOut);shxWriter.Write(header);
+        int record=0,kept=0;var indexEntries=new List<(int Offset,int Length)>();
+        long declared=BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(24,4))*2L;
+        while(input.Position+8<=Math.Min(input.Length,declared))
+        {
+            int recordNumber=BinaryPrimitives.ReadInt32BigEndian(reader.ReadBytes(4));int words=BinaryPrimitives.ReadInt32BigEndian(reader.ReadBytes(4));int bytes=checked(words*2);
+            if(bytes<4||input.Position+bytes>input.Length)throw new InvalidDataException("Registro SHP truncado.");
+            byte[] shape=reader.ReadBytes(bytes);if(recordNumber<=0)throw new InvalidDataException("Índice de registro SHP inválido.");
+            int row=recordNumber-1;if(row>=dbf.Rows.Count)throw new InvalidDataException("O SHP e o DBF têm quantidades de registros incompatíveis.");
+            if(!excluded.Contains(row))
+            {
+                int offset=checked((int)(shpOut.Position/2));shpWriter.Write(BinaryPrimitives.ReverseEndianness(kept+1));shpWriter.Write(BinaryPrimitives.ReverseEndianness(words));shpWriter.Write(shape);indexEntries.Add((offset,words));kept++;
+            }
+            record++;
+        }
+        if(kept==0)throw new InvalidDataException("Nenhuma feição permaneceu no shapefile.");
+        long fileBytes=shpOut.Position;shpWriter.Seek(24,SeekOrigin.Begin);shpWriter.Write(BinaryPrimitives.ReverseEndianness(checked((int)(fileBytes/2))));
+        shxWriter.Seek(24,SeekOrigin.Begin);shxWriter.Write(BinaryPrimitives.ReverseEndianness(50+indexEntries.Count*4));
+        foreach(var entry in indexEntries){shxWriter.Write(BinaryPrimitives.ReverseEndianness(entry.Offset));shxWriter.Write(BinaryPrimitives.ReverseEndianness(entry.Length));}
+        shpWriter.Flush();shxWriter.Flush();
+        dbf.WriteSubset(dbfPath,excluded);
+        foreach(string extension in new[]{".prj",".cpg"}){string sidecar=Path.ChangeExtension(source,extension);if(File.Exists(sidecar))File.Copy(sidecar,Path.ChangeExtension(target,extension));}
     }
 
     private void AddColumn()
@@ -134,67 +227,120 @@ internal sealed class VectorAttributeTable : DockPanel
         form.Children.Add(Ui.Text("Exemplo: [Altura] * [DAP] / 100 ou [Gênero] & \"-\" & [Espécie]"));
         var accept = Ui.Button("Calcular", () => { });
         var dialog = Ui.Dialog("Calcular nova coluna", Ui.WithToolbar(Ui.Scroll(form), accept), 650, 430);
-        accept.Click += (_, _) =>
+        accept.Click += async (_, _) =>
         {
+            accept.IsEnabled=false;string caption=accept.Content?.ToString()??"Calcular";accept.Content="Calculando…";
             try
             {
                 string key = name.Text.Trim();
                 if (key.Length == 0 || key.Length > 10 || key.Any(ch => !(char.IsLetterOrDigit(ch) || ch == '_'))) throw new InvalidDataException("O nome deve ter até 10 letras, números ou sublinhados.");
                 if (table.Columns.Contains(key)) throw new InvalidDataException("Já existe uma coluna com esse nome. Informe outro nome.");
                 var calc = new ColumnExpression(expression.Text, table.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToArray());
-                var output = new string[table.Rows.Count];
-                for (int i = 0; i < table.Rows.Count; i++)
-                {
-                    try
-                    {
-                        object? value = calc.Evaluate(table.Rows[i].ItemArray);
-                        output[i] = value switch { null => "", bool b => b ? "1" : "0", double n when double.IsFinite(n) => n.ToString("G17", CultureInfo.InvariantCulture), _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "" };
-                    }
-                    catch (Exception ex) { throw new InvalidDataException($"Erro na linha {i + 1}: {ex.Message}", ex); }
-                }
                 char fieldType = type.SelectedIndex switch { 1 => 'N', 2 => 'D', _ => 'C' };
-                if (fieldType == 'D')
-                    for (int i = 0; i < output.Length; i++) output[i] = output[i].Length == 0 ? "" : DbfTable.DisplayDate(output[i]);
+                var output = await Task.Run(() =>
+                {
+                    var values=new string[table.Rows.Count];
+                    for (int i = 0; i < table.Rows.Count; i++)
+                    {
+                        try
+                        {
+                            object? value = calc.Evaluate(table.Rows[i].ItemArray);
+                            values[i] = value switch { null => "", bool b => b ? "1" : "0", double n when double.IsFinite(n) => n.ToString("G17", CultureInfo.InvariantCulture), _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "" };
+                            if(fieldType=='D'&&values[i].Length>0)values[i]=DbfTable.DisplayDate(values[i]);
+                        }
+                        catch (Exception ex) { throw new InvalidDataException($"Erro na linha {i + 1}: {ex.Message}", ex); }
+                    }
+                    return values;
+                });
                 int width = fieldType == 'D' ? 8 : fieldType == 'N' ? 20 : output.Select(v => dbf.EncodedLength(v)).DefaultIfEmpty(1).Max();
                 if (width > 254) throw new InvalidDataException("Há resultados com mais de 254 bytes; divida o cálculo em colunas menores.");
                 width = Math.Max(1, width);
                 dbf.AddField(key, fieldType, width); table.Columns.Add(key, typeof(string));
                 grid.Columns.Add(new DataGridTextColumn { Header = key, Binding = new Binding("[" + key + "]") { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.LostFocus }, MinWidth = 100, Width = DataGridLength.SizeToHeader });
-                for (int i = 0; i < output.Length; i++) table.Rows[i][key] = fieldType == 'N' && double.TryParse(output[i], NumberStyles.Float, CultureInfo.InvariantCulture, out double n) ? n.ToString("G17", CultureInfo.InvariantCulture) : output[i];
+                table.BeginLoadData();try{for (int i = 0; i < output.Length; i++) table.Rows[i][key] = fieldType == 'N' && double.TryParse(output[i], NumberStyles.Float, CultureInfo.InvariantCulture, out double n) ? n.ToString("G17", CultureInfo.InvariantCulture) : output[i];}finally{table.EndLoadData();}
                 MarkDirty(); dialog.DialogResult = true;
             }
             catch (Exception ex) { Ui.Alert("Não foi possível calcular a coluna", ex.Message, Ui.MessageTone.Error); }
+            finally{accept.Content=caption;accept.IsEnabled=true;}
         };
         dialog.ShowDialog();
     }
 
     private void SelectByAttributes()
     {
-        var expression = new TextBox { MinWidth = 460, MinHeight = 55, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
-        var form = new StackPanel { Margin = new Thickness(14) };
-        form.Children.Add(Ui.Text("Expressão que retorna verdadeiro/falso. Exemplo: [DAP] > 20")); form.Children.Add(expression);
-        var accept = Ui.Button("Selecionar", () => { });
-        var dialog = Ui.Dialog("Selecionar por atributos", Ui.WithToolbar(form, accept), 620, 260);
-        accept.Click += (_, _) =>
+        var columns=table.Columns.Cast<DataColumn>().Select(column=>column.ColumnName).ToArray();
+        var column=Ui.Combo(columns);if(columns.Length>0)column.SelectedIndex=0;
+        var function=Ui.Combo(["Valor da coluna","TAMANHO","MAIUSCULA","MINUSCULA","APARAR","CONTEM"]);function.SelectedIndex=0;
+        var comparison=Ui.Combo(["=", "!=", ">", ">=", "<", "<="]);comparison.SelectedIndex=0;
+        var value=Ui.Input("valor");
+        var expression = new TextBox { MinHeight = 58, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility=ScrollBarVisibility.Auto, IsEnabled=false };
+        var manual=new System.Windows.Controls.Primitives.ToggleButton{Width=42,Height=24,IsChecked=false,Focusable=true,Cursor=System.Windows.Input.Cursors.Hand,Template=SwitchTemplate()};
+        var mode=new DockPanel{Margin=new Thickness(0,5,0,10)};
+        mode.Children.Add(new TextBlock{Text="Escrever expressão manualmente",VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(0,0,10,0)});
+        DockPanel.SetDock(manual,Dock.Right);mode.Children.Add(manual);
+        var builder=new StackPanel();
+        Ui.Field(builder,"Coluna",column);Ui.Field(builder,"Função",function);
+        var compareRow=new Grid();compareRow.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(110)});compareRow.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(1,GridUnitType.Star)});
+        var opPanel=new StackPanel{Margin=new Thickness(0,0,8,0)};Ui.Field(opPanel,"Operador",comparison);compareRow.Children.Add(opPanel);
+        var valuePanel=new StackPanel();Ui.Field(valuePanel,"Valor",value);Grid.SetColumn(valuePanel,1);compareRow.Children.Add(valuePanel);
+        builder.Children.Add(compareRow);
+        var form=new StackPanel{Margin=new Thickness(14)};
+        form.Children.Add(Ui.Text("Monte a condição selecionando uma coluna, função e comparação."));form.Children.Add(builder);form.Children.Add(mode);
+        form.Children.Add(Ui.Text("Expressão de seleção"));form.Children.Add(expression);
+        void UpdateExpression()
         {
+            if(manual.IsChecked==true||column.SelectedItem is not string selected)return;
+            string field="["+selected+"]";
+            string fn=function.SelectedItem?.ToString()??"Valor da coluna";
+            int index=Array.IndexOf(columns,selected);bool numeric=index>=0&&(dbf.Fields[index].Type is 'N' or 'F' or 'I');
+            string literal=numeric?value.Text.Trim().Replace(',','.'):"\""+value.Text.Replace("\"","\"\"",StringComparison.Ordinal)+"\"";
+            string lhs=fn switch{"TAMANHO"=>$"TAMANHO({field})","MAIUSCULA"=>$"MAIUSCULA({field})","MINUSCULA"=>$"MINUSCULA({field})","APARAR"=>$"APARAR({field})",_=>field};
+            expression.Text=fn=="CONTEM"?$"CONTEM({field};\"{value.Text.Replace("\"","\"\"",StringComparison.Ordinal)}\")":$"{lhs} {comparison.SelectedItem} {literal}";
+        }
+        column.SelectionChanged+=(_,_)=>UpdateExpression();function.SelectionChanged+=(_,_)=>{comparison.IsEnabled=function.SelectedItem?.ToString()!="CONTEM";UpdateExpression();};comparison.SelectionChanged+=(_,_)=>UpdateExpression();value.TextChanged+=(_,_)=>UpdateExpression();
+        manual.Checked+=(_,_)=>{expression.IsEnabled=true;builder.IsEnabled=false;expression.Focus();};
+        manual.Unchecked+=(_,_)=>{expression.IsEnabled=false;builder.IsEnabled=true;UpdateExpression();};
+        comparison.IsEnabled=true;UpdateExpression();
+        var accept = Ui.Button("Selecionar", () => { });
+        accept.HorizontalAlignment=HorizontalAlignment.Right;accept.MinWidth=120;
+        var footer=new DockPanel{LastChildFill=false,Margin=new Thickness(12,8,12,10)};DockPanel.SetDock(accept,Dock.Right);footer.Children.Add(accept);
+        var content=new DockPanel{Background=Brushes.White};DockPanel.SetDock(footer,Dock.Bottom);content.Children.Add(footer);content.Children.Add(Ui.Scroll(form));
+        var dialog = Ui.Dialog("Selecionar por atributos", content, 620, 440);
+        accept.Click += async (_, _) =>
+        {
+            accept.IsEnabled=false;string caption=accept.Content?.ToString()??"Selecionar";accept.Content="Selecionando…";
             try
             {
-                var calc = new ColumnExpression(expression.Text, table.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToArray());
-                var selected = new List<object>();
-                for (int i = 0; i < table.Rows.Count; i++)
+                var calc = new ColumnExpression(expression.Text, columns);
+                var selected = await Task.Run(() =>
                 {
-                    object? value;
-                    try { value = calc.Evaluate(table.Rows[i].ItemArray); }
-                    catch (Exception ex) { throw new InvalidDataException($"Erro na linha {i + 1}: {ex.Message}", ex); }
-                    bool match = value is bool b ? b : value is double number ? number != 0 : string.Equals(Convert.ToString(value, CultureInfo.InvariantCulture), "verdadeiro", StringComparison.OrdinalIgnoreCase);
-                    if (match) selected.Add(grid.Items[i]);
-                }
-                grid.SelectedItems.Clear(); foreach (var row in selected) grid.SelectedItems.Add(row);
+                    var matches=new List<int>();
+                    for(int i=0;i<table.Rows.Count;i++)
+                    {
+                        object? result;
+                        try{result=calc.Evaluate(table.Rows[i].ItemArray);}
+                        catch(Exception ex){throw new InvalidDataException($"Erro na linha {i+1}: {ex.Message}",ex);}
+                        bool match=result is bool b?b:result is double number?number!=0:string.Equals(Convert.ToString(result,CultureInfo.InvariantCulture),"verdadeiro",StringComparison.OrdinalIgnoreCase);
+                        if(match)matches.Add(i);
+                    }
+                    return matches.ToArray();
+                });
+                updatingSelection=true;try{grid.SelectedItems.Clear();foreach(int row in selected)grid.SelectedItems.Add(grid.Items[row]);}finally{updatingSelection=false;}
+                UpdateSelectionStatus();
                 dialog.DialogResult = true;
             }
             catch (Exception ex) { Ui.Alert("Não foi possível selecionar registros", ex.Message, Ui.MessageTone.Error); }
+            finally{accept.Content=caption;accept.IsEnabled=true;}
         };
         dialog.ShowDialog();
+    }
+
+    private static ControlTemplate SwitchTemplate()
+    {
+        var root=new FrameworkElementFactory(typeof(Border));root.Name="Track";root.SetValue(Border.CornerRadiusProperty,new CornerRadius(12));root.SetValue(Border.BackgroundProperty,new SolidColorBrush(Color.FromRgb(190,199,208)));
+        var thumb=new FrameworkElementFactory(typeof(System.Windows.Shapes.Ellipse));thumb.Name="Thumb";thumb.SetValue(FrameworkElement.WidthProperty,18d);thumb.SetValue(FrameworkElement.HeightProperty,18d);thumb.SetValue(FrameworkElement.MarginProperty,new Thickness(3));thumb.SetValue(System.Windows.Shapes.Shape.FillProperty,Brushes.White);thumb.SetValue(FrameworkElement.HorizontalAlignmentProperty,HorizontalAlignment.Left);root.AppendChild(thumb);
+        var template=new ControlTemplate(typeof(System.Windows.Controls.Primitives.ToggleButton)){VisualTree=root};
+        var on=new Trigger{Property=System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty,Value=true};on.Setters.Add(new Setter(Border.BackgroundProperty,new SolidColorBrush(Color.FromRgb(38,106,154)),"Track"));on.Setters.Add(new Setter(FrameworkElement.HorizontalAlignmentProperty,HorizontalAlignment.Right,"Thumb"));template.Triggers.Add(on);return template;
     }
 }
 
@@ -209,6 +355,7 @@ internal sealed class DbfTable
     private int[] originalWidths = [];
     private byte[][] originalDescriptors = [];
     internal List<Field> Fields { get; } = [];
+    internal string FilePath=>path;
     internal List<byte[]> Rows { get; } = [];
 
     private DbfTable(string path, byte[] data, Encoding encoding, int headerLength, int recordLength)
@@ -269,7 +416,7 @@ internal sealed class DbfTable
 
     internal void Write(DataTable table)
     {
-        if (table.Rows.Count != Rows.Count || table.Columns.Count != Fields.Count) throw new InvalidDataException("A estrutura da tabela mudou durante a edição.");
+        if (table.Rows.Count != Rows.Count || table.Columns.Count < Fields.Count) throw new InvalidDataException("A estrutura da tabela mudou durante a edição.");
         int headerLength = 33 + Fields.Count * 32, recordLength = 1 + Fields.Sum(f => f.Width);
         using var stream = new MemoryStream(headerLength + recordLength * Rows.Count + 1);
         byte[] header = original.AsSpan(0, 32).ToArray();
@@ -301,6 +448,12 @@ internal sealed class DbfTable
         stream.WriteByte(0x1A);
         string temp = path + ".tmp";
         File.WriteAllBytes(temp, stream.ToArray()); File.Move(temp, path, true);
+    }
+    internal void WriteSubset(string target,HashSet<int> excluded)
+    {
+        int count=Rows.Count-excluded.Count;byte[] header=original.AsSpan(0,BitConverter.ToUInt16(original,8)).ToArray();
+        BitConverter.GetBytes(count).CopyTo(header,4);using var output=new FileStream(target,FileMode.CreateNew,FileAccess.Write,FileShare.None);output.Write(header);
+        for(int i=0;i<Rows.Count;i++)if(!excluded.Contains(i))output.Write(Rows[i]);output.WriteByte(0x1A);
     }
     private int FieldOffsetOriginal(int column) => 1 + originalWidths.Take(column).Sum();
     private string ReadOriginalValue(byte[] row, int col) => encoding.GetString(row, FieldOffsetOriginal(col), originalWidths[col]).Trim();

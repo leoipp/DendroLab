@@ -254,7 +254,7 @@ public sealed class DirectInventorySummary : IDisposable
                 {
                     AddRow(id, [group.Name, first.Stand, first.Name, first.Lot, first.Year == 0 ? null : (double)first.Year,
                         (double)all.Length, first.MeanDap, first.QuadraticDap, first.MeanHeight, first.Dominant.Dap, first.Dominant.Height,
-                        siteIndexValue, all.Sum(p => p.BasalArea), volumeHa, .. typedHa, stemsHa,
+                        siteIndexValue, all.Sum(p => p.BasalArea), .. typedHa, stemsHa,
                         stemsHa > 0 ? volumeHa / stemsHa : double.NaN, effective, totalVolume, .. typedTotals, totalStems,
                         (double)all.Sum(p => p.Invalid), age, age * 12, first.Measurement, first.Area / first.Rows,
                         first.Id, first.Context.Id, first.Context.Origin, first.Context.Type]);
@@ -263,7 +263,7 @@ public sealed class DirectInventorySummary : IDisposable
                 {
                     AddRow(id, [group.Name, level == "talhao" ? first.Stand : "", "", level is "parcela" or "lote" ? first.Lot : "",
                         first.Year == 0 ? null : (double)first.Year, (double)all.Length, rawVolume, .. sampledTyped, stems,
-                        stems > 0 ? rawVolume / stems : double.NaN, volumeHa, .. typedHa, stemsHa,
+                        stems > 0 ? rawVolume / stems : double.NaN, .. typedHa, stemsHa,
                         stemsHa > 0 ? volumeHa / stemsHa : double.NaN, dapd, hd, siteIndexValue, effective, totalVolume,
                         .. typedTotals, totalStems, (double)all.Sum(p => p.Invalid),
                         .. (level == "talhao" ? new object?[] { age, age * 12 } : Array.Empty<object?>()),

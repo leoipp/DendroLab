@@ -273,14 +273,14 @@ Sem limiar manual, os escores do conjunto de treinamento são ordenados e usa-se
 Nas linhas elegíveis, calcula-se a média e o desvio com divisor N por variável. Essa escala de padronização não é a variância amostral com divisor N−1 usada em testes de médias.
 > zᵢⱼ = (xᵢⱼ − μⱼ)/σⱼ; σⱼ² = Σ(xᵢⱼ − μⱼ)²/N
 > d²(zᵢ,cₖ) = Σⱼ(zᵢⱼ − cₖⱼ)²
-Sem padronização, uma variável em milímetros poderia dominar outra em metros por sua amplitude numérica. Variáveis constantes são recusadas. A escala é obtida das linhas elegíveis e o ajuste pode usar uma amostra dessas linhas conforme o limite configurado.
+Sem padronização, uma variável em milímetros poderia dominar outra em metros por sua amplitude numérica. Variáveis constantes são recusadas. A escala e o ajuste usam todas as linhas elegíveis.
 ### Objetivo e atualização
 > Inertia = Σᵢ ‖zᵢ − c_grupo(i)‖²
 O algoritmo alterna atribuição ao centro mais próximo e atualização dos centros pela média das observações do grupo. No k-means++, o primeiro centro é aleatório e os seguintes são favorecidos pela distância quadrática ao centro já mais próximo. São feitas inicializações repetidas e conserva-se uma solução válida de menor inertia.
 ### Silhouette
 aᵢ é a distância média do ponto aos demais membros de seu grupo; bᵢ é a menor distância média aos pontos de outro grupo.
 > sᵢ = (bᵢ − aᵢ)/máximo(aᵢ,bᵢ); silhouette = média(sᵢ)
-Para aᵢ = 1 e bᵢ = 4, sᵢ = 0,75. Valores próximos de 1 indicam boa separação; próximos de zero indicam sobreposição; negativos sugerem que outro grupo está mais próximo. Um grupo com um único ponto recebe contribuição zero na rotina. A silhouette mostrada pode ser calculada sobre uma amostra estratificada, não sobre todas as distâncias da base.
+Para aᵢ = 1 e bᵢ = 4, sᵢ = 0,75. Valores próximos de 1 indicam boa separação; próximos de zero indicam sobreposição; negativos sugerem que outro grupo está mais próximo. Um grupo com um único ponto recebe contribuição zero na rotina. A silhouette usa todas as linhas elegíveis e calcula as distâncias par a par.
 
 ## Volumetria
 ### Equação de Schumacher–Hall e escala

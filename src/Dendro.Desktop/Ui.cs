@@ -8,7 +8,7 @@ using System.Windows.Media;
 
 namespace Dendro.Desktop;
 
-internal static class Ui
+internal static partial class Ui
 {
     internal enum MessageTone { Information, Warning, Error }
     internal enum ActionEmphasis { Primary, Secondary, Tertiary }
@@ -571,8 +571,10 @@ internal static class Ui
         UIElement content,
         double width = 780,
         double height = 650
-    ) =>
-        new()
+    )
+    {
+        RemoveRepeatedDialogTitle(content, title);
+        var window = new Window
         {
             Title = title,
             Content = content,
@@ -582,7 +584,11 @@ internal static class Ui
             MinHeight = 320,
             Owner = ActiveWindow,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false,
         };
+        window.SourceInitialized += (_, _) => HideDialogIcon(window);
+        return window;
+    }
 
     public static DockPanel WithToolbar(UIElement body, params Button[] buttons)
     {

@@ -15,10 +15,9 @@ internal sealed class KMeansView : ToolFormView
     private string[] paths = [];
     private bool loading;
     private TableSource? loadedSource;
-    private readonly ComboBox source = Ui.Combo([]), sheet = Ui.Combo([]), x = Ui.Combo([]), y = Ui.Combo([]);
+    private readonly ComboBox source = Ui.Combo([]), sheet = Ui.Combo([]);
     private readonly ListBox features = new() { SelectionMode = SelectionMode.Multiple, MinHeight = 120, MaxHeight = 240 };
-    private readonly TextBox minK = Ui.Input("2"), maxK = Ui.Input("8"), selectedK = Ui.Input(), seed = Ui.Input("42"),
-        trainingLimit = Ui.Input("20000"), silhouetteSample = Ui.Input("1000");
+    private readonly TextBox minK = Ui.Input("2"), maxK = Ui.Input("8"), selectedK = Ui.Input(), seed = Ui.Input("42");
 
     internal KMeansView(MainWindow owner, ProjectSession session)
     {
@@ -33,18 +32,15 @@ internal sealed class KMeansView : ToolFormView
         Ui.Field(form, "Tabela / worksheet", sheet);
         Ui.Field(form, "Variáveis numéricas para o agrupamento (selecione 2 ou mais)", features);
         Ui.AddHelp(form, "As variáveis selecionadas são padronizadas por z-score antes de calcular as distâncias. Identificadores, códigos e medidas em escalas incompatíveis podem produzir grupos sem significado.");
-        Ui.Field(form, "Eixo X do gráfico de grupos", x);
-        Ui.Field(form, "Eixo Y do gráfico de grupos", y);
+        Ui.AddHelp(form, "O gráfico dos grupos usa automaticamente as duas primeiras variáveis selecionadas. Elbow e silhouette dependem apenas do agrupamento e não pedem eixos X/Y.");
 
-        Ui.Section(form, "Escolha de K e limites");
-        Ui.Field(form, "K mínimo (2 a 12)", minK);
-        Ui.Field(form, "K máximo (até 12)", maxK);
+        Ui.Section(form, "Escolha de K");
+        Ui.Field(form, "K mínimo (a partir de 2)", minK);
+        Ui.Field(form, "K máximo (maior que o mínimo)", maxK);
         Ui.Field(form, "K final (vazio = maior silhouette)", selectedK);
         Ui.AddHelp(form, "Execute primeiro com o K automático para inspecionar os gráficos. Para seguir o cotovelo observado no elbow, informe aqui o K escolhido e execute novamente.");
         Ui.Field(form, "Semente aleatória", seed);
-        Ui.Field(form, "Máximo de linhas para ajustar e avaliar", trainingLimit);
-        Ui.Field(form, "Tamanho da amostra silhouette", silhouetteSample);
-        Ui.AddHelp(form, "K-means++ é repetido com várias inicializações para reduzir a dependência do centro inicial. Quando a tabela excede o limite, os centros e métricas são ajustados numa amostra uniforme determinística; depois todas as linhas completas recebem um grupo. A silhouette é estimada numa amostra estratificada por grupo.");
+        Ui.AddHelp(form, "K-means++ é repetido com várias inicializações. O ajuste, a inertia e a silhouette usam todas as linhas completas da tabela; linhas incompletas ficam sem grupo. O cálculo exato da silhouette compara distâncias entre as linhas e pode demorar em bases grandes.");
         SetPrimaryAction(Ui.AsyncButton("Calcular elbow e silhouette e gerar grupos", () => owner.Execute(Run)));
 
         source.SelectionChanged += async (_, _) => { if (!loading && source.SelectedIndex >= 0) await owner.Execute(() => LoadSource()); };
@@ -101,9 +97,6 @@ internal sealed class KMeansView : ToolFormView
         features.ItemsSource = numeric;
         foreach (string preferred in new[] { "DAP", "H" })
             if (numeric.Contains(preferred)) features.SelectedItems.Add(preferred);
-        x.ItemsSource = numeric; y.ItemsSource = numeric;
-        x.SelectedItem = numeric.Contains("DAP") ? "DAP" : numeric.ElementAtOrDefault(0);
-        y.SelectedItem = numeric.Contains("H") ? "H" : numeric.ElementAtOrDefault(1);
         loadedSource = selected;
     }
 
@@ -128,12 +121,10 @@ internal sealed class KMeansView : ToolFormView
             throw new InvalidOperationException("Selecione uma fonte e uma tabela válidas.");
         string[] selectedFeatures = features.SelectedItems.Cast<string>().ToArray();
         if (selectedFeatures.Length < 2) throw new InvalidOperationException("Selecione pelo menos duas variáveis numéricas.");
-        string axisX = x.SelectedItem?.ToString() ?? throw new InvalidOperationException("Selecione o eixo X.");
-        string axisY = y.SelectedItem?.ToString() ?? throw new InvalidOperationException("Selecione o eixo Y.");
+        string axisX = selectedFeatures[0], axisY = selectedFeatures[1];
         int minimum = Integer(minK, "K mínimo"), maximum = Integer(maxK, "K máximo");
         int? finalK = string.IsNullOrWhiteSpace(selectedK.Text) ? null : Integer(selectedK, "K final");
-        var options = new KMeansOptions(minimum, maximum, finalK, Integer(seed, "semente"),
-            Integer(trainingLimit, "máximo de linhas"), Integer(silhouetteSample, "amostra silhouette"));
+        var options = new KMeansOptions(minimum, maximum, finalK, Integer(seed, "semente"));
         var table = loadedSource;
         string path = paths[source.SelectedIndex];
         var definition = new JsonObject

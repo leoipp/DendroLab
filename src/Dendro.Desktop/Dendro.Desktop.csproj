@@ -20,6 +20,7 @@
     <ProjectReference Include="..\Dendro.Core\Dendro.Core.csproj" />
     <Resource Include="Assets\logo.ico" />
     <Resource Include="Assets\logo.png" />
+    <Resource Include="Assets\tree_canopy_taper.png" />
     <EmbeddedResource Include="Manual\DendroLab.md" />
     <EmbeddedResource Include="Manual\Calculos.md" />
   </ItemGroup>

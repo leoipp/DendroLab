@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using Dendro.Core.Statistics;
@@ -14,7 +15,12 @@ namespace Dendro.Desktop;
 internal sealed class GrowthComparisonView : DockPanel
 {
     private sealed record SourceChoice(string Path, string Sheet, int Header, string Label);
-    private sealed record CurveOption(string Id, int Index, string Label);
+    private sealed record CurveOption(string Id, int Index, string Label)
+    {
+        private bool selected;
+        public Action? Changed { get; set; }
+        public bool Selected { get => selected; set { selected = value; Changed?.Invoke(); } }
+    }
     private readonly MainWindow owner;
     private readonly ProjectSession session;
     private GrowthValidationView.CurveChoice[] curves = [];
@@ -25,12 +31,13 @@ internal sealed class GrowthComparisonView : DockPanel
         newUnit = Ui.Combo(["anos", "meses"]), source = Ui.Combo(["Somente comparar curvas"]),
         table = Ui.Combo([]), age = Ui.Combo([]), observed = Ui.Combo([]), dataUnit = Ui.Combo(["anos", "meses"]), year = Ui.Combo(["(sem separação por ano)"]);
     private readonly ListBox unitColumns = new() { SelectionMode = SelectionMode.Multiple, MinHeight = 65, MaxHeight = 120 };
-    private readonly ListBox candidates = new() { SelectionMode = SelectionMode.Multiple, MinHeight = 80, MaxHeight = 150 };
+    private readonly DataGrid candidates = new() { AutoGenerateColumns = false, CanUserAddRows = false, CanUserDeleteRows = false,
+        RowHeaderWidth = 0, HeadersVisibility = DataGridHeadersVisibility.Column, MinRowHeight = 36, Height = 220 };
+    private IEnumerable<CurveOption> SelectedCandidates => (candidates.ItemsSource as IEnumerable<CurveOption> ?? []).Where(c => c.Selected);
     private CurveOption[] curveOptions = [];
     private readonly TextBox minimum = Ui.Input("0,5"), maximum = Ui.Input("15"), reference = Ui.Input("7"),
         productionUnit = Ui.Input("m³/ha"), relative = Ui.Input("5"), absolute = Ui.Input("0"), cutoff = Ui.Input((DateTime.Today.Year - 1).ToString());
-    private readonly CheckBox comparable = new() { Content = new TextBlock { Text = "As curvas representam a mesma produção, na mesma unidade, regime e população. Nos gráficos, X é idade e Y é produção acumulada.", TextWrapping = TextWrapping.Wrap } },
-        independent = new() { Content = new TextBlock { Text = "Esta base não foi usada para ajustar nem selecionar nenhum dos modelos; as unidades selecionadas são independentes entre si.", TextWrapping = TextWrapping.Wrap } };
+    private readonly CheckBox independent = new() { Content = new TextBlock { Text = "Esta base não foi usada para ajustar nem selecionar nenhum dos modelos; as unidades selecionadas são independentes entre si.", TextWrapping = TextWrapping.Wrap } };
     private readonly StackPanel validation = new();
     private readonly StackPanel baselineUnitField = new(), candidateUnitField = new();
     private readonly Canvas preview = new() { Height = 165, MinHeight = 145, ClipToBounds = true };
@@ -60,8 +67,8 @@ internal sealed class GrowthComparisonView : DockPanel
         Ui.Field(curveForm, "Curva base de comparação", baseline);
         Ui.Field(baselineUnitField, "Unidade de X da curva base", oldUnit);
         curveForm.Children.Add(baselineUnitField);
-        Ui.Field(curveForm, "Curvas para comparar com a base (Ctrl/Shift para várias)", candidates);
-        Ui.Field(candidateUnitField, "Unidade de X para candidatas vindas de gráficos", newUnit);
+        Ui.Field(curveForm, "Curvas para comparar com a base", candidates);
+        Ui.Field(candidateUnitField, "Unidade de X para candidatas de regressões salvas", newUnit);
         curveForm.Children.Add(candidateUnitField);
         curveForm.Children.Add(Ui.Button("Atualizar modelos disponíveis", RefreshCurves));
         var previewHeader = Ui.Text("Prévia das curvas selecionadas", 12);
@@ -73,7 +80,6 @@ internal sealed class GrowthComparisonView : DockPanel
         tabs.Items.Add(new TabItem { Header = "Curvas", Content = Ui.Scroll(curveForm) });
 
         var rangeForm = Ui.Form();
-        rangeForm.Children.Add(comparable);
         Ui.Field(rangeForm, "Unidade comum da produção", productionUnit);
         Ui.Field(rangeForm, "Idade mínima comum aos ajustes (anos)", minimum);
         Ui.Field(rangeForm, "Idade máxima comum aos ajustes (anos)", maximum);
@@ -103,22 +109,39 @@ internal sealed class GrowthComparisonView : DockPanel
         source.SelectionChanged += async (_, _) => { if (source.SelectedIndex >= 0) await owner.Execute(LoadSource); UpdateSummary(); };
         table.SelectionChanged += async (_, _) => { if (!loadingTables && table.SelectedIndex >= 0) await owner.Execute(LoadColumns); };
         baseline.SelectionChanged += (_, _) => { RefreshCandidateOptions(); UpdateUnitFields(); UpdatePreview(); UpdateSummary(); };
-        candidates.SelectionChanged += (_, _) => { UpdateUnitFields(); UpdatePreview(); UpdateSummary(); };
+
         oldUnit.SelectionChanged += (_, _) => UpdatePreview();
         newUnit.SelectionChanged += (_, _) => UpdatePreview();
         foreach (var input in new[] { minimum, maximum, reference, productionUnit, relative, absolute, cutoff })
             input.TextChanged += (_, _) => { if (ReferenceEquals(input, minimum) || ReferenceEquals(input, maximum)) UpdatePreview(); UpdateSummary(); };
-        comparable.Checked += (_, _) => UpdateSummary();
-        comparable.Unchecked += (_, _) => UpdateSummary();
         preview.SizeChanged += (_, _) => UpdatePreview();
-        baseline.DisplayMemberPath = nameof(CurveOption.Label);
-        candidates.DisplayMemberPath = nameof(CurveOption.Label);
+        // The baseline source contains labels directly, not CurveOption objects.
+        baseline.DisplayMemberPath = "";
+        var check = new FrameworkElementFactory(typeof(CheckBox));
+        check.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        check.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        check.SetValue(FrameworkElement.MarginProperty, new Thickness(0));
+        check.SetBinding(CheckBox.IsCheckedProperty, new Binding(nameof(CurveOption.Selected)) { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+        candidates.Columns.Add(new DataGridTemplateColumn { Header = "Usar", Width = 45, CellTemplate = new DataTemplate { VisualTree = check } });
+        candidates.Columns.Add(new DataGridTextColumn { Header = "Curva", Binding = new Binding(nameof(CurveOption.Label)), IsReadOnly = true, Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
         RefreshCurves();
     }
 
     private void RefreshCurves()
     {
-        curves = GrowthValidationView.Available(session).Where(c => c.Issue.Length == 0).ToArray();
+        var saved = session.Meta.Arr(Dendro.Core.Regression.RegressionApplication.StorageKey)
+            .OfType<JsonObject>()
+            .Select(Dendro.Core.Regression.RegressionApplication.Read)
+            .Where(model => model.Predictors == 1)
+            .Select(model => new GrowthValidationView.CurveChoice
+            {
+                Id = "saved:" + model.Id,
+                Name = "Regressão salva · " + model.Name,
+                FromChart = true,
+                Curve = new GrowthCurve(model.Name, model.Formula, model.Coefficients),
+            });
+        curves = GrowthValidationView.Available(session, includeChartFits: false)
+            .Where(c => c.Issue.Length == 0).Concat(saved).ToArray();
         var duplicatedNames = curves.GroupBy(c => c.Name, StringComparer.Ordinal)
             .Where(group => group.Count() > 1).SelectMany(group => group.Select(curve => curve.Id)).ToHashSet(StringComparer.Ordinal);
         curveOptions = curves.Select((curve, index) => new CurveOption(curve.Id, index,
@@ -132,23 +155,28 @@ internal sealed class GrowthComparisonView : DockPanel
 
     private void RefreshCandidateOptions()
     {
-        var selected = candidates.SelectedItems.OfType<CurveOption>().Select(option => option.Id).ToHashSet(StringComparer.Ordinal);
-        candidates.SelectedItems.Clear();
+        var selected = SelectedCandidates.Select(option => option.Id).ToHashSet(StringComparer.Ordinal);
+
         var available = curveOptions.Where(option => option.Index != baseline.SelectedIndex).ToArray();
         candidates.ItemsSource = available;
-        foreach (var option in available.Where(option => selected.Contains(option.Id))) candidates.SelectedItems.Add(option);
-        if (candidates.SelectedItems.Count == 0)
+        foreach (var option in available)
+        {
+            option.Changed = null;
+            option.Selected = selected.Contains(option.Id);
+            option.Changed = () => { UpdateUnitFields(); UpdatePreview(); UpdateSummary(); };
+        }
+        if (SelectedCandidates.Count() == 0)
         {
             var preferred = curveOptions.FirstOrDefault(option => option.Index != baseline.SelectedIndex && curves[option.Index].FromChart);
             preferred ??= curveOptions.FirstOrDefault(option => option.Index != baseline.SelectedIndex);
-            if (preferred != null) candidates.SelectedItems.Add(preferred);
+            if (preferred != null) preferred.Selected = true;
         }
     }
 
     private void UpdateUnitFields()
     {
         baselineUnitField.Visibility = baseline.SelectedIndex >= 0 && curves[baseline.SelectedIndex].FromChart ? Visibility.Visible : Visibility.Collapsed;
-        candidateUnitField.Visibility = candidates.SelectedItems.OfType<CurveOption>().Any(option => curves[option.Index].FromChart) ? Visibility.Visible : Visibility.Collapsed;
+        candidateUnitField.Visibility = SelectedCandidates.Any(option => curves[option.Index].FromChart) ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static string CurveColor(int index)
@@ -185,7 +213,7 @@ internal sealed class GrowthComparisonView : DockPanel
         var selected = new List<(GrowthCurve Curve, string Label, int Index)>();
         int baseIndex = baseline.SelectedIndex;
         selected.Add((ToCurve(curves[baseIndex], oldUnit, curveOptions[baseIndex].Label), "Base · " + curveOptions[baseIndex].Label, 0));
-        selected.AddRange(candidates.SelectedItems.OfType<CurveOption>().Select((option, index) =>
+        selected.AddRange(SelectedCandidates.Select((option, index) =>
             (ToCurve(curves[option.Index], newUnit, option.Label), option.Label, index + 1)));
         if (selected.Count < 2) { previewLegend.Children.Add(Ui.Text("Selecione ao menos uma curva candidata.", 11)); return; }
         try
@@ -237,11 +265,10 @@ internal sealed class GrowthComparisonView : DockPanel
 
     private void UpdateSummary()
     {
-        int count = candidates.SelectedItems.Count;
+        int count = SelectedCandidates.Count();
         var missing = new List<string>();
         if (baseline.SelectedIndex < 0) missing.Add("selecione a curva base");
         if (count == 0) missing.Add("selecione ao menos uma candidata");
-        if (comparable.IsChecked != true) missing.Add("confirme a compatibilidade na aba Faixa e tolerância");
         if (string.IsNullOrWhiteSpace(productionUnit.Text)) missing.Add("informe a unidade de produção");
         bool minOk = Number(minimum, out double min) && min > 0;
         bool maxOk = Number(maximum, out double max) && max > min;
@@ -307,7 +334,7 @@ internal sealed class GrowthComparisonView : DockPanel
         age.ItemsSource = observed.ItemsSource = columns;
         age.SelectedIndex = Array.FindIndex(columns, c => c is "Idade_anos" or "Idade_meses"); if (age.SelectedIndex < 0 && columns.Length > 0) age.SelectedIndex = 0;
         dataUnit.SelectedIndex = age.SelectedItem?.ToString() == "Idade_meses" ? 1 : 0;
-        observed.SelectedIndex = Array.FindIndex(columns, c => c is "Volume_m3_ha" or "VTCC_ha"); if (observed.SelectedIndex < 0 && columns.Length > 1) observed.SelectedIndex = 1;
+        observed.SelectedIndex = Array.FindIndex(columns, c => c is "VTCC_m3_ha" or "Volume_m3_ha" or "VTCC_ha"); if (observed.SelectedIndex < 0 && columns.Length > 1) observed.SelectedIndex = 1;
         year.ItemsSource = new[] { "(sem separação por ano)" }.Concat(columns).ToArray(); year.SelectedIndex = 0;
         unitColumns.ItemsSource = columns; independent.IsChecked = false; loadedSource = selected;
         UpdateSummary();
@@ -315,10 +342,9 @@ internal sealed class GrowthComparisonView : DockPanel
 
     private async Task Run()
     {
-        if (baseline.SelectedIndex < 0 || candidates.SelectedItems.Count == 0) throw new InvalidOperationException("Selecione uma curva base e pelo menos uma curva para comparar.");
-        if (comparable.IsChecked != true) throw new InvalidOperationException("Confirme a compatibilidade da produção, unidades e população das curvas.");
+        if (baseline.SelectedIndex < 0 || SelectedCandidates.Count() == 0) throw new InvalidOperationException("Selecione uma curva base e pelo menos uma curva para comparar.");
         var a = curves[baseline.SelectedIndex];
-        var selectedCandidates = candidates.SelectedItems.OfType<CurveOption>().Select(option => option.Index).Distinct().ToArray();
+        var selectedCandidates = SelectedCandidates.Select(option => option.Index).Distinct().ToArray();
         if (selectedCandidates.Contains(baseline.SelectedIndex)) throw new InvalidOperationException("A curva base não pode aparecer também na lista de comparação.");
         SourceChoice? selected = source.SelectedIndex > 0 ? loadedSource : null;
         if (source.SelectedIndex > 0 && selected == null) throw new InvalidOperationException("Selecione uma fonte e carregue uma tabela válida para avaliar os dados.");

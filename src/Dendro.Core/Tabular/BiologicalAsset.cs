@@ -26,10 +26,11 @@ public static class BiologicalAsset
 
     private static double Date(object? value)
     {
-        if (value is double d) return double.IsFinite(d) && d > 0 && d <= 2958465 ? Math.Floor(d) : double.NaN;
+        if (value is double d) return double.IsFinite(d) && d > 0 && d <= 2958465 && !InventoryMath.IsYearOnly(d) ? Math.Floor(d) : double.NaN;
         string text = TableCursor.Text(value);
         double parsed = InventoryMath.Date(text);
         if (double.IsFinite(parsed)) return parsed > 0 && parsed <= 2958465 ? Math.Floor(parsed) : double.NaN;
+        if (InventoryMath.IsYearOnly(text)) return double.NaN;
         return DateTime.TryParse(text, CultureInfo.GetCultureInfo("pt-BR"), DateTimeStyles.None, out var date)
             ? date.Date.ToOADate() : double.NaN;
     }

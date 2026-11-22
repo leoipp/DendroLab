@@ -93,6 +93,7 @@ public static class RegressionCatalog
             .Obj("regressoes")
             .Arr("modelos")
             .OfType<JsonObject>()
+            .Where(m => m.B("ativado", true))
             .Where(m => predictors <= 0 || m.N("preditores") == predictors)
             .Select(m => new RegressionFamily(
                 $"{m.S("nome")} · {(int)m.N("preditores")}P",

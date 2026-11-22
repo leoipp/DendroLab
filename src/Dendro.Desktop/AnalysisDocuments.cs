@@ -94,6 +94,11 @@ internal static class AnalysisDocuments
         bool openSeparatePlot = true
     )
     {
+        if (definition.S("kind") == "increments" && definition.S("title").Length > 0)
+        {
+            report.Summary["test"] = definition.S("title");
+            if (report.Plot != null) report.Plot.Chart["title"] = definition.S("title");
+        }
         var summaryTable = SummaryTable(report.Summary);
         if (entry == null)
         {
@@ -284,8 +289,23 @@ internal static class AnalysisDocuments
         if (report.Plot == null) throw new InvalidOperationException("A análise não contém um gráfico salvo.");
         owner.Document("analysis-plot:" + entry.S("id"), "Gráfico · " + report.Plot.Chart.S("title"), AnalysisPlotBody(owner,session,entry,PlotBody(report.Plot)));
     }
-    private static UIElement AnalysisPlotBody(MainWindow owner,ProjectSession session,JsonObject entry,UIElement body)=>entry["definition"].S("kind")=="isolation_forest"
-        ? Ui.WithToolbar(body,Ui.AsyncButton("Gerar gráfico somente com normais",()=>owner.Execute(()=>CreateNormalChart(owner,session,entry)))):body;
+    private static UIElement AnalysisPlotBody(MainWindow owner, ProjectSession session, JsonObject entry, UIElement body)
+    {
+        if (entry["definition"].S("kind") == "increments")
+        {
+            var tabs = new TabControl();
+            tabs.Items.Add(new TabItem { Header = "Gráfico", Content = body });
+            tabs.Items.Add(new TabItem
+            {
+                Header = "Diagnóstico",
+                Content = Ui.Grid(SummaryTable(entry.Obj("summary")).ToJson()),
+            });
+            return tabs;
+        }
+        return entry["definition"].S("kind") == "isolation_forest"
+            ? Ui.WithToolbar(body, Ui.AsyncButton("Gerar gráfico somente com normais", () => owner.Execute(() => CreateNormalChart(owner, session, entry))))
+            : body;
+    }
 
     internal static async Task CreateNormalChart(MainWindow owner,ProjectSession session,JsonObject entry)
     {
@@ -340,6 +360,29 @@ internal static class AnalysisDocuments
 
     internal static DockPanel PlotBody(ChartResult plot)
     {
+        // Line-only diagnostics (for example elbow and silhouette) have curves but
+        // no source observations. ScatterPlot needs finite points to establish axes;
+        // provide the curve vertices as display points and visible descriptors so
+        // both new and previously saved line charts render without X/Y source fields.
+        if (plot.Points.Length == 0 && plot.Curves.Any(curve => curve.Length > 0))
+        {
+            var chart = plot.Chart.DeepClone().AsObject();
+            var lineFits = chart["fits"] as JsonArray ?? new JsonArray();
+            string[] colors = ["#21669D", "#1C8965", "#D56D2C", "#8155B4", "#C33E5E"];
+            for (int index = lineFits.Count; index < plot.Curves.Length; index++)
+                lineFits.Add(new JsonObject
+                {
+                    ["model"] = chart.S("title", $"Série {index + 1}"),
+                    ["converged"] = true,
+                    ["curve_color"] = colors[index % colors.Length],
+                });
+            chart["fits"] = lineFits;
+            var points = plot.Curves.SelectMany((curve, index) => curve
+                .Where(point => point.Length >= 2 && double.IsFinite(point[0]) && double.IsFinite(point[1]))
+                .Select((point, row) => new ChartPoint(point[0], point[1], row + 1, $"Série {index + 1}")))
+                .ToArray();
+            plot = plot with { Chart = chart, Points = points };
+        }
         var chartBody = new DockPanel();
         var legend = new WrapPanel { Margin = new Thickness(10) };
         foreach (var pair in plot.Chart["group_colors"] as JsonObject ?? new JsonObject())
@@ -420,7 +463,10 @@ internal static class AnalysisDocuments
                     JsonSerializer.Deserialize<GrowthCurve[]>(copy["curves"]!.ToJsonString())!,
                     copy.N("min_age"),
                     copy.N("max_age"),
-                    copy.B("annual")
+                    copy.B("annual"),
+                    copy["plot_groups"] is JsonArray groups
+                        ? groups.Select(g => g?.Display() ?? "").ToArray()
+                        : null
                 )
                 : StatisticalAnalysis.Run(
                     new(path, copy.S("sheet"), (int)copy.N("header_row", 1)),

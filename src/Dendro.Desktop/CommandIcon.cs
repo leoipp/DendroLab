@@ -53,6 +53,8 @@ public enum CommandIconKind
     Undo,
     Restore,
     Map,
+    Satellite,
+    Multispectral,
     Activate,
     PairedMeasurements,
     ApplyRegression,
@@ -64,6 +66,7 @@ public enum CommandIconKind
     FullScreen,
     ExitFullScreen,
     Broom,
+    Taper,
 }
 
 public sealed class CommandIcon : FrameworkElement
@@ -98,6 +101,7 @@ public sealed class CommandIcon : FrameworkElement
         [CommandIconKind.CurveComparison] = Frozen("#0891A2"), [CommandIconKind.Anomaly] = Frozen("#D64D73"),
         [CommandIconKind.Frontier] = Frozen("#169B8A"), [CommandIconKind.Statistics] = Frozen("#8262CE"),
         [CommandIconKind.Increments] = Frozen("#167DAD"), [CommandIconKind.Remove] = Frozen("#D64D73"),
+        [CommandIconKind.Satellite] = Frozen("#1887B8"), [CommandIconKind.Multispectral] = Frozen("#4B9B50"),
     };
     private static readonly Dictionary<CommandIconKind, string[]> Paths = new()
     {
@@ -111,7 +115,8 @@ public sealed class CommandIcon : FrameworkElement
         [CommandIconKind.Settings] = ["M5 3 V21 M12 3 V21 M19 3 V21", "M3 7 H7 V11 H3 Z M10 14 H14 V18 H10 Z M17 6 H21 V10 H17 Z"],
         [CommandIconKind.Volume] = ["M4 8 L12 4 20 8 V17 L12 21 4 17 Z M4 8 L12 12 20 8 M12 12 V21", "M8 6 L16 10 M16 10 V14"],
         [CommandIconKind.Growth] = ["M4 20 H21 M7 20 V13 M12 20 V8 M17 20 V4", "M4 11 L10 6 14 7 20 2 M16.5 2 H20 V5.5"],
-        [CommandIconKind.SiteIndex] = ["M4 20 H21 M6 19 V14 M11 19 V9 M16 19 V4", "M4 14 C8 14 8 9 12 9 C16 9 16 4 21 4 M17 4 H21 V8"],
+        [CommandIconKind.Taper] = ["M9 3 H11 C11 9 12 16 15 21 H5 C8 16 9 9 9 3 Z", "M3 11 H17 M5 9 L3 11 5 13 M15 9 L17 11 15 13 M20 4 V20 M18 4 H22 M18 20 H22"],
+        [CommandIconKind.SiteIndex] = ["M8 3 L3 10 H5 L2 16 H14 L11 10 H13 Z M8 16 V21 M4 21 H12", "M19 3 V21 M17 3 H21 M17 21 H21 M17 8 H19 M17 13 H19 M17 18 H19"],
         [CommandIconKind.Contents] = ["M4 3.5 H20 V20.5 H4 Z M4 8.5 H20", "M7.5 12 H9 M12 12 H17 M7.5 16.5 H9 M12 16.5 H17"],
         [CommandIconKind.Tools] = ["M3 9 H21 V21 H3 Z M8 9 V5 H16 V9 M3 13 H21 M10 13 V15 H14 V13", "M7 18 H10 M14 18 H17"],
         [CommandIconKind.History] = ["M4 8 A9 9 0 1 1 4 17 M3 3 V9 H9", "M12 7 V12 L16 14"],
@@ -151,6 +156,8 @@ public sealed class CommandIcon : FrameworkElement
         [CommandIconKind.Restore] = ["M4 12 A8 8 0 1 0 7 5", "M4 3 V8 H9"],
         [CommandIconKind.Activate] = ["M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z", "M7.5 12 L10.5 15 16.5 9"],
         [CommandIconKind.Map] = ["M3 5 L9 3 15 5 21 3 V19 L15 21 9 19 3 21 Z M9 3 V19 M15 5 V21", "M6 9 H6.1 M12 11 H12.1 M18 8 H18.1"],
+        [CommandIconKind.Satellite] = ["M4 4 L9 9 M15 15 L20 20 M15 9 L20 4 M9 15 L4 20 M8 8 L16 16 M8 16 L16 8", "M10 10 H14 V14 H10 Z M3 3 H7 V7 H3 Z M17 17 H21 V21 H17 Z"],
+        [CommandIconKind.Multispectral] = ["M3 6 H8 M3 12 H8 M3 18 H8 M11 4 L21 12 11 20 Z", "M12 8 L17 12 12 16 Z"],
         [CommandIconKind.PairedMeasurements] = ["M4 5 H9 V10 H4 Z M15 14 H20 V19 H15 Z", "M9 7 H13 A4 4 0 0 1 17 11 V14 M14 11 L17 14 20 11 M15 17 H11 A4 4 0 0 1 7 13 V10 M10 13 L7 10 4 13"],
         [CommandIconKind.ApplyRegression] = ["M4 20 H21 M5 18 L10 13 14 15 20 5", "M16 5 H20 V9 M8 7 H12 M8 10 H11"],
         [CommandIconKind.NeuralNetwork] = ["M5 5 A2 2 0 1 0 5 9 A2 2 0 1 0 5 5 M5 15 A2 2 0 1 0 5 19 A2 2 0 1 0 5 15 M18 10 A2 2 0 1 0 18 14 A2 2 0 1 0 18 10", "M7 7 L16 11 M7 17 L16 13 M5 9 V15 M18 5 V9 M18 15 V19"],

@@ -8,7 +8,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class BiologicalAssetView : ScrollViewer
+internal sealed class BiologicalAssetView : ToolFormView
 {
     private readonly MainWindow owner;private readonly ProjectSession session;private string[] paths=[];private bool loading;
     private readonly ComboBox basis=Ui.Combo([]),processed=Ui.Combo([]),baseSheet=Ui.Combo([]),processedSheet=Ui.Combo([]),baseKey=Ui.Combo([]),curveId=Ui.Combo([]),plantingDate=Ui.Combo([]),processingKey=Ui.Combo([]),date=Ui.Combo([]),volume=Ui.Combo([]),inventory=Ui.Combo(["Todos","IFC","IFPC"]);
@@ -23,7 +23,7 @@ internal sealed class BiologicalAssetView : ScrollViewer
     private readonly CheckBox useModelWhenMissing = new() { Content="Se nenhuma fonte tiver medição válida, usar a curva diretamente" };
     internal BiologicalAssetView(MainWindow owner,ProjectSession session)
     {
-        this.owner=owner;this.session=session;var form=Ui.Form();Content=form;VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
+        this.owner=owner;this.session=session;var form=Ui.Form();SetForm(form);
         form.Children.Add(owner.ToolHeader("Ativo biológico"));
         Ui.Section(form,"Tabelas de origem");
         Ui.Field(form,"Tabela base que receberá os resultados",basis);Ui.Field(baseTables,"Tabela ou aba no arquivo base",baseSheet);form.Children.Add(baseTables);
@@ -84,7 +84,7 @@ internal sealed class BiologicalAssetView : ScrollViewer
         Ui.Section(form,"Nome e gravação do resultado");
         Ui.Field(form,"Prefixo para as colunas trazidas",prefix);Ui.Field(form,"Nome da tabela de ativo biológico",name);
         Ui.AddHelp(form,"Gera uma única tabela com os dados da base, a última medição e uma coluna de volume por ano, em ordem crescente. O ano da medição recebe o volume observado; os anos seguintes usam a referência escolhida. A projeção parte da data real da medição e usa Y₂ = Y₁ × F(I₂)/F(I₁) na referência anual escolhida. Todas as projeções usam a última medição real como referência fixa, sem acumular projeções. O IMA(n) = [Y₁ × F(n)/F(I₁)] / n é calculado desde a idade 1, inclusive antes da medição, até a referência do ano final. A data de cada idade é o aniversário do plantio; cada idade tem seu valor e data na mesma linha.");
-        form.Children.Add(Ui.AsyncButton("Gerar ativo biológico",()=>owner.Execute(Run)));
+        SetPrimaryAction(Ui.AsyncButton("Gerar ativo biológico",()=>owner.Execute(Run)));
         basis.SelectionChanged+=async(_,_)=>{if(!loading)await owner.Execute(()=>LoadTables(false));};
         processed.SelectionChanged+=async(_,_)=>{if(!loading)await owner.Execute(()=>LoadTables(true));};
         baseSheet.SelectionChanged+=async(_,_)=>{if(!loading)await owner.Execute(()=>LoadColumns(false));};
@@ -123,8 +123,8 @@ internal sealed class BiologicalAssetView : ScrollViewer
         if(processing)
         {
             date.ItemsSource=names;date.SelectedItem=names.FirstOrDefault(c=>c is "Data_Medicao" or "Data" or "Data de medição");
-            volume.ItemsSource=names;volume.SelectedItem=names.FirstOrDefault(c=>c is "Volume_m3_ha" or "VTCC_ha" or "VCCC_ha");
-            columns.ItemsSource=names;foreach(string c in names.Where(c=>c is "Volume_m3_ha" or "VTCC_ha" or "Fustes_ha" or "VMI_m3_fuste" or "VMI" or "Idade_anos"))columns.SelectedItems.Add(c);
+            volume.ItemsSource=names;volume.SelectedItem=names.FirstOrDefault(c=>c is "VTCC_m3_ha" or "Volume_m3_ha" or "VTCC_ha" or "VCCC_ha");
+            columns.ItemsSource=names;foreach(string c in names.Where(c=>c is "VTCC_m3_ha" or "Volume_m3_ha" or "VTCC_ha" or "Fustes_ha" or "VMI_m3_fuste" or "VMI" or "Idade_anos"))columns.SelectedItems.Add(c);
             inventory.IsEnabled=names.Contains("Tipo_Inventario");inventory.SelectedIndex=inventory.IsEnabled?session.Data!.At("processador").S("inventory_type") switch{"IFC"=>1,"IFPC"=>2,_=>0}:0;
         }
     }

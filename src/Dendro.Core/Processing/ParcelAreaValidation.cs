@@ -41,7 +41,13 @@ public static class ParcelAreaValidation
                 if (!double.IsFinite(value)) reasons.Add(name + " vazio, não numérico ou fora do intervalo.");
                 else if (positive && value <= 0) reasons.Add(name + " menor ou igual a zero.");
             }
-            Check(l, "Comprimento", true); Check(w, "Largura", true); Check(sl, "Declinação no comprimento", false); Check(sw, "Declinação na largura", false);
+            void CheckAngle(double value, string name)
+            {
+                if (!double.IsFinite(value)) reasons.Add(name + " vazio ou não numérico.");
+                else if (!InventoryMath.ValidDeclination(value)) reasons.Add(name + " deve ser maior que −90° e menor que 90°.");
+            }
+            Check(l, "Comprimento", true); Check(w, "Largura", true);
+            CheckAngle(sl, "Declinação no comprimento"); CheckAngle(sw, "Declinação na largura");
             if (reasons.Count == 0) reasons.Add(double.IsFinite(area) ? "A correção pelas declinações resultou em área nula ou negativa." : "O cálculo resultou em área não finita.");
             var key = new IssueKey(input.Text(row, stand), input.Text(row, plot), input.Text(row, lot), input.Text(row, date),
                 input.Text(row, length), input.Text(row, width), input.Text(row, slopeLength), input.Text(row, slopeWidth), input.Text(row, source));

@@ -159,8 +159,15 @@
     </Setter>
   </Style>
   <DataTemplate x:Key="PaneTabTitle">
-    <TextBlock Text="{Binding Title}" Foreground="#304A60" FontWeight="SemiBold"
-               VerticalAlignment="Center" Margin="4,2" />
+    <TextBlock x:Name="TabLabel" Text="{Binding Title}" Foreground="#536A7D"
+               FontSize="12" FontWeight="Normal" VerticalAlignment="Center"
+               Margin="0" ToolTip="{Binding Title}" />
+    <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding IsSelected}" Value="True">
+        <Setter TargetName="TabLabel" Property="Foreground" Value="#174F7A" />
+        <Setter TargetName="TabLabel" Property="FontWeight" Value="SemiBold" />
+      </DataTrigger>
+    </DataTemplate.Triggers>
   </DataTemplate>
   <DataTemplate x:Key="PaneTitle">
     <DockPanel LastChildFill="True">
@@ -205,9 +212,9 @@
             x:Name="PaneFrame"
             CornerRadius="10"
             Background="White"
-            BorderBrush="#D5DFE9"
+            BorderBrush="#21669D"
             BorderThickness="1"
-            Margin="4,3"
+            Margin="4,3,4,0"
             SnapsToDevicePixels="True"
           >
             <Grid>
@@ -242,6 +249,11 @@
             </Grid>
           </local:RoundedPanel>
           <ControlTemplate.Triggers>
+            <DataTrigger Binding="{Binding Model.Parent.Children.Count,RelativeSource={RelativeSource Self}}" Value="1">
+              <Setter TargetName="PaneFrame" Property="CornerRadius" Value="10" />
+              <Setter TargetName="PaneFrame" Property="Margin" Value="4,3" />
+              <Setter TargetName="PaneFrame" Property="BorderBrush" Value="#D5DFE9" />
+            </DataTrigger>
             <DataTrigger Binding="{Binding Model.IsActive,RelativeSource={RelativeSource Self}}" Value="True">
               <Setter TargetName="Header" Property="Background" Value="#21669D" />
               <Setter TargetName="Header" Property="BorderBrush" Value="#21669D" />

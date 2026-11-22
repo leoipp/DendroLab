@@ -52,28 +52,37 @@ internal sealed partial class ChartView
         if (!targets.Any(t => t.Check.IsEnabled))
             throw new InvalidOperationException("Nenhuma tabela contém as colunas necessárias para esse gráfico.");
 
-        var panel = new DockPanel { Margin = new Thickness(16) };
-        var top = new StackPanel();
-        top.Children.Add(Ui.Text($"Gráficos em lote · {template.S("y")} × {template.S("x")}", 16));
-        Ui.AddHelp(top, "Selecione as tabelas. O lote usa os mesmos eixos, filtros e aparência. Cada título inclui a tabela e sua aba de origem. Títulos já existentes recebem um número para preservar os gráficos anteriores.");
+        var form = Ui.Form();
+        Ui.Section(form, "Gráficos em lote");
+        Ui.AddHelp(form, "O lote aplica os eixos, filtros e aparência atuais às tabelas selecionadas. Tabelas sem as colunas necessárias ficam indisponíveis.");
+        Ui.Section(form, "1. Configuração dos gráficos");
+        form.Children.Add(Ui.Text($"Eixo X: {template.S("x")}   ·   Eixo Y: {template.S("y")}"));
+        if (template.S("stratum").Length > 0)
+            form.Children.Add(Ui.Text("Estrato: " + template.S("stratum")));
+        Ui.Section(form, "2. Tabelas de origem");
+        form.Children.Add(BatchSelection(targets.Select(t => t.Check)));
+        form.Children.Add(BatchList(choices, 290));
         var count = Ui.Text("");
-        void UpdateCount() => count.Text = $"{targets.Count(t => t.Check.IsChecked == true)} tabela(s) selecionada(s).";
-        foreach (var target in targets) { target.Check.Checked += (_, _) => UpdateCount(); target.Check.Unchecked += (_, _) => UpdateCount(); }
-        var selection = new WrapPanel();
-        selection.Children.Add(Ui.Button("Marcar compatíveis", () => { foreach (var target in targets.Where(t => t.Check.IsEnabled)) target.Check.IsChecked = true; }));
-        selection.Children.Add(Ui.Button("Limpar seleção", () => { foreach (var target in targets) target.Check.IsChecked = false; }));
-        top.Children.Add(selection); top.Children.Add(count); UpdateCount();
-        DockPanel.SetDock(top, Dock.Top); panel.Children.Add(top);
-        var footer = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
-        DockPanel.SetDock(footer, Dock.Bottom); panel.Children.Add(footer);
-        panel.Children.Add(Ui.Scroll(choices));
-        var dialog = Ui.Dialog("Gerar gráficos em lote", panel, 760, 570);
-        var cancel = Ui.Button("Cancelar", () => dialog.DialogResult = false); cancel.IsCancel = true;
-        var generate = Ui.Button("Gerar selecionados", () => {
-            if (targets.Any(t => t.Check.IsChecked == true)) dialog.DialogResult = true;
-            else count.Text = "Selecione pelo menos uma tabela.";
-        }); generate.IsDefault = true;
-        footer.Children.Add(cancel); footer.Children.Add(generate);
+        var message = Ui.Text("");
+        void UpdateCount() => count.Text = $"{targets.Count(t => t.Check.IsChecked == true)} de {targets.Count(t => t.Check.IsEnabled)} tabelas compatíveis";
+        foreach (var target in targets)
+        {
+            target.Check.Margin = new Thickness(4, 6, 4, 6);
+            target.Check.MinHeight = 28;
+            target.Check.Checked += (_, _) => { message.Text = ""; UpdateCount(); };
+            target.Check.Unchecked += (_, _) => UpdateCount();
+        }
+        UpdateCount();
+        Window? dialog = null;
+        var cancel = Ui.Button("Cancelar", () => dialog!.DialogResult = false);
+        cancel.IsCancel = true;
+        var generate = Ui.Button("Gerar gráficos", () =>
+        {
+            if (targets.Any(t => t.Check.IsChecked == true)) dialog!.DialogResult = true;
+            else message.Text = "Selecione pelo menos uma tabela.";
+        });
+        generate.IsDefault = true;
+        dialog = Ui.Dialog("Gráficos em lote", BatchDialogBody(form, count, message, cancel, generate), 820, 700);
         if (dialog.ShowDialog() != true) return;
 
         var selected = targets.Where(t => t.Check.IsChecked == true).ToArray();
@@ -95,7 +104,10 @@ internal sealed partial class ChartView
                 string tableName = session.ContentName(target.Path);
                 string sourceName = string.Equals(tableName, target.Sheet, StringComparison.OrdinalIgnoreCase)
                     ? tableName : tableName + " · " + target.Sheet;
-                string baseTitle = chart.S("title") + " · " + sourceName;
+                string pattern = template.S("title_pattern", template.S("title"));
+                string baseTitle = pattern.Contains("%%", StringComparison.Ordinal)
+                    ? pattern.Replace("%%", tableName, StringComparison.Ordinal)
+                    : chart.S("title") + " · " + sourceName;
                 chart["title"] = baseTitle;
                 for (int suffix = 2; identities.Contains(Identity(chart)); suffix++) chart["title"] = baseTitle + " (" + suffix + ")";
                 var request = chart.DeepClone().AsObject(); request["path"] = session.Resolve(target.Path);

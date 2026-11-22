@@ -11,7 +11,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class RegressionApplicationView : ScrollViewer
+internal sealed class RegressionApplicationView : ToolFormView
 {
     private const int CatalogPageSize = 500;
     private sealed record SourceChoice(string Name, string ProjectPath, TableSource Table);
@@ -79,9 +79,9 @@ internal sealed class RegressionApplicationView : ScrollViewer
     {
         this.owner = owner;
         this.session = session;
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+
         var form = Ui.Form();
-        Content = form;
+        SetForm(form);
         form.Children.Add(owner.ToolHeader("Aplicar regressões"));
         Ui.AddHelp(form, "Aplique equações ajustadas e salvas no projeto a uma base. Cada regressão pode usar colunas X1, X2 e X3 próprias. A tabela original é mantida; o resultado é salvo como uma nova tabela no projeto.");
         Ui.Section(form, "Base de aplicação");
@@ -132,7 +132,7 @@ internal sealed class RegressionApplicationView : ScrollViewer
         Ui.AddHelp(form, "Confira a fórmula e mapeie cada variável para a coluna equivalente. Colunas ausentes ou valores não numéricos geram resultado vazio apenas naquela linha.");
         Ui.Section(form, "Resultado");
         Ui.Field(form, "Nome da nova tabela", outputName);
-        form.Children.Add(Ui.AsyncButton("Aplicar regressões e criar tabela", () => owner.Execute(Apply)));
+        SetPrimaryAction(Ui.AsyncButton("Aplicar regressões e criar tabela", () => owner.Execute(Apply)));
         form.Children.Add(status);
         source.SelectionChanged += async (_, _) => { if (!loading) await owner.Execute(LoadColumns); };
         grid.SelectionChanged += (_, _) => remove.IsEnabled = grid.SelectedItems.Count > 0;

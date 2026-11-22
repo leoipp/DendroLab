@@ -394,8 +394,7 @@ public sealed class InventoryProcessor
         {
             string plantedName = cadCols.S("data_plantio", "Data de Plantio"),
                 areaName = cadCols.S("area_efetiva", "Área efetiva (ha)");
-            bool plantedMissing = input.Column(plantedName) < 0,
-                areaMissing = input.Column(areaName) < 0;
+            bool areaMissing = input.Column(areaName) < 0;
             int planted = input.Ensure(plantedName),
                 area = input.Ensure(areaName),
                 obs = input.Ensure("H_obs"),
@@ -404,8 +403,9 @@ public sealed class InventoryProcessor
             for (int r = 1; r < input.Count; r++)
             {
                 int rr = RegistryRow(r);
-                if (plantedMissing)
-                    input.Set(r, planted, registry.Value(rr, cp));
+                // The registry is the source of truth for planting date, including
+                // when the inventory already contains a stale column with this name.
+                input.Set(r, planted, registry.Value(rr, cp));
                 if (areaMissing)
                     input.Set(r, area, registry.Value(rr, ca));
                 input.Set(r, obs, input.Number(r, c[4]));
@@ -433,14 +433,17 @@ public sealed class InventoryProcessor
                     b = input.Require(cadCols.S(v.S("col_data2"))),
                     dest = input.Ensure(name);
                 for (int r = 1; r < input.Count; r++)
+                {
+                    double firstDate = InventoryMath.Date(input.Text(r, a));
+                    double secondDate = InventoryMath.Date(input.Text(r, b));
+                    if (!double.IsFinite(firstDate) || !double.IsFinite(secondDate))
+                        throw new InvalidDataException($"Linha {r + 1}: data inválida para calcular '{name}'. Informe datas completas nas colunas '{input.Text(0, a)}' e '{input.Text(0, b)}'.");
                     input.Set(
                         r,
                         dest,
-                        Math.Floor(
-                            InventoryMath.Date(input.Text(r, a))
-                                - InventoryMath.Date(input.Text(r, b))
-                        ) / divisor
+                        Math.Floor(firstDate - secondDate) / divisor
                     );
+                }
             }
         }
         progress?.Invoke(30, "Calculando idade, área e volume por árvore…");
@@ -580,11 +583,13 @@ public sealed class InventoryProcessor
             {
                 var invalidDates = new List<string>();
                 if (!double.IsFinite(planted))
-                    invalidDates.Add($"plantio na coluna '{registry.Text(0, cp)}' (valor: '{registry.Text(rr, cp)}')");
+                    invalidDates.Add(InvalidDateDescription("plantio", registry.Text(0, cp), registry.Text(rr, cp)));
                 if (!double.IsFinite(measured))
-                    invalidDates.Add($"medição na coluna '{input.Text(0, c[5])}' (valor: '{input.Text(r, c[5])}')");
+                    invalidDates.Add(InvalidDateDescription("medição", input.Text(0, c[5]), input.Text(r, c[5])));
                 throw new InvalidDataException($"Linha {r + 1}: data inválida de {string.Join(" e ", invalidDates)}.");
             }
+            if (planted > measured)
+                throw new InvalidDataException($"Linha {r + 1}: data de plantio {DateLabel(planted)} posterior à data de medição {DateLabel(measured)} para o talhão '{stand}', parcela '{plot}', lote '{lot}'.");
             double age = Math.Floor(measured - planted) / 365.25,
                 area = InventoryMath.Area(input.Number(r, lengthColumn), input.Number(r, widthColumn),
                     input.Number(r, slopeLengthColumn), input.Number(r, slopeWidthColumn)),
@@ -1018,6 +1023,14 @@ public sealed class InventoryProcessor
         progress?.Invoke(100, "Relatório gerado com sucesso.");
         return result;
     }
+
+    private static string InvalidDateDescription(string label, string column, string value) =>
+        InventoryMath.IsYearOnly(value)
+            ? $"{label} na coluna '{column}' contém somente o ano '{value}'; informe uma data completa ou um serial Excel válido"
+            : $"{label} na coluna '{column}' (valor: '{value}')";
+
+    private static string DateLabel(double serial) =>
+        DateTime.FromOADate(serial).ToString("dd/MM/yyyy", CultureInfo.GetCultureInfo("pt-BR"));
 
     private static void NormalizeInputUnits(
         DataTable input,

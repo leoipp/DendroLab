@@ -6,7 +6,7 @@ using System.Windows.Controls.Primitives;
 
 namespace Dendro.Desktop;
 
-internal sealed class Sentinel2NdviView : DockPanel
+internal sealed class Sentinel2NdviView : ToolFormView
 {
     private const double EarthRadius = 6378137d;
     private readonly MainWindow owner;
@@ -31,9 +31,10 @@ internal sealed class Sentinel2NdviView : DockPanel
         DockPanel header = owner.ToolHeader("Imagens Sentinel‑2");
         header.Margin = new Thickness(24, 10, 12, 2);
         DockPanel.SetDock(header, Dock.Top);
-        Children.Add(header);
+
 
         var form = Ui.Form();
+        form.Children.Add(header);
         form.Margin = new Thickness(28, 12, 16, 20);
         Ui.AddHelp(form, "Pesquise cenas Sentinel-2 L2A no catálogo Copernicus e escolha uma imagem RGB ou um índice espectral. Todas as saídas mascaram nuvens, sombras e neve. A busca do catálogo é separada da geração da imagem, que consome processamento da sua conta Sentinel Hub.");
         Ui.Field(form, "Data inicial", fromDate);
@@ -80,7 +81,7 @@ internal sealed class Sentinel2NdviView : DockPanel
         var download = Ui.AsyncButton("Gerar imagem e abrir no GIS", DownloadImage);
         download.HorizontalAlignment = HorizontalAlignment.Left;
         download.Margin = new Thickness(0, 8, 0, 4);
-        form.Children.Add(download);
+        SetPrimaryAction(download);
         status.Margin = new Thickness(0, 4, 0, 8);
         form.Children.Add(status);
         if (!session.IsOpen)
@@ -89,7 +90,7 @@ internal sealed class Sentinel2NdviView : DockPanel
             download.IsEnabled = false;
             Ui.AddHelp(form, "Abra ou crie um projeto para salvar as imagens no GIS.");
         }
-        Children.Add(Ui.Scroll(form));
+        SetForm(form);
     }
 
     private static void AddBound(Panel panel, string label, TextBox field)

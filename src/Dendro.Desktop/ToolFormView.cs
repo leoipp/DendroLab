@@ -7,14 +7,19 @@ namespace Dendro.Desktop;
 internal class ToolFormView : DockPanel
 {
     private UIElement? form;
-    private Button? action;
+    private Button[] actions = [];
 
     protected void SetForm(UIElement value) { form = value; RefreshLayout(); }
 
     protected void SetPrimaryAction(Button value)
     {
-        action = value;
-        Ui.StyleAction(action, Ui.ActionEmphasis.Primary);
+        SetPrimaryActions(value);
+    }
+
+    protected void SetPrimaryActions(params Button[] values)
+    {
+        actions = values;
+        foreach (var action in actions) Ui.StyleAction(action, Ui.ActionEmphasis.Primary);
         RefreshLayout();
     }
 
@@ -24,9 +29,9 @@ internal class ToolFormView : DockPanel
         foreach (var border in Children.OfType<Border>())
             if (border.Child is Panel row) row.Children.Clear();
         Children.Clear();
-        if (action != null)
+        if (actions.Length > 0)
         {
-            var footer = Ui.ActionFooter(action);
+            var footer = Ui.ActionFooter(actions);
             SetDock(footer, Dock.Bottom);
             Children.Add(footer);
         }

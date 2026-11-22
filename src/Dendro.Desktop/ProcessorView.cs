@@ -399,6 +399,8 @@ internal sealed class ProcessorView : DockPanel
                     session.Meta.Arr("processing_results").Add(new JsonObject
                     {
                         ["source_path"] = path,
+                        ["source_sheet"] = session.ExcelOptions(path).S("sheet"),
+                        ["direct_options"] = directResult ? config["processador"]?.DeepClone() : null,
                         ["path"] = reference,
                         ["sheets"] = resultSheets.DeepClone(),
                         ["created"] = DateTimeOffset.Now.ToString("O"),

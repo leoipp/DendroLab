@@ -21,7 +21,7 @@ public partial class MainWindow : Window
     internal bool IsBusy => busy;
     private CancellationTokenSource? operationCancellation;
     private long operationVersion;
-    private readonly System.Windows.Threading.DispatcherTimer progressHideTimer = new() { Interval = TimeSpan.FromSeconds(10) };
+    private readonly System.Windows.Threading.DispatcherTimer progressHideTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly System.Windows.Threading.DispatcherTimer historyRefreshTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private readonly System.Windows.Threading.DispatcherTimer sourceAvailabilityTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly System.Windows.Threading.DispatcherTimer contentSearchTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
@@ -42,8 +42,12 @@ public partial class MainWindow : Window
             "workspace-wpf.xml"
         );
     private ProcessorView? processor;
-    private GisView? gisView;
+    private readonly Dictionary<string, GisView> gisViews = new(StringComparer.Ordinal);
+    private Popup? gisSourcePopup;
+    private FrameworkElement? gisSourcePopupSurface;
+    private readonly System.Windows.Threading.DispatcherTimer gisSourceCloseTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
     private readonly Dictionary<string, LayoutDocument> documents = new();
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<LayoutAnchorablePaneControl, Style> paneTabStyles = new();
     private readonly Dictionary<string, Action> documentSelection = new();
     private Button? previousDocumentButton, nextDocumentButton;
     private readonly Dictionary<string, bool> contentsExpansion = new(StringComparer.Ordinal);
@@ -68,6 +72,34 @@ public partial class MainWindow : Window
     {
         ShellVisuals.Initialize();
         InitializeComponent();
+        ConfigureGisSourceMenu();
+        gisSourceCloseTimer.Tick += (_, _) =>
+        {
+            gisSourceCloseTimer.Stop();
+            if (!GISButton.IsMouseOver && gisSourcePopupSurface?.IsMouseOver != true && gisSourcePopup != null)
+                gisSourcePopup.IsOpen = false;
+        };
+        DockManager.LayoutUpdated += (_, _) =>
+        {
+            var style = (Style)((Style)DockManager.Resources["StackedPaneStyle"]).Setters.OfType<Setter>().Single().Value;
+            foreach (var pane in FindVisualChildren<LayoutAnchorablePaneControl>(DockManager))
+            {
+                var applied = paneTabStyles.GetValue(pane, control =>
+                {
+                    // Preserve AvalonDock's model/content and selection bindings when
+                    // changing appearance. Dock/auto-hide recreates these containers.
+                    var combined = new Style(typeof(TabItem), control.ItemContainerStyle);
+                    foreach (var setter in style.Setters) combined.Setters.Add(setter);
+                    return combined;
+                });
+                if (!ReferenceEquals(pane.ItemContainerStyle, applied)) pane.ItemContainerStyle = applied;
+            }
+            // Start tabs beyond the panel's rounded corner, so the first selected
+            // tab joins the straight segment rather than intersecting the arc.
+            var tabInset = new Thickness(12, 0, 12, 0);
+            foreach (var tabs in FindVisualChildren<AnchorablePaneTabPanel>(DockManager))
+                if (tabs.Margin != tabInset) tabs.Margin = tabInset;
+        };
         var workArea = SystemParameters.WorkArea;
         Width = Math.Min(Width, Math.Max(MinWidth, workArea.Width * 0.94));
         Height = Math.Min(Height, Math.Max(MinHeight, workArea.Height * 0.92));
@@ -266,7 +298,7 @@ public partial class MainWindow : Window
     {
         DockManager.IsEnabled = !busy;
         foreach (
-            var b in new[] { SaveButton, SaveAsButton, SettingsButton, TaperButton, VolumeButton, GrowthButton, SiteIndexButton, SavedRegressionsButton, GISButton }
+            var b in new[] { SaveButton, SaveAsButton, CompactButton, SettingsButton, TaperButton, VolumeButton, GrowthButton, SiteIndexButton, SavedRegressionsButton, GISButton }
         )
             b.IsEnabled = Session.IsOpen && !busy;
         ToolContent.IsEnabled = Session.IsOpen && !busy;
@@ -402,7 +434,7 @@ public partial class MainWindow : Window
             ResultSheetReference result => "result:" + PathKey(result.Path) + "\0" + result.Sheet,
             ContentGroupReference group => "content-group:" + group.Type + ":" + group.Id,
             ContentGroupRootReference root => "content-group-root:" + root.Type,
-            BasemapReference basemap => "basemap:" + basemap.Id,
+            GisMapReference map => "gis-map:" + map.Id,
             JsonObject chart => ChartView.Identity(chart),
             AnalysisReference analysis => "analysis:" + analysis.Entry.S("id"),
             AnalysisPlotReference plot => "analysis-plot:" + plot.Entry.S("id"),
@@ -429,6 +461,122 @@ public partial class MainWindow : Window
     private IEnumerable<JsonObject> ContentGroups(string type) =>
         Session.Meta.Arr("content_groups").OfType<JsonObject>()
             .Where(group => group.S("type") == type);
+
+    private static bool IsGisLayer(string path) => Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsRasterPath(path);
+
+    private void EnsureLegacyGisMaps()
+    {
+        if (!Session.IsOpen || Session.Meta.Arr("gis_maps").OfType<JsonObject>().Any()) return;
+        string[] paths = Session.Files.Where(IsGisLayer).ToArray();
+        if (paths.Length == 0 && Session.Meta.S("gis_basemap") != "openstreetmap") return;
+        var map = new JsonObject
+        {
+            ["id"] = Guid.NewGuid().ToString("N"),
+            ["name"] = "Mapa 1",
+            ["basemap"] = Session.Meta.S("gis_basemap", "openstreetmap"),
+            ["layers"] = new JsonArray(paths.Select(path => (JsonNode?)JsonValue.Create(path)).ToArray()),
+        };
+        Session.Meta.Arr("gis_maps").Add(map);
+        Dispatcher.BeginInvoke(new Action(Session.Touch));
+    }
+
+    private JsonObject? FindGisMap(string id) => Session.Meta.Arr("gis_maps").OfType<JsonObject>()
+        .FirstOrDefault(map => map.S("id") == id);
+
+    private string? GisMapForLayer(string path) => Session.Meta.Arr("gis_maps").OfType<JsonObject>()
+        .FirstOrDefault(map => map.Arr("layers").Any(layer => string.Equals(layer?.GetValue<string>(), path, StringComparison.OrdinalIgnoreCase)))?.S("id");
+
+    private string NextGisMapName()
+    {
+        int next = Session.Meta.Arr("gis_maps").OfType<JsonObject>().Select(map =>
+        {
+            string name = map.S("name");
+            return name.StartsWith("Mapa ", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(name.AsSpan(5), out int number) ? number : 0;
+        }).DefaultIfEmpty(0).Max() + 1;
+        return $"Mapa {next}";
+    }
+
+    private JsonObject AddGisMap(string sourceId)
+    {
+        var map = new JsonObject
+        {
+            ["id"] = Guid.NewGuid().ToString("N"), ["name"] = NextGisMapName(), ["basemap"] = sourceId, ["layers"] = new JsonArray(),
+        };
+        Session.Meta.Arr("gis_maps").Add(map);
+        Session.Touch();
+        return map;
+    }
+
+    private string EnsureGisMapForLayer(string path)
+    {
+        string? mapId = GisMapForLayer(path);
+        if (mapId != null) return mapId;
+        var map = Session.Meta.Arr("gis_maps").OfType<JsonObject>().LastOrDefault() ?? AddGisMap("openstreetmap");
+        map.Arr("layers").Add(JsonValue.Create(path));
+        Session.Touch();
+        return map.S("id");
+    }
+
+    private void ConfigureGisSourceMenu()
+    {
+        var options = new StackPanel { MinWidth = 220 };
+        foreach (var source in GisBasemapSource.Available)
+        {
+            var option = new Button
+            {
+                Content = source.Name, HorizontalContentAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(10, 6, 14, 6), MinHeight = 34, Background = Brushes.Transparent,
+                BorderBrush = Brushes.Transparent, Tag = source.Id,
+            };
+            option.MouseEnter += (_, _) => gisSourceCloseTimer.Stop();
+            option.Click += async (_, _) =>
+            {
+                if (gisSourcePopup != null) gisSourcePopup.IsOpen = false;
+                await Execute(() => CreateGISMap(source.Id));
+            };
+            options.Children.Add(option);
+        }
+        var surface = new Border
+        {
+            Background = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(4),
+            Child = options, Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 12, ShadowDepth = 3, Opacity = 0.2 },
+        };
+        surface.MouseEnter += (_, _) => gisSourceCloseTimer.Stop();
+        surface.MouseLeave += (_, _) => ScheduleGisSourceMenuClose();
+        gisSourcePopupSurface = surface;
+        gisSourcePopup = new Popup
+        {
+            PlacementTarget = GISButton, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
+            StaysOpen = true, AllowsTransparency = true, Child = surface, VerticalOffset = -2,
+        };
+    }
+
+    private void ShowGisSourceMenu()
+    {
+        if (!Session.IsOpen || gisSourcePopup == null) return;
+        gisSourceCloseTimer.Stop();
+        gisSourcePopup.IsOpen = true;
+    }
+
+    private void GISButtonMouseEnter(object sender, System.Windows.Input.MouseEventArgs e) => ShowGisSourceMenu();
+
+    private void GISButtonMouseLeave(object sender, System.Windows.Input.MouseEventArgs e) => ScheduleGisSourceMenuClose();
+
+    private void ScheduleGisSourceMenuClose()
+    {
+        gisSourceCloseTimer.Stop();
+        gisSourceCloseTimer.Start();
+    }
+
+    private async Task CreateGISMap(string sourceId)
+    {
+        if (!Session.IsOpen) throw new InvalidOperationException("Abra um projeto antes de criar um mapa base.");
+        var map = AddGisMap(sourceId);
+        RefreshTree();
+        await OpenGIS(map.S("id"));
+    }
 
     private string? GroupForContent(string path, string type) => ContentGroups(type)
         .FirstOrDefault(group => group.Arr("paths").Any(item =>
@@ -626,6 +774,7 @@ public partial class MainWindow : Window
     private void BuildContentsTree()
     {
         ContentsTree.Items.Clear();
+        EnsureLegacyGisMaps();
         var sheets = ContentItem("Planilhas", CommandIconKind.Table);
         ContentsTree.Items.Add(sheets);
         var add = new MenuItem { Header = "Adicionar planilha…", Icon = ContentMenuIcon(CommandIconKind.Add) };
@@ -642,33 +791,63 @@ public partial class MainWindow : Window
         var db = ContentItem("Bancos de dados", CommandIconKind.Database);
         db.ContextMenu = new ContextMenu();
         Menu(db, "Adicionar banco DendroLab…", CommandIconKind.Database, AddBank);
-        var shapes = ContentItem("Dados vetoriais", CommandIconKind.Shape);
-        shapes.ContextMenu = new ContextMenu();
-        Menu(shapes, "Adicionar shapefile…", CommandIconKind.Add, () => AddData(vectorOnly: true));
-        AddCreateGroupCommand(shapes, "vector");
-        var basemaps = ContentItem("Mapas base", CommandIconKind.Map);
-        basemaps.ContextMenu = new ContextMenu();
-        AddGISLayerMenu(basemaps);
+        var gisRoot = ContentItem("GIS", CommandIconKind.Map);
+        gisRoot.ContextMenu = new ContextMenu();
+        Menu(gisRoot, "Novo mapa base…", CommandIconKind.Map, () => { ShowGisSourceMenu(); return Task.CompletedTask; });
         ContentsTree.Items.Add(db);
-        ContentsTree.Items.Add(shapes);
-        ContentsTree.Items.Add(basemaps);
+        ContentsTree.Items.Add(gisRoot);
         if (!Session.IsOpen)
             return;
-        if (Session.Meta.S("gis_basemap") == "openstreetmap")
+        var mapNodes = new Dictionary<string, TreeViewItem>(StringComparer.Ordinal);
+        var vectorNodes = new Dictionary<string, TreeViewItem>(StringComparer.Ordinal);
+        foreach (var map in Session.Meta.Arr("gis_maps").OfType<JsonObject>())
         {
-            var basemap = ContentItem("OpenStreetMap", CommandIconKind.Map);
-            basemap.Tag = new BasemapReference("openstreetmap");
-            basemap.ToolTip = "Mapa base exibido sob os dados vetoriais no GIS.";
-            basemap.ContextMenu = new ContextMenu();
-            AddGISLayerMenu(basemap);
-            basemaps.Items.Add(basemap);
+            string id = map.S("id"), name = map.S("name", "Mapa");
+            string sourceId = map.S("basemap", "openstreetmap");
+            var mapNode = ContentItem(name, CommandIconKind.Map);
+            mapNode.Tag = new GisMapReference(id);
+            mapNode.ToolTip = "Mapa com fonte base e camadas raster e vetoriais próprias.";
+            mapNode.ContextMenu = new ContextMenu();
+            Menu(mapNode, "Adicionar raster TIFF ou shapefile…", CommandIconKind.Add, () => AddGISLayerFiles(id));
+            Menu(mapNode, "Abrir mapa", CommandIconKind.Map, () => OpenGIS(id));
+            gisRoot.Items.Add(mapNode);
+            mapNodes[id] = mapNode;
+            var sourceNode = ContentItem(GisBasemapSource.FromId(sourceId).Name, CommandIconKind.Map);
+            sourceNode.ToolTip = "Camada de mapa base deste mapa.";
+            mapNode.Items.Add(sourceNode);
+            string[] mapPaths = map.Arr("layers").Select(node => node?.GetValue<string>() ?? "").Where(path => path.Length > 0).ToArray();
+            if (mapPaths.Any(path => Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase)))
+            {
+                var shapes = ContentItem("Dados vetoriais", CommandIconKind.Shape);
+                shapes.ContextMenu = new ContextMenu();
+                Menu(shapes, "Adicionar shapefile…", CommandIconKind.Add, () => AddGISLayerFiles(id, vectorOnly: true));
+                AddCreateGroupCommand(shapes, "vector");
+                mapNode.Items.Add(shapes);
+                vectorNodes[id] = shapes;
+            }
         }
         var groupNodes = new Dictionary<string, TreeViewItem>(StringComparer.Ordinal);
-        foreach (var group in ContentGroups("spreadsheet").Concat(ContentGroups("vector")))
+        foreach (var group in ContentGroups("spreadsheet"))
         {
             var groupNode = CreateContentGroupNode(group);
             groupNodes[group.S("id")] = groupNode;
-            (group.S("type") == "spreadsheet" ? sheets : shapes).Items.Add(groupNode);
+            sheets.Items.Add(groupNode);
+        }
+        foreach (var group in ContentGroups("vector"))
+        {
+            foreach (var map in Session.Meta.Arr("gis_maps").OfType<JsonObject>())
+            {
+                string mapId = map.S("id");
+                if (!vectorNodes.TryGetValue(mapId, out var vectorNode)) continue;
+                var mapPaths = map.Arr("layers").Select(node => node?.GetValue<string>() ?? "").ToHashSet(StringComparer.OrdinalIgnoreCase);
+                bool containsGroupFiles = group.Arr("paths").Any(item => mapPaths.Contains(item.Display()));
+                bool emptyGroupForThisMap = group.Arr("paths").Count == 0 && map == Session.Meta.Arr("gis_maps").OfType<JsonObject>().FirstOrDefault();
+                if (!containsGroupFiles && !emptyGroupForThisMap) continue;
+                string key = group.S("id") + "\0" + mapId;
+                var groupNode = CreateContentGroupNode(group);
+                groupNodes[key] = groupNode;
+                vectorNode.Items.Add(groupNode);
+            }
         }
         TreeViewItem managedBank = db;
         string managedPath = Session.Meta.S("database_path");
@@ -723,7 +902,7 @@ public partial class MainWindow : Window
                 ShellVisuals.SetLayerVisibilityChanged(item, visible =>
                 {
                     Session.Meta.Obj("gis_layer_visibility")[path] = visible;
-                    gisView?.SetLayerVisible(Session.Resolve(path), visible);
+                    foreach (var view in gisViews.Values) view.SetLayerVisible(Session.Resolve(path), visible);
                     Session.Touch();
                 });
             }
@@ -737,13 +916,16 @@ public partial class MainWindow : Window
             if (!processingOutput)
             {
                 string? groupType = ContentGroupType(Session, path);
-                TreeViewItem parent = groupType == "spreadsheet" ? sheets
-                    : groupType == "vector" ? shapes
-                    : IsRasterPath(path) ? basemaps
-                    : managedPath.Length > 0 && Session.Resolve(path).StartsWith(Session.Resolve(managedPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                        ? managedBank : db;
+                TreeViewItem parent;
+                if (groupType == "spreadsheet") parent = sheets;
+                else if (IsGisLayer(path) && GisMapForLayer(path) is string mapId && mapNodes.TryGetValue(mapId, out var mapNode))
+                    parent = groupType == "vector" && vectorNodes.TryGetValue(mapId, out var vectorNode) ? vectorNode : mapNode;
+                else parent = managedPath.Length > 0 && Session.Resolve(path).StartsWith(Session.Resolve(managedPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    ? managedBank : db;
                 string? groupId = groupType == null ? null : GroupForContent(path, groupType);
-                if (groupId != null && groupNodes.TryGetValue(groupId, out var groupNode)) parent = groupNode;
+                string? layerMapId = IsGisLayer(path) ? GisMapForLayer(path) : null;
+                string groupNodeKey = groupType == "vector" && layerMapId != null ? groupId + "\0" + layerMapId : groupId ?? "";
+                if (groupId != null && groupNodes.TryGetValue(groupNodeKey, out var groupNode)) parent = groupNode;
                 parent.Items.Add(item);
             }
             item.ContextMenu = new ContextMenu();
@@ -781,15 +963,16 @@ public partial class MainWindow : Window
             {
                 Menu(item, "Simbologia…", CommandIconKind.Settings, async () =>
                 {
-                    if (VectorSymbology.Edit(this, Session, path) && gisView != null) await gisView.RefreshSymbology(path);
+                    if (VectorSymbology.Edit(this, Session, path))
+                        foreach (var view in gisViews.Values) await view.RefreshSymbology(path);
                 });
                 Menu(item, "Abrir tabela de atributos", CommandIconKind.Table, () => OpenVectorAttributeTable(path));
-                Menu(item, "Abrir no GIS", CommandIconKind.Map, () => OpenGIS(path));
+                Menu(item, "Abrir no mapa", CommandIconKind.Map, () => OpenGISForLayer(path));
             }
             if (!missingSource && Session.Meta.Arr("sampling_results").Any(result => result.S("path") == path))
                 Menu(item, "Exportar amostragem…", CommandIconKind.SaveAs, () => ExportSamplingContent(path));
             if (IsRasterPath(path) && !missingSource)
-                Menu(item, "Abrir no GIS", CommandIconKind.Map, () => OpenGIS(path));
+                Menu(item, "Abrir no mapa", CommandIconKind.Map, () => OpenGISForLayer(path));
             if ((itemGroupType is "spreadsheet" or "vector") && !processingOutput) AddMoveToGroupMenu(item, path, itemGroupType);
             item.ContextMenu.Items.Add(new Separator());
             Menu(item, "Renomear…", CommandIconKind.Rename, () => RenameContent(path));
@@ -814,7 +997,7 @@ public partial class MainWindow : Window
                     CommandIconKind.Increments,
                     () =>
                     {
-                        SetTool(new GrowthValidationView(this, Session, chart));
+                        SetTool(new GrowthValidationView(this, Session));
                         return Task.CompletedTask;
                     }
                 );
@@ -886,6 +1069,8 @@ public partial class MainWindow : Window
                     resultParent = ContentItem("Resumo direto · " + outputName, CommandIconKind.Processor);
                     resultParent.ToolTip = output + (result.S("created").Length > 0 ? "\nCriado: " + result.S("created") : "");
                     resultParent.ContextMenu = new ContextMenu();
+                    Menu(resultParent, "Reprocessar", CommandIconKind.Processor,
+                        () => ReprocessDirect(result));
                     Menu(resultParent, "Remover processamento…", CommandIconKind.Remove,
                         () => RemoveDirectProcessing(output, result.S("source_path")));
                     item.Items.Add(resultParent);
@@ -930,6 +1115,7 @@ public partial class MainWindow : Window
                             message += "\n\nTambém serão removidos os resultados dependentes:\n" +
                                 string.Join("\n", descendants.Select(removed => "• " + Session.ContentName(removed)));
                         message += "\n\nDeseja continuar?";
+                        message += "\n\nA exclusão é imediata e não será desfeita ao descartar alterações do projeto.";
                         if (!ConfirmRemoval(message)) return;
                         await Session.RemoveResultTable(output, name);
                         CloseDocuments();
@@ -1197,40 +1383,35 @@ public partial class MainWindow : Window
         node.ContextMenu?.Items.Insert(1, new Separator());
     }
 
-    private void AddGISLayerMenu(TreeViewItem node)
+    private async Task AddGISLayerFiles(string mapId, bool vectorOnly = false)
     {
-        var addLayer = new MenuItem
-        {
-            Header = "Adicionar raster TIFF ou shapefile…",
-            Icon = ContentMenuIcon(CommandIconKind.Add),
-            ToolTip = "Selecione um raster GeoTIFF, PNG georreferenciado ou vetor shapefile (.shp).",
-        };
-        addLayer.Click += async (_, e) => { e.Handled = true; await AddGISLayerFiles(); };
-        node.ContextMenu?.Items.Add(addLayer);
-    }
-
-    private async Task AddGISLayerFiles()
-    {
+        if (FindGisMap(mapId) == null) throw new InvalidOperationException("O mapa selecionado não existe mais.");
         var picker = new Microsoft.Win32.OpenFileDialog
         {
-            Title = "Adicionar raster ou shapefile ao mapa",
-            Filter = "Raster GeoTIFF ou PNG|*.tif;*.tiff;*.png|Shapefile vetorial|*.shp|Todos os formatos aceitos|*.tif;*.tiff;*.png;*.shp",
+            Title = vectorOnly ? "Adicionar shapefile ao mapa" : "Adicionar camadas ao mapa",
+            Filter = vectorOnly ? "Shapefile vetorial|*.shp" : "Raster GeoTIFF ou PNG|*.tif;*.tiff;*.png|Shapefile vetorial|*.shp|Todos os formatos aceitos|*.tif;*.tiff;*.png;*.shp",
             Multiselect = true,
             CheckFileExists = true,
         };
         if (picker.ShowDialog(this) != true) return;
         string[] selected = picker.FileNames.Select(Path.GetFullPath).ToArray();
         foreach (string path in selected)
-            if (!IsRasterPath(path) && !Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase))
+            if (vectorOnly ? !Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase)
+                : !IsGisLayer(path))
                 throw new InvalidDataException("Selecione um raster TIFF ou um shapefile (.shp).");
-        await Execute(async () =>
+        var map = FindGisMap(mapId)!;
+        var contents = Session.Meta.Arr("files");
+        foreach (string path in selected)
         {
-            foreach (string path in selected)
-                if (!Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) Session.AddFile(path);
-            RevealAddedContents(selected);
-            await OpenGIS(selected.LastOrDefault());
-            Log($"{selected.Length:N0} camada(s) GIS adicionada(s) ao projeto.");
-        });
+            if (!Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) contents.Add(JsonValue.Create(path));
+            if (!map.Arr("layers").Any(layer => string.Equals(layer?.GetValue<string>(), path, StringComparison.OrdinalIgnoreCase)))
+                map.Arr("layers").Add(JsonValue.Create(path));
+        }
+        Session.Touch();
+        foreach (string path in selected) sourceAvailability.Remove(path);
+        RevealAddedContents(selected);
+        await OpenGIS(mapId, selected.LastOrDefault());
+        Log($"{selected.Length:N0} camada(s) adicionada(s) a {map.S("name")}.");
     }
 
     private async Task RelinkContent(string oldPath)
@@ -1300,9 +1481,15 @@ public partial class MainWindow : Window
                 string.Join("\n", descendants.Select(removed => "• " + Session.ContentName(removed)));
         if (keptProcessingSources)
             message += "\n\nAs bases de origem dos processamentos selecionados serão mantidas no projeto.";
+        if (deletesBankData)
+            message += "\n\nA exclusão é imediata e não será desfeita ao descartar alterações do projeto.";
         message += "\n\nDeseja continuar?";
         if (!ConfirmRemoval(message, selected.Length == 1 ? "conteúdo" : $"{selected.Length} conteúdos")) return;
 
+        foreach (var map in Session.Meta.Arr("gis_maps").OfType<JsonObject>())
+            foreach (var path in selected)
+                for (int i = map.Arr("layers").Count - 1; i >= 0; i--)
+                    if (string.Equals(map.Arr("layers")[i]?.GetValue<string>(), path, StringComparison.OrdinalIgnoreCase)) map.Arr("layers").RemoveAt(i);
         if (selected.Length == 1)
             await Session.RemoveFile(Session.Files.ToList().FindIndex(path => SameProjectPath(path, selected[0])));
         else
@@ -1757,6 +1944,8 @@ public partial class MainWindow : Window
 
     private async void SaveAsClick(object s, RoutedEventArgs e) => await SaveProject(true);
 
+    private async void CompactClick(object s, RoutedEventArgs e) => await Execute(CompactProjectBank);
+
     private async void SettingsClick(object s, RoutedEventArgs e) =>
         await Execute(async () =>
         {
@@ -1769,7 +1958,7 @@ public partial class MainWindow : Window
         Document("volumes", "Modelos volumétricos", new ModelsView(this, Session, false));
 
     private void TaperClick(object sender, RoutedEventArgs e) =>
-        Document("taper-models", "Modelos de Afilamento", new TaperModelsView(this, Session));
+        Document("taper-catalog", "Ajustes salvos de taper", new TaperModelsView(this, Session, catalogOnly: true));
 
     private void GrowthClick(object s, RoutedEventArgs e) =>
         Document("growth", "Crescimento e produção", new ModelsView(this, Session, true));
@@ -1888,8 +2077,8 @@ public partial class MainWindow : Window
         string selectedGroup = (ToolCategoryFilter.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "";
         var toolGroups = new (string Title, string[] Items)[]
         {
-            ("Preparar e revisar dados", ["Processador", "Revisão de inventário", "Auditoria pós-processamento", "Juntar tabelas", "Parear medições", "Gerar coluna", "Estratificar", "Limpeza integrada", "Ativo biológico"]),
-            ("Gráficos e modelos", ["Gráficos", "Ajuste de regressão", "Aplicar regressões", "Ajustar rede neural", "Ajustar Random Forest", "Ajustar Gradient Boosting", "Ajustar SVR", "Fronteira de eficiência"]),
+            ("Preparar e revisar dados", ["Processador", "Revisão de inventário", "Auditoria pós-processamento", "Juntar tabelas", "Parear medições", "Estratificar", "Limpeza integrada", "Ativo biológico"]),
+            ("Gráficos e modelos", ["Gráficos", "Ajuste de regressão", "Ajuste de taper", "Aplicar taper", "Aplicar regressões", "Ajustar rede neural", "Ajustar Random Forest", "Ajustar Gradient Boosting", "Ajustar SVR", "Fronteira de eficiência"]),
             ("Comparar e validar", ["Comparar curvas de produção", "ICA e IMA", "Testes estatísticos", "Validação de modelos", "Isolation Forest", "K-means"]),
             ("Planejamento de campo", ["Amostragem"]),
             ("Mapa e satélite", ["Imagens NOAA", "Imagens Sentinel-2", "Catálogo temporal Sentinel-2", "Série de pixels Sentinel-2", "Explorar série temporal Sentinel-2"]),
@@ -1925,6 +2114,7 @@ public partial class MainWindow : Window
                         "Gráficos" => "Crie um gráfico e confira a prévia antes de ajustar modelos.",
                         "Ajuste de regressão" => "Ajuste modelos em um gráfico já criado. Os ajustes podem ser salvos para aplicação em outras bases.",
                         "Aplicar regressões" => "Aplique equações ajustadas e salvas no projeto a uma tabela, mapeando X1, X2 e X3 por modelo.",
+                        "Aplicar taper" => "Aplique um ajuste salvo de taper a uma árvore teórica, calcule os volumes por seção e visualize o fuste.",
                         "Ajustar rede neural" => "Treine uma rede Dense/MLP e gere o ZIP para o Processador.",
                         "Ajustar Random Forest" => "Treine um Random Forest e gere o ZIP para o Processador.",
                         "Ajustar Gradient Boosting" => "Treine um Gradient Boosting e gere o ZIP para o Processador.",
@@ -1941,7 +2131,7 @@ public partial class MainWindow : Window
                     {
                         "Parear medições" => Session.IsOpen,
                         "Ajuste de regressão" or "Fronteira de eficiência" => Session.IsOpen && Session.Meta.Arr("charts").Count > 0,
-                        "Aplicar regressões" => Session.IsOpen,
+                        "Aplicar regressões" or "Aplicar taper" => Session.IsOpen,
                         "Ajustar rede neural" or "Ajustar Random Forest" or "Ajustar Gradient Boosting" or "Ajustar SVR" => Session.IsOpen,
                         "Validação de modelos" => Session.IsOpen,
                         _ => true,
@@ -1965,7 +2155,9 @@ public partial class MainWindow : Window
                     "Ativo biológico" => CommandIconKind.BiologicalAsset,
                     "Gráficos" => CommandIconKind.Chart,
                     "Ajuste de regressão" => CommandIconKind.Regression,
+                    "Ajuste de taper" => CommandIconKind.Taper,
                     "Aplicar regressões" => CommandIconKind.ApplyRegression,
+                    "Aplicar taper" => CommandIconKind.Taper,
                     "Ajustar rede neural" => CommandIconKind.NeuralNetwork,
                     "Ajustar Random Forest" => CommandIconKind.RandomForest,
                     "Ajustar Gradient Boosting" => CommandIconKind.GradientBoosting,
@@ -1978,11 +2170,11 @@ public partial class MainWindow : Window
                     "Comparar curvas de produção" => CommandIconKind.CurveComparison,
                     "Isolation Forest" => CommandIconKind.Anomaly,
                     "K-means" => CommandIconKind.Statistics,
-                    "Imagens NOAA" => CommandIconKind.Map,
-                    "Imagens Sentinel-2" => CommandIconKind.Map,
-                    "Catálogo temporal Sentinel-2" => CommandIconKind.Map,
-                    "Série de pixels Sentinel-2" => CommandIconKind.Map,
-                    "Explorar série temporal Sentinel-2" => CommandIconKind.Map,
+                    "Imagens NOAA" => CommandIconKind.Satellite,
+                    "Imagens Sentinel-2" => CommandIconKind.Multispectral,
+                    "Catálogo temporal Sentinel-2" => CommandIconKind.Multispectral,
+                    "Série de pixels Sentinel-2" => CommandIconKind.Multispectral,
+                    "Explorar série temporal Sentinel-2" => CommandIconKind.Multispectral,
                     "Limpeza integrada" => CommandIconKind.IntegratedCleaning,
                     "Testes estatísticos" => CommandIconKind.Statistics,
                     "Validação de modelos" => CommandIconKind.ModelValidation,
@@ -2047,6 +2239,8 @@ public partial class MainWindow : Window
                 await Execute(() => OpenPairedMeasurementsTool());
             else if ((string)i.Tag == "Aplicar regressões")
                 await Execute(() => OpenRegressionApplicationTool());
+            else if ((string)i.Tag == "Aplicar taper")
+                SetTool(new TaperApplicationView(this, Session));
             else if ((string)i.Tag is "Ajustar rede neural" or "Ajustar Random Forest" or "Ajustar Gradient Boosting" or "Ajustar SVR")
             {
                 string modelType = i.Tag.ToString() switch
@@ -2070,6 +2264,8 @@ public partial class MainWindow : Window
                 await Execute(() => OpenKMeansTool());
             else if ((string)i.Tag == "Amostragem")
                 await Execute(OpenForestSampling);
+            else if ((string)i.Tag == "Ajuste de taper")
+                SetTool(new TaperModelsView(this, Session));
             else if ((string)i.Tag == "Limpeza integrada")
                 await Execute(() => OpenIntegratedCleaning());
             else if ((string)i.Tag == "Auditoria pós-processamento")
@@ -2184,7 +2380,7 @@ public partial class MainWindow : Window
         Session.SetExcel(path, tables[0], 1);
     }
 
-    private async void GISClick(object sender, RoutedEventArgs e) => await Execute(() => OpenGIS());
+    private void GISClick(object sender, RoutedEventArgs e) => ShowGisSourceMenu();
 
     private void NoaaNdviClick(object sender, RoutedEventArgs e) => SetTool(new NoaaNdviView(this, Session));
     private void Sentinel2NdviClick(object sender, RoutedEventArgs e) => SetTool(new Sentinel2NdviView(this, Session));
@@ -2198,9 +2394,10 @@ public partial class MainWindow : Window
     private async Task RegisterSatelliteImage(string path, string source, string product)
     {
         if (!Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) Session.AddFile(path);
+        string mapId = EnsureGisMapForLayer(path);
         RevealAddedContents([path]);
-        await OpenGIS(path);
-        Log($"Imagem {product} {source} salva no projeto e aberta no GIS.");
+        await OpenGIS(mapId, path);
+        Log($"Imagem {product} {source} adicionada a {FindGisMap(mapId)?.S("name")}.");
     }
 
     private void ManualClick(object sender, RoutedEventArgs e) => new ManualWindow { Owner = this }.ShowDialog();
@@ -2215,7 +2412,7 @@ public partial class MainWindow : Window
         var view = new ForestSamplingView(this, shapefiles, async result =>
         {
             string path = await RegisterSamplingContent(result);
-            await OpenGIS(path);
+            await OpenGISForLayer(path);
         });
         SetTool(view);
         await view.Initialize();
@@ -2260,27 +2457,34 @@ public partial class MainWindow : Window
         return Task.CompletedTask;
     }
 
-    private async Task OpenGIS(string? selectedVector = null)
+    private async Task OpenGISForLayer(string path)
     {
-        if (!Session.IsOpen)
-            throw new InvalidOperationException("Abra um projeto para visualizar os dados vetoriais no GIS.");
-        if (Session.Meta.S("gis_basemap") != "openstreetmap")
-        {
-            Session.Meta["gis_basemap"] = "openstreetmap";
-            Session.Touch();
-        }
-        if (gisView != null && documents.TryGetValue("gis", out var existing) && ReferenceEquals(existing.Content, gisView))
+        bool assigned = GisMapForLayer(path) != null;
+        string mapId = EnsureGisMapForLayer(path);
+        if (!assigned) RefreshTree();
+        await OpenGIS(mapId, path);
+    }
+
+    private async Task OpenGIS(string mapId, string? selectedLayer = null)
+    {
+        if (!Session.IsOpen) throw new InvalidOperationException("Abra um projeto antes de abrir um mapa base.");
+        var mapInfo = FindGisMap(mapId) ?? throw new InvalidOperationException("O mapa selecionado não existe mais.");
+        string documentId = "gis:" + mapId;
+        if (gisViews.TryGetValue(mapId, out var existingView) && documents.TryGetValue(documentId, out var existing)
+            && ReferenceEquals(existing.Content, existingView))
         {
             existing.IsActive = true;
-            if (selectedVector == null || !gisView.HasLayer(selectedVector)) await gisView.Initialize(selectedVector);
-            else gisView.FocusLayer(selectedVector);
+            existingView.SetLayerPaths(mapInfo.Arr("layers").Select(node => node?.GetValue<string>() ?? "").Where(path => path.Length > 0).ToArray());
+            if (selectedLayer == null || !existingView.HasLayer(Session.Resolve(selectedLayer))) await existingView.Initialize(selectedLayer);
+            else existingView.FocusLayer(Session.Resolve(selectedLayer));
             return;
         }
-        var view = new GisView(Session);
-        gisView = view;
-        var document = Document("gis", "GIS · Mapa", view);
-        document.Closed += (_, _) => { if (ReferenceEquals(gisView, view)) gisView = null; };
-        await view.Initialize(selectedVector);
+        string[] paths = mapInfo.Arr("layers").Select(node => node?.GetValue<string>() ?? "").Where(path => path.Length > 0).ToArray();
+        var view = new GisView(Session, paths, GisBasemapSource.FromId(mapInfo.S("basemap", "openstreetmap")));
+        gisViews[mapId] = view;
+        var document = Document(documentId, mapInfo.S("name", "Mapa Base"), view);
+        document.Closed += (_, _) => { if (gisViews.TryGetValue(mapId, out var current) && ReferenceEquals(current, view)) gisViews.Remove(mapId); };
+        await view.Initialize(selectedLayer);
     }
 
     internal DockPanel ToolHeader(string title)
@@ -2313,6 +2517,7 @@ public partial class MainWindow : Window
         {
             string? selectedShape = null;
             var addedPaths = new List<string>();
+            var contents = Session.Meta.Arr("files");
             foreach (var path in picker.FileNames)
             {
                 if (Session.IsSpreadsheet(path))
@@ -2320,12 +2525,16 @@ public partial class MainWindow : Window
                     if (!await ExcelSelectionDialog.Configure(this, Session, path))
                         continue;
                 }
-                Session.AddFile(path);
+                if (!Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) contents.Add(JsonValue.Create(path));
                 addedPaths.Add(path);
                 if (Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsRasterPath(path)) selectedShape = path;
             }
+            foreach (string path in addedPaths.Where(IsGisLayer)) EnsureGisMapForLayer(path);
+            Session.Touch();
+            foreach (string path in addedPaths) sourceAvailability.Remove(path);
+            string? targetMap = selectedShape == null ? null : GisMapForLayer(selectedShape);
             RevealAddedContents(addedPaths);
-            if (selectedShape != null) await OpenGIS(selectedShape);
+            if (selectedShape != null && targetMap != null) await OpenGIS(targetMap, selectedShape);
         });
     }
 
@@ -2338,7 +2547,7 @@ public partial class MainWindow : Window
     internal sealed record ProcessingVersionReference(string Id);
     private sealed record ContentGroupReference(string Id, string Type);
     private sealed record ContentGroupRootReference(string Type);
-    private sealed record BasemapReference(string Id);
+    private sealed record GisMapReference(string Id);
 
     private Task OpenResultTool(ResultSheetReference result, Func<Task> open)
     {
@@ -2382,13 +2591,25 @@ public partial class MainWindow : Window
         Log($"{browser.Total:N0} linhas. Visualização em páginas de 500 linhas.");
     }
 
-    private Task OpenVectorAttributeTable(string path)
+    private async Task OpenVectorAttributeTable(string path)
     {
         string resolved = Session.Resolve(path);
-        var view = new VectorAttributeTable(this, resolved);
+        var prepared=await Task.Run(()=>VectorAttributeTable.Prepare(resolved));
+        var view = new VectorAttributeTable(this, prepared.Dbf,prepared.Table);
         Document("attributes:" + path, "Atributos · " + Session.ContentName(path), view);
         Log("Tabela de atributos aberta. Edite as células e use 'Salvar edições' para gravar no DBF.");
-        return Task.CompletedTask;
+    }
+
+    internal async Task RegisterVectorOutput(string path,string sourcePath)
+    {
+        if(!Session.Files.Contains(path,StringComparer.OrdinalIgnoreCase))Session.Meta.Arr("files").Add(JsonValue.Create(path));
+        string? mapId=GisMapForLayer(sourcePath);
+        mapId??=Session.Meta.Arr("gis_maps").OfType<JsonObject>().FirstOrDefault(candidate=>candidate.Arr("layers").Any(layer=>layer is JsonValue value&&value.TryGetValue<string>(out var stored)&&string.Equals(Session.Resolve(stored),Session.Resolve(sourcePath),StringComparison.OrdinalIgnoreCase)))?.S("id");
+        mapId??=EnsureGisMapForLayer(path);
+        var map=FindGisMap(mapId)??throw new InvalidOperationException("O mapa de origem não está mais disponível.");
+        if(!map.Arr("layers").Any(layer=>string.Equals(layer?.GetValue<string>(),path,StringComparison.OrdinalIgnoreCase)))map.Arr("layers").Add(JsonValue.Create(path));
+        Session.Touch();sourceAvailability.Remove(path);RevealAddedContents([path]);await OpenGIS(mapId,path);
+        Log("Novo shapefile criado com as feições restantes e adicionado a Conteúdos.");
     }
 
     internal async Task RefreshUpdatedTable(string path, string sheet)
@@ -2456,7 +2677,7 @@ public partial class MainWindow : Window
             if (i.Tag is string path && Session.IsTabular(path))
                 await Execute(() => OpenTable(path));
             else if (i.Tag is string vectorPath && (Path.GetExtension(vectorPath).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsRasterPath(vectorPath)))
-                await Execute(() => OpenGIS(vectorPath));
+                await Execute(() => OpenGISForLayer(vectorPath));
             else if (i.Tag is JsonObject chart)
                 await Execute(() => OpenChart(chart.S("path"), chart.B("fitting"), chart, false));
             else if (i.Tag is AnalysisReference analysis)
@@ -2467,8 +2688,8 @@ public partial class MainWindow : Window
                 await Execute(() => AnalysisDocuments.OpenResultTable(this, Session, analysisTable.Entry));
             else if (i.Tag is ProcessingVersionReference version)
                 await Execute(() => OpenProcessingReview(version.Id));
-            else if (i.Tag is BasemapReference)
-                await Execute(() => OpenGIS());
+            else if (i.Tag is GisMapReference map)
+                await Execute(() => OpenGIS(map.Id));
             else if (i.Tag is ResultSheetReference result)
                 await Execute(() => OpenTable(result.Path, result.Sheet));
         }
@@ -2500,6 +2721,7 @@ public partial class MainWindow : Window
         {
             string? selectedShape = null;
             var addedPaths = new List<string>();
+            var contents = Session.Meta.Arr("files");
             foreach (var path in (string[])e.Data.GetData(DataFormats.FileDrop))
             {
                 if (
@@ -2507,12 +2729,16 @@ public partial class MainWindow : Window
                     && !await ExcelSelectionDialog.Configure(this, Session, path)
                 )
                     continue;
-                Session.AddFile(path);
+                if (!Session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) contents.Add(JsonValue.Create(path));
                 addedPaths.Add(path);
                 if (Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsRasterPath(path)) selectedShape = path;
             }
+            foreach (string path in addedPaths.Where(IsGisLayer)) EnsureGisMapForLayer(path);
+            Session.Touch();
+            foreach (string path in addedPaths) sourceAvailability.Remove(path);
+            string? targetMap = selectedShape == null ? null : GisMapForLayer(selectedShape);
             RevealAddedContents(addedPaths);
-            if (selectedShape != null) await OpenGIS(selectedShape);
+            if (selectedShape != null && targetMap != null) await OpenGIS(targetMap, selectedShape);
         });
     }
 

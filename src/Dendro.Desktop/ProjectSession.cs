@@ -67,7 +67,6 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
     public async Task New(string name)
     {
         var r = await WorkspaceOperations.Run(new() { ["op"] = "new", ["name"] = name });
-        pendingBankRemovals.Clear();
         FilePath = "";
         historyRevision = -1;
         Replace(r["project"]!.AsObject(), true);
@@ -76,7 +75,6 @@ internal sealed partial class ProjectSession : INotifyPropertyChanged
     public async Task Open(string path)
     {
         var r = await WorkspaceOperations.Run(new() { ["op"] = "open", ["path"] = path });
-        pendingBankRemovals.Clear();
         FilePath = Path.GetFullPath(path);
         var project = r["project"]!.AsObject();
         project.Obj("_dendro")["name"] = Path.GetFileNameWithoutExtension(FilePath);

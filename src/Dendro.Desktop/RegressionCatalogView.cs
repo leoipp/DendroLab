@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using Dendro.Core.Configuration;
+using Dendro.Core.Regression;
 
 namespace Dendro.Desktop;
 
@@ -49,6 +50,20 @@ internal sealed class RegressionCatalogView : ScrollViewer
                 EnableColumnVirtualization = false,
                 MinColumnWidth = 80,
             };
+            var active = new FrameworkElementFactory(typeof(CheckBox));
+            active.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            active.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            active.SetValue(FrameworkElement.MarginProperty, new Thickness(0));
+            active.SetBinding(CheckBox.IsCheckedProperty, new Binding("Active")
+            {
+                Mode = BindingMode.TwoWay,
+                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,
+            });
+            grid.Columns.Add(new DataGridTemplateColumn
+            {
+                Header = "Ativado", Width = 80,
+                CellTemplate = new DataTemplate { VisualTree = active },
+            });
             grid.Columns.Add(
                 new DataGridTextColumn
                 {
@@ -156,8 +171,13 @@ internal sealed class RegressionCatalogView : ScrollViewer
         New();
     }
 
-    internal sealed record CatalogRow(JsonObject Model)
+    internal sealed record CatalogRow(JsonObject Model, Action? Changed = null)
     {
+        public bool Active
+        {
+            get => Model.B("ativado", true);
+            set { Model["ativado"] = value; Changed?.Invoke(); }
+        }
         public string Id => Model.S("id");
         public string Name => Model.S("nome");
         public string Formula => Model.S("formula");
@@ -173,7 +193,7 @@ internal sealed class RegressionCatalogView : ScrollViewer
                 grids[i].ItemsSource = Models
                     .OfType<JsonObject>()
                     .Where(m => m.N("preditores") == i + 1)
-                    .Select(m => new CatalogRow(m))
+                    .Select(m => new CatalogRow(m, changed))
                     .ToArray();
         }
         finally
@@ -226,6 +246,7 @@ internal sealed class RegressionCatalogView : ScrollViewer
             ["preditores"] = predictors,
             ["formula"] = formula.Text.Trim(),
             ["coeficientes"] = Ui.Number(coefficients.Text),
+            ["ativado"] = editing?.B("ativado", true) ?? true,
         };
         var test = project.DeepClone().AsObject();
         var array = test.Obj("regressoes").Arr("modelos");

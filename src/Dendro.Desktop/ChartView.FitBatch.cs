@@ -27,7 +27,8 @@ internal sealed partial class ChartView
             {
                 Content = new TextBlock { Text = GraphLabel(chart), TextWrapping = TextWrapping.Wrap },
                 IsChecked = Identity(chart) == Identity(config),
-                Margin = new Thickness(4, 3, 4, 3),
+                Margin = new Thickness(4, 6, 4, 6),
+                    MinHeight = 28,
             };
             targetChecks.Add(new(chart, check));
         }
@@ -39,7 +40,8 @@ internal sealed partial class ChartView
                 new CheckBox
                 {
                     Content = $"{model.S("name")} ({(int)model.N("predictors", 1)}P)",
-                    Margin = new Thickness(4, 3, 4, 3),
+                    Margin = new Thickness(4, 6, 4, 6),
+                    MinHeight = 28,
                 }
             )).ToArray();
         if (modelChecks.Length == 0)
@@ -97,44 +99,17 @@ internal sealed partial class ChartView
         var graphList = new StackPanel();
         foreach (var item in targetChecks)
             graphList.Children.Add(item.Check);
-        var modelBox = new Border
-        {
-            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(213, 223, 233)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Background = System.Windows.Media.Brushes.White,
-            Padding = new Thickness(8),
-            Child = Ui.Scroll(modelList),
-            Height = 190,
-        };
-        var graphBox = new Border
-        {
-            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(213, 223, 233)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Background = System.Windows.Media.Brushes.White,
-            Padding = new Thickness(8),
-            Child = Ui.Scroll(graphList),
-            Height = 160,
-        };
+        var modelBox = BatchList(modelList, 210);
+        var graphBox = BatchList(graphList, 210);
         var form = Ui.Form();
-        Ui.Section(form, "Configurar ajuste em lote");
+        Ui.Section(form, "Regressão em lote");
         Ui.AddHelp(form, "Selecione os modelos e os gráficos que deseja ajustar. Cada resultado será aberto como um documento de Ajuste de regressão; eixos, filtros e grupos vêm do gráfico de origem.");
-        Ui.Field(form, "Modelos", modelBox);
-        Ui.Section(form, "Gráficos de origem");
-        var selection = new StackPanel { Orientation = Orientation.Horizontal };
-        selection.Children.Add(Ui.Button("Marcar gráficos", () =>
-        {
-            foreach (var target in targetChecks)
-                target.Check.IsChecked = true;
-        }));
-        selection.Children.Add(Ui.Button("Limpar gráficos", () =>
-        {
-            foreach (var target in targetChecks)
-                target.Check.IsChecked = false;
-        }));
-        form.Children.Add(selection);
-        Ui.Field(form, "Gráficos selecionáveis", graphBox);
+        Ui.Section(form, "1. Modelos de regressão");
+        form.Children.Add(BatchSelection(modelChecks.Select(item => item.Check)));
+        form.Children.Add(modelBox);
+        Ui.Section(form, "2. Gráficos de origem");
+        form.Children.Add(BatchSelection(targetChecks.Select(item => item.Check)));
+        form.Children.Add(graphBox);
         Ui.Section(form, "Variáveis dos modelos");
         form.Children.Add(x2FieldBatch);
         form.Children.Add(x3FieldBatch);
@@ -142,8 +117,7 @@ internal sealed partial class ChartView
         form.Children.Add(showCurrentBatch);
         Ui.Field(form, "Catálogo", currentSourceBatch);
         Ui.AddHelp(form, "O nome de cada gráfico em Conteúdos deve corresponder ao ID do modelo. Em Regressão salva, usa-se a versão salva mais recente com ID ou nome correspondente.");
-        form.Children.Add(count);
-        form.Children.Add(message);
+
         Window? dialog = null;
         var cancel = Ui.Button("Cancelar", () => dialog!.DialogResult = false);
         cancel.IsCancel = true;
@@ -164,7 +138,7 @@ internal sealed partial class ChartView
             else dialog!.DialogResult = true;
         });
         run.IsDefault = true;
-        dialog = Ui.Dialog("Ajuste de regressão em lote", Ui.WithToolbar(Ui.Scroll(form), cancel, run), 760, 760);
+        dialog = Ui.Dialog("Ajuste de regressão em lote", BatchDialogBody(form, count, message, cancel, run), 820, 780);
         UpdateBatchSelection();
         if (dialog.ShowDialog() != true)
             return;

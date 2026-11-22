@@ -44,7 +44,8 @@ public static class CompactBankFile
 
     public static string? UpdateTextDataset(string destination, string dataset, Func<string?, string> update,
         IReadOnlyList<(string Source, string Dataset)>? incoming = null, IReadOnlyCollection<string>? removeDatasets = null,
-        CancellationToken cancellation = default, Action<long, long>? progress = null)
+        CancellationToken cancellation = default, Action<long, long>? progress = null,
+        IReadOnlyCollection<(string Dataset, string Id)>? removeTables = null)
     {
         destination = Path.GetFullPath(destination);
         using var lease = SharedFileLock.Acquire(destination + ".write.lock", cancellation);
@@ -59,7 +60,7 @@ public static class CompactBankFile
                 writer.Complete();
             }
             var batch = (incoming ?? []).Append((temporary, dataset)).ToArray();
-            ImportCore(destination, batch, true, null, cancellation, progress, removeDatasets, true);
+            ImportCore(destination, batch, true, null, cancellation, progress, removeDatasets, true, removeTables);
             return next;
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -319,7 +320,8 @@ public static class CompactBankFile
     }
 
     private static void ImportCore(string destination, IReadOnlyList<(string Source, string Dataset)> incoming, bool replace, CompactTable? replacedTable,
-        CancellationToken cancellation = default, Action<long, long>? progress = null, IReadOnlyCollection<string>? removeDatasets = null, bool lockHeld = false)
+        CancellationToken cancellation = default, Action<long, long>? progress = null, IReadOnlyCollection<string>? removeDatasets = null, bool lockHeld = false,
+        IReadOnlyCollection<(string Dataset, string Id)>? removeTables = null)
     {
         destination = Path.GetFullPath(destination);
         if (incoming.Count == 0) return;
@@ -329,7 +331,7 @@ public static class CompactBankFile
             throw new InvalidDataException("Identificadores de tabelas inválidos ou repetidos.");
         if (CompactBankFormat.IsAppendable(destination))
         {
-            AppendImport(destination, incoming, replace, replacedTable, cancellation, progress, removeDatasets);
+            AppendImport(destination, incoming, replace, replacedTable, cancellation, progress, removeDatasets, removeTables);
             return;
         }
         string temp = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -354,13 +356,14 @@ public static class CompactBankFile
                 var tables = new List<CompactTable>();
                 var usedIds = new HashSet<string>(StringComparer.Ordinal);
                 var removedDatasets = (removeDatasets ?? []).ToHashSet(StringComparer.Ordinal);
+                var removedTables = (removeTables ?? []).ToHashSet();
                 long totalBytes = 0, copiedBytes = 0;
                 var watch = System.Diagnostics.Stopwatch.StartNew();
                 if (File.Exists(destination))
                 {
                     var existing = Catalog(destination);
                     foreach (var table in existing) usedIds.Add(table.Id);
-                    totalBytes += existing.Where(t => replacedTable != null
+                    totalBytes += existing.Where(t => !removedTables.Contains((t.Dataset, t.Id))).Where(t => replacedTable != null
                             ? t.Id != replacedTable.Id && !removedDatasets.Contains(t.Dataset)
                             : !incoming.Any(i => i.Dataset == t.Dataset) && !removedDatasets.Contains(t.Dataset))
                         .Sum(t => t.Blocks.Sum(b => (long)b.Bytes));
@@ -382,6 +385,7 @@ public static class CompactBankFile
                         bool removeExisting = replacedTable != null
                             ? table.Id == replacedTable.Id || removedDatasets.Contains(table.Dataset)
                             : datasets.Contains(table.Dataset) || removedDatasets.Contains(table.Dataset);
+                        removeExisting |= removedTables.Contains((table.Dataset, table.Id));
                         if (dataset == null && removeExisting) {
                             if (!replace) throw new IOException("Já existe uma tabela com esse nome no banco do projeto.");
                             continue;
@@ -424,7 +428,7 @@ public static class CompactBankFile
 
     private static void AppendImport(string destination, IReadOnlyList<(string Source, string Dataset)> incoming,
         bool replace, CompactTable? replacedTable, CancellationToken cancellation, Action<long, long>? progress,
-        IReadOnlyCollection<string>? removeDatasets)
+        IReadOnlyCollection<string>? removeDatasets, IReadOnlyCollection<(string Dataset, string Id)>? removeTables)
     {
         CompactTable[] existing;
         long generation;
@@ -449,9 +453,11 @@ public static class CompactBankFile
             return id;
         }
         var removedDatasets = (removeDatasets ?? []).ToHashSet(StringComparer.Ordinal);
+        var removedTables = (removeTables ?? []).ToHashSet();
         var tables = existing.Where(table =>
         {
             if (removedDatasets.Contains(table.Dataset)) return false;
+            if (removedTables.Contains((table.Dataset, table.Id))) return false;
             if (replacedTable != null) return table.Id != replacedTable.Id;
             return !replace || !incomingDatasets.Contains(table.Dataset);
         }).ToList();

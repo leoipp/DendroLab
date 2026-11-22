@@ -78,8 +78,16 @@
                     Style="{StaticResource RibbonCommand}"
                     Tag="SaveAs"
                   />
+                  <Button
+                    x:Name="CompactButton"
+                    Content="Compactar base"
+                    Click="CompactClick"
+                    Style="{StaticResource RibbonCommand}"
+                    Tag="Database"
+                    ToolTip="Recuperar espaço não utilizado no banco DLB do projeto, preservando os dados ativos."
+                  />
                 </WrapPanel>
-                <TextBlock Text="Salvar projeto" Style="{StaticResource RibbonGroupLabel}" />
+                <TextBlock Text="Projeto e banco de dados" Style="{StaticResource RibbonGroupLabel}" />
               </StackPanel>
               <Border Width="1" Background="#E5EBF1" Margin="10,7,10,0" />
               <StackPanel>
@@ -108,9 +116,9 @@
                   Style="{StaticResource RibbonCommand}"
                   Tag="Volume"
                 />
-                <Button x:Name="TaperButton" Content="Modelos de Afilamento" Click="TaperClick"
-                        Style="{StaticResource RibbonCommand}" Tag="Volume"
-                        ToolTip="Ajustar modelos de afilamento com dados de cubagem e consultar ajustes salvos." />
+                <Button x:Name="TaperButton" Content="Taper" Click="TaperClick"
+                        Style="{StaticResource RibbonCommand}" Tag="Taper"
+                        ToolTip="Consultar as equações de taper disponíveis." />
                 <Button
                   x:Name="GrowthButton"
                   Content="Crescimento e produção"
@@ -142,11 +150,11 @@
             <StackPanel Orientation="Horizontal" Margin="9,4">
               <StackPanel>
                 <WrapPanel>
-                  <Button x:Name="GISButton" Content="Abrir GIS" Click="GISClick" Style="{StaticResource RibbonCommand}" Tag="Map" ToolTip="Abrir o mapa base e as camadas raster e vetoriais do projeto." />
-                  <Button Content="Imagens NOAA" Click="NoaaNdviClick" Style="{StaticResource RibbonCommand}" Tag="Map" ToolTip="Baixar imagens NOAA em RGB natural ou NDVI e adicioná-las ao mapa do projeto." />
-                  <Button Content="Imagens Sentinel‑2" Click="Sentinel2NdviClick" Style="{StaticResource RibbonCommand}" Tag="Map" ToolTip="Buscar cenas Copernicus Sentinel‑2 e gerar imagens RGB ou índices espectrais para o projeto." />
+                  <Button x:Name="GISButton" Content="Mapas Base" Click="GISClick" MouseEnter="GISButtonMouseEnter" MouseLeave="GISButtonMouseLeave" Style="{StaticResource RibbonCommand}" Tag="Map" ToolTip="Escolha uma fonte para criar um mapa base." />
+                  <Button Content="Imagens NOAA" Click="NoaaNdviClick" Style="{StaticResource RibbonCommand}" Tag="Satellite" ToolTip="Baixar imagens NOAA em RGB natural ou NDVI e adicioná-las ao mapa do projeto." />
+                  <Button Content="Imagens Sentinel‑2" Click="Sentinel2NdviClick" Style="{StaticResource RibbonCommand}" Tag="Multispectral" ToolTip="Buscar cenas Copernicus Sentinel‑2 e gerar imagens RGB ou índices espectrais para o projeto." />
                 </WrapPanel>
-                <TextBlock Text="Mapa, camadas e satélite" Style="{StaticResource RibbonGroupLabel}" />
+                <TextBlock Text="Mapa base, camadas e satélite" Style="{StaticResource RibbonGroupLabel}" />
               </StackPanel>
             </StackPanel>
           </TabItem>
@@ -223,6 +231,41 @@
       AnchorableHeaderTemplate="{StaticResource PaneTabTitle}"
     >
       <ad:DockingManager.Resources>
+        <Style x:Key="StackedPaneStyle" TargetType="adc:LayoutAnchorablePaneControl">
+          <Setter Property="ItemContainerStyle">
+            <Setter.Value>
+              <Style TargetType="TabItem">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="Foreground" Value="#607487" />
+                <Setter Property="Padding" Value="9,4" />
+                <Setter Property="MinHeight" Value="25" />
+                <Setter Property="Margin" Value="4,0,0,0" />
+                <Setter Property="Template">
+                  <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                      <Border x:Name="Surface" Background="{TemplateBinding Background}" BorderThickness="1,0,1,1" BorderBrush="Transparent" CornerRadius="0,0,6,6">
+                        <ContentPresenter ContentSource="Header" RecognizesAccessKey="True"
+                                          Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                      </Border>
+                      <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                          <Setter TargetName="Surface" Property="Background" Value="#E5EDF4" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                          <Setter TargetName="Surface" Property="Background" Value="White" />
+                          <Setter TargetName="Surface" Property="BorderBrush" Value="#21669D" />
+                          <Setter Property="Margin" Value="4,-1,0,0" />
+                          <Setter Property="Panel.ZIndex" Value="1" />
+                          <Setter Property="Foreground" Value="#174F7A" />
+                        </Trigger>
+                      </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                  </Setter.Value>
+                </Setter>
+              </Style>
+            </Setter.Value>
+          </Setter>
+        </Style>
         <Style
           TargetType="adc:LayoutAnchorableControl"
           BasedOn="{StaticResource RoundedAnchorable}"

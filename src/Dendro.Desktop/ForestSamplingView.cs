@@ -7,7 +7,7 @@ using Dendro.Core.Sampling;
 
 namespace Dendro.Desktop;
 
-internal sealed class ForestSamplingView : ScrollViewer
+internal sealed class ForestSamplingView : ToolFormView
 {
     private readonly MainWindow owner;
     private readonly ComboBox source = new() { IsEditable = false, IsTextSearchEnabled = true, ToolTip = "Escolha um shapefile do projeto ou use Procurar shapefile." };
@@ -39,8 +39,7 @@ internal sealed class ForestSamplingView : ScrollViewer
     {
         this.owner = owner;
         this.showOnMap = showOnMap;
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+
         method.ItemsSource = new[]
         {
             "Sistemática atual · D1 a D4",
@@ -56,7 +55,7 @@ internal sealed class ForestSamplingView : ScrollViewer
         System.Windows.Automation.AutomationProperties.SetAutomationId(idField, "SamplingIdField");
         System.Windows.Automation.AutomationProperties.SetAutomationId(projectField, "SamplingProjectField");
 
-        var form = Ui.Form(); Content = form;
+        var form = Ui.Form(); SetForm(form);
         form.Children.Add(owner.ToolHeader("Amostragem"));
         Ui.AddHelp(form, "Selecione os talhões e configure o desenho amostral. As parcelas geradas são adicionadas a Conteúdos e aparecem diretamente no mapa.");
         Ui.Section(form, "Entrada");
@@ -80,7 +79,7 @@ internal sealed class ForestSamplingView : ScrollViewer
         form.Children.Add(sequentialNumbering);
         form.Children.Add(sequenceByProject);
         form.Children.Add(sequenceXY);
-        form.Children.Add(Ui.AsyncButton("Gerar no mapa", () => owner.Execute(Run)));
+        SetPrimaryAction(Ui.AsyncButton("Gerar no mapa", () => owner.Execute(Run)));
         status.TextWrapping = TextWrapping.Wrap;
         form.Children.Add(status);
         source.SelectionChanged += async (_, _) =>

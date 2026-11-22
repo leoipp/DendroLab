@@ -241,9 +241,9 @@ internal sealed class ModelsView : DockPanel
         form.Children.Add(extraCoefficientPanel);
         void SyncAdditionalCoefficients()
         {
-            if (growth) return;
             var names = Regex.Matches(formula.Text, @"\bb(?:[3-9]|[12]\d|3[01])\b").Select(m => m.Value)
                 .Concat(row.AsObject().Select(p => p.Key).Where(key => Regex.IsMatch(key, @"^b(?:[3-9]|[12]\d|3[01])$")))
+                .Where(key => !growth || key == "b3")
                 .Distinct(StringComparer.Ordinal).OrderBy(key => int.Parse(key.AsSpan(1))).ToArray();
             foreach (string key in names)
                 if (!extraCoefficientInputs.ContainsKey(key))
@@ -328,6 +328,8 @@ internal sealed class ModelsView : DockPanel
                 }
                 if (growth)
                 {
+                    if (extraCoefficientInputs.TryGetValue("b3", out var b3) && !string.IsNullOrWhiteSpace(b3.Text))
+                        request["b3"] = Ui.Number(b3.Text);
                     request["year"] = (int)Ui.Number(year.Text);
                     request["current"] = current.IsChecked == true;
                     bool custom = model!.SelectedIndex >= definitions.Count;

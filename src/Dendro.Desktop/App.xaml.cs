@@ -38,7 +38,7 @@ public partial class App : Application
             catch (UnauthorizedAccessException) { }
             Ui.Alert("DendroLab", args.Exception.Message, Ui.MessageTone.Error);
         };
-        if (e.Args.Length > 0 && e.Args[0] is "--self-test" or "--self-test-ui-layout" or "--self-test-ui-results" or "--self-test-workflow" or "--self-test-duplicates" or "--self-test-remove-discard" or "--self-test-context-menu-icons" or "--self-test-gis-contents")
+        if (e.Args.Length > 0 && e.Args[0] is "--self-test" or "--self-test-ui-layout" or "--self-test-ui-results" or "--self-test-stacked-tabs" or "--self-test-chart-visuals" or "--self-test-workflow" or "--self-test-duplicates" or "--self-test-remove-discard" or "--self-test-context-menu-icons" or "--self-test-gis-contents")
         {
             IsSelfTest = true;
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -50,6 +50,8 @@ public partial class App : Application
                 else if (e.Args[0] == "--self-test-duplicates") await DesktopTests.RunDuplicateSettings(e.Args[1]);
                 else if (e.Args[0] == "--self-test-remove-discard") await DesktopTests.RunDeferredRemoval(e.Args[1]);
                 else if (e.Args[0] == "--self-test-context-menu-icons") await DesktopTests.RunContextMenuIconAudit(e.Args[1]);
+                else if (e.Args[0] == "--self-test-chart-visuals") await DesktopTests.RunChartVisuals(e.Args[1]);
+                else if (e.Args[0] == "--self-test-stacked-tabs") await DesktopTests.RunStackedTabs(e.Args[1]);
                 else if (e.Args[0] == "--self-test-ui-results") await DesktopTests.RunResultPresentation(e.Args[1]);
                 else await DesktopTests.Run(e.Args.Skip(1).ToArray());
                 Shutdown(0);

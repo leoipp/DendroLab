@@ -5,12 +5,11 @@ using Dendro.Core.Spreadsheets;
 namespace Dendro.Core.Statistics;
 
 public sealed record KMeansOptions(int MinK = 2, int MaxK = 8, int? SelectedK = null,
-    int Seed = 42, int TrainingLimit = 20000, int SilhouetteSample = 1000,
-    int MaxIterations = 100, int Restarts = 3);
+    int Seed = 42, int MaxIterations = 100, int Restarts = 3);
 
 public sealed record KMeansScore(int K, double Inertia, double Silhouette);
 
-/// <summary>Standardized Euclidean k-means with k-means++ initialization and sampled silhouette.</summary>
+/// <summary>Standardized Euclidean k-means with k-means++ initialization and exact silhouette.</summary>
 public static class KMeansClustering
 {
     public static AnalysisReport Run(DataTable data, string[] features, string x, string y,
@@ -35,7 +34,7 @@ public static class KMeansClustering
             if (valid) eligibleRows.Add(row); else incomplete++;
         }
         if (eligibleRows.Count < options.MaxK)
-            throw new InvalidDataException($"Há somente {eligibleRows.Count:N0} linhas completas; reduza o K máximo para menos de {eligibleRows.Count:N0}.");
+            throw new InvalidDataException($"K máximo ({options.MaxK:N0}) não pode ser maior que o número de linhas completas ({eligibleRows.Count:N0}).");
 
         int dimensions = features.Length;
         var means = new double[dimensions];
@@ -61,8 +60,7 @@ public static class KMeansClustering
             for (int j = 0; j < dimensions; j++) values[j] = (data.Number(row, columns[j]) - means[j]) / scales[j];
             return values;
         }
-        int[] trainingIndexes = SampleIndexes(eligibleRows.Count, Math.Min(eligibleRows.Count, options.TrainingLimit), options.Seed);
-        var training = trainingIndexes.Select(index => Normalize(eligibleRows[index])).ToArray();
+        var training = eligibleRows.Select(Normalize).ToArray();
         var scores = new List<KMeansScore>();
         var solutions = new Dictionary<int, (double[][] Centers, int[] Labels)>();
         int total = options.MaxK - options.MinK + 1;
@@ -71,10 +69,7 @@ public static class KMeansClustering
             cancellation.ThrowIfCancellationRequested();
             var solution = BestSolution(training, k, options, cancellation);
             double inertia = Inertia(training, solution.Labels, solution.Centers, cancellation);
-            int[] silhouetteIndexes = StratifiedSample(solution.Labels, options.SilhouetteSample, options.Seed ^ 0x5f3759df ^ k);
-            var silhouetteSample = silhouetteIndexes.Select(index => training[index]).ToArray();
-            var sampleLabels = silhouetteIndexes.Select(index => solution.Labels[index]).ToArray();
-            double silhouette = Silhouette(silhouetteSample, sampleLabels, k, cancellation);
+            double silhouette = Silhouette(training, solution.Labels, k, cancellation);
             scores.Add(new(k, inertia, silhouette));
             solutions[k] = solution;
             progress?.Invoke(10 + 75d * scores.Count / total, $"Avaliando k={k}: inertia {inertia:G5}, silhouette {silhouette:G4}…");
@@ -104,14 +99,14 @@ public static class KMeansClustering
         {
             ["test"] = "K-means · análise de agrupamentos",
             ["decision"] = $"K final = {selectedK}; maior silhouette no intervalo avaliado: k={scores.OrderByDescending(score => score.Silhouette).ThenBy(score => score.K).First().K}.",
-            ["method"] = "K-means com inicialização k-means++, distância euclidiana e padronização z-score. Inertia é a soma dos quadrados intragrupo. Silhouette estima coesão e separação em uma amostra determinística das linhas de treinamento.",
-            ["notes"] = "A padronização dá peso comparável às variáveis e as médias/desvios são calculados nas linhas completas. Se a base exceder o limite de treinamento, a amostra uniforme é usada para ajustar centros e calcular inertia/silhouette; os centros finais classificam todas as linhas completas. Linhas incompletas ficam sem grupo. O elbow é uma heurística visual; confirme o K pelo gráfico e pelo contexto dos dados. Silhouette maior indica grupos mais coesos e separados, mas não prova que os grupos sejam reais.",
+            ["method"] = "K-means com inicialização k-means++, distância euclidiana e padronização z-score. Inertia e silhouette exatas são calculadas com todas as linhas completas.",
+            ["notes"] = "A padronização dá peso comparável às variáveis e as médias/desvios são calculados nas linhas completas. O ajuste, a inertia e a silhouette usam todas as linhas completas; linhas incompletas ficam sem grupo. O cálculo exato de silhouette compara todas as distâncias entre observações e cresce quadraticamente com o tamanho da base. O elbow é uma heurística visual; confirme o K pelo gráfico e pelo contexto dos dados. Silhouette maior indica grupos mais coesos e separados, mas não prova que os grupos sejam reais.",
             ["K final"] = selectedK,
             ["Critério automático"] = options.SelectedK == null ? "Maior silhouette média" : "K informado pelo usuário",
             ["Linhas completas"] = eligibleRows.Count,
             ["Linhas incompletas"] = incomplete,
             ["Linhas usadas no ajuste e métricas"] = training.Length,
-            ["Tamanho da amostra silhouette"] = Math.Min(training.Length, options.SilhouetteSample),
+            ["Linhas usadas no cálculo da silhouette"] = training.Length,
             ["Variáveis padronizadas"] = string.Join("; ", features),
             ["Semente"] = options.Seed,
             ["Iterações máximas"] = options.MaxIterations,
@@ -140,67 +135,34 @@ public static class KMeansClustering
                 ["Cluster 10"] = "#64748B", ["Cluster 11"] = "#A23D3D", ["Cluster 12"] = "#338B46",
             },
         }, points.ToArray(), [], incomplete + invalidAxes);
-        var elbow = LinePlot("Método elbow · inertia", "Inertia (soma dos quadrados intragrupo)", scores, score => score.Inertia);
-        var silhouettePlot = LinePlot("Silhouette médio por K", "Silhouette médio", scores, score => score.Silhouette);
+        var elbow = LinePlot("Método elbow · inertia", "Inertia (soma dos quadrados intragrupo)", scores, score => score.Inertia, "#21669D");
+        var silhouettePlot = LinePlot("Silhouette médio por K", "Silhouette médio", scores, score => score.Silhouette, "#1C8965");
         progress?.Invoke(100, $"K-means concluído: {selectedK} grupos em {eligibleRows.Count:N0} linhas completas.");
         return new(summary, details, plot, [elbow, silhouettePlot]);
     }
 
-    private static ChartResult LinePlot(string title, string yLabel, IReadOnlyList<KMeansScore> scores, Func<KMeansScore, double> value) =>
-        new(new JsonObject { ["title"] = title, ["x_label"] = "Número de grupos (k)", ["y_label"] = yLabel },
-            [], [scores.Select(score => new[] { (double)score.K, value(score) }).ToArray()], 0);
+    private static ChartResult LinePlot(string title, string yLabel, IReadOnlyList<KMeansScore> scores, Func<KMeansScore, double> value, string color)
+    {
+        var chart = new JsonObject
+        {
+            ["title"] = title, ["x_label"] = "Número de grupos (k)", ["y_label"] = yLabel,
+            // ScatterPlot renders curves through FitDisplay, so each diagnostic line
+            // needs a visible fit descriptor even though it has no observed points.
+            ["fits"] = new JsonArray(new JsonObject { ["model"] = title, ["converged"] = true, ["curve_color"] = color }),
+        };
+        var curve = scores.Select(score => new[] { (double)score.K, value(score) }).ToArray();
+        var points = scores.Select((score, index) => new ChartPoint(score.K, value(score), index + 1, title)).ToArray();
+        return new(chart, points, [curve], 0);
+    }
 
     private static void ValidateOptions(KMeansOptions options, string[] features)
     {
         if (features == null || features.Length is < 2 or > 64 || features.Any(string.IsNullOrWhiteSpace) || features.Distinct(StringComparer.Ordinal).Count() != features.Length)
             throw new InvalidDataException("Selecione de 2 a 64 variáveis numéricas distintas para o K-means.");
-        if (options.MinK < 2 || options.MaxK < options.MinK || options.MaxK > 12 ||
+        if (options.MinK < 2 || options.MaxK <= options.MinK ||
             options.SelectedK is int selected && (selected < options.MinK || selected > options.MaxK) ||
-            options.TrainingLimit < options.MaxK || options.TrainingLimit > 500000 ||
-            options.SilhouetteSample < 100 || options.SilhouetteSample > 5000 ||
             options.MaxIterations is < 10 or > 1000 || options.Restarts is < 1 or > 10)
-            throw new InvalidDataException("Revise o intervalo de K e os limites do treinamento e da amostra silhouette.");
-    }
-
-    private static int[] SampleIndexes(int count, int take, int seed)
-    {
-        if (take >= count) return Enumerable.Range(0, count).ToArray();
-        var random = new Random(seed);
-        var result = Enumerable.Range(0, count).Take(take).ToArray();
-        for (int i = take; i < count; i++)
-        {
-            int replace = random.Next(i + 1);
-            if (replace < take) result[replace] = i;
-        }
-        Array.Sort(result);
-        return result;
-    }
-
-    private static int[] StratifiedSample(int[] labels, int limit, int seed)
-    {
-        var groups = labels.Select((label, index) => (label, index)).GroupBy(item => item.label)
-            .OrderBy(group => group.Key).Select(group => group.Select(item => item.index).ToArray()).ToArray();
-        int take = Math.Min(labels.Length, Math.Max(limit, groups.Length));
-        int[] allocation = groups.Select(group => Math.Max(1, (int)Math.Floor((double)take * group.Length / labels.Length))).ToArray();
-        while (allocation.Sum() > take)
-        {
-            int largest = Enumerable.Range(0, allocation.Length).Where(index => allocation[index] > 1)
-                .OrderByDescending(index => allocation[index]).FirstOrDefault(-1);
-            if (largest < 0) break;
-            allocation[largest]--;
-        }
-        while (allocation.Sum() < take)
-        {
-            int next = Enumerable.Range(0, allocation.Length).Where(index => allocation[index] < groups[index].Length)
-                .OrderByDescending(index => (double)groups[index].Length / allocation[index]).FirstOrDefault(-1);
-            if (next < 0) break;
-            allocation[next]++;
-        }
-        var random = new Random(seed);
-        var selected = new List<int>(take);
-        for (int group = 0; group < groups.Length; group++)
-            selected.AddRange(SampleIndexes(groups[group].Length, allocation[group], random.Next()).Select(index => groups[group][index]));
-        return selected.ToArray();
+            throw new InvalidDataException("Informe K mínimo a partir de 2 e K máximo maior que K mínimo. O K máximo também deve caber no número de linhas completas.");
     }
 
     private static (double[][] Centers, int[] Labels) BestSolution(double[][] rows, int k, KMeansOptions options, CancellationToken cancellation)

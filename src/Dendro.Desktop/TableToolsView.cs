@@ -10,7 +10,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class TableToolsView : UserControl
+internal sealed class TableToolsView : ToolFormView
 {
     internal sealed class InputRow
     {
@@ -20,7 +20,7 @@ internal sealed class TableToolsView : UserControl
         public string Sheet { get; init; } = "";
     }
 
-    internal sealed class GroupRow
+    internal sealed class GroupRow : System.ComponentModel.INotifyPropertyChanged
     {
         public bool Selected { get; set; } = true;
         public string Value { get; init; } = "";
@@ -28,7 +28,18 @@ internal sealed class TableToolsView : UserControl
         public string DisplayValue => Values.Length > 1
             ? $"{Values[0]} (+{Values.Length - 1} estrato(s))"
             : Value;
-        public string Name { get; set; } = "";
+        private string name = "";
+        public string Name
+        {
+            get => name;
+            set
+            {
+                if (name == value) return;
+                name = value;
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Name)));
+            }
+        }
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
         public long Rows { get; set; }
         public string Key { get; init; } = "";
         public string[] Keys { get; init; } = [];
@@ -76,7 +87,7 @@ internal sealed class TableToolsView : UserControl
     private readonly ObservableCollection<FilterRow> filters = new();
     private readonly ObservableCollection<DerivedColumnRow> derivedColumns = new();
     private readonly Stack<GroupRow[]> mergeUndo = new();
-    private readonly ListBox groupList;
+    private readonly DataGrid groupList;
     private readonly Button undoMergeButton;
     private readonly DataGrid inputGrid,
         filterGrid,
@@ -147,17 +158,73 @@ internal sealed class TableToolsView : UserControl
                 Width = new DataGridLength(1, DataGridLengthUnitType.Star),
             }
         );
-        groupList = new ListBox
+        groupList = new DataGrid
         {
-            ItemsSource = groups,
-            Height = 220,
-            MinHeight = 120,
+            AutoGenerateColumns = false,
+            CanUserAddRows = false,
+            CanUserDeleteRows = false,
+            IsReadOnly = false,
+            RowHeaderWidth = 0,
+            HeadersVisibility = DataGridHeadersVisibility.Column,
+            Height = 310,
+            MinRowHeight = 48,
             AllowDrop = true,
-            ItemTemplate = GroupTemplate(),
-            BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            EnableColumnVirtualization = false,
         };
+        var groupView = CollectionViewSource.GetDefaultView(groups);
+        var groupCellStyle = new Style(typeof(DataGridCell), groupList.TryFindResource(typeof(DataGridCell)) as Style);
+        groupCellStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(3, 2, 3, 2)));
+        groupCellStyle.Setters.Add(new Setter(Control.VerticalContentAlignmentProperty, VerticalAlignment.Center));
+        groupList.CellStyle = groupCellStyle;
+        groupView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(GroupRow.Key)));
+        groupList.ItemsSource = groupView;
+        var groupHeader = new FrameworkElementFactory(typeof(TextBlock));
+        groupHeader.SetBinding(TextBlock.TextProperty, new Binding("Items[0].Name") { StringFormat = "Saída · {0}" });
+        groupHeader.SetValue(TextBlock.FontWeightProperty, FontWeights.SemiBold);
+        groupHeader.SetValue(FrameworkElement.MarginProperty, new Thickness(8, 8, 4, 5));
+        var groupPanel = new FrameworkElementFactory(typeof(StackPanel));
+        var groupBorder = new FrameworkElementFactory(typeof(Border));
+        groupBorder.SetValue(Border.BackgroundProperty, Brushes.AliceBlue);
+        groupBorder.SetValue(Border.BorderBrushProperty, Brushes.SteelBlue);
+        groupBorder.SetValue(Border.BorderThicknessProperty, new Thickness(3, 0, 0, 1));
+        groupBorder.AppendChild(groupHeader);
+        groupPanel.AppendChild(groupBorder);
+        groupPanel.AppendChild(new FrameworkElementFactory(typeof(ItemsPresenter)));
+        var container = new Style(typeof(GroupItem));
+        container.Setters.Add(new Setter(Control.TemplateProperty, new ControlTemplate(typeof(GroupItem)) { VisualTree = groupPanel }));
+        groupList.GroupStyle.Add(new GroupStyle { ContainerStyle = container });
+        var check = new FrameworkElementFactory(typeof(CheckBox));
+        check.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        check.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        check.SetValue(FrameworkElement.MarginProperty, new Thickness(0));
+        check.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(GroupRow.Selected)) { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+        groupList.Columns.Add(new DataGridTemplateColumn { Header = "Usar", Width = 36, MinWidth = 36, CellTemplate = new DataTemplate { VisualTree = check } });
+        var values = new FrameworkElementFactory(typeof(TextBlock));
+        values.SetBinding(TextBlock.TextProperty, new Binding(nameof(GroupRow.Values)) { Converter = new StratumValuesTooltipConverter() });
+        values.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
+        values.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        groupList.Columns.Add(new DataGridTemplateColumn { Header = "Estratos de origem", Width = new DataGridLength(1, DataGridLengthUnitType.Star), MinWidth = 80, CellTemplate = new DataTemplate { VisualTree = values } });
+        var outputName = new FrameworkElementFactory(typeof(TextBox));
+        outputName.SetBinding(TextBox.TextProperty, new Binding(nameof(GroupRow.Name))
+        {
+            Mode = BindingMode.TwoWay,
+            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,
+        });
+        outputName.SetValue(TextBox.IsReadOnlyProperty, false);
+        outputName.SetValue(FrameworkElement.MinHeightProperty, 32d);
+        outputName.SetValue(Control.FontSizeProperty, 13d);
+        outputName.SetValue(Control.PaddingProperty, new Thickness(6, 3, 6, 3));
+        outputName.SetValue(Control.VerticalContentAlignmentProperty, VerticalAlignment.Center);
+        outputName.SetValue(Control.ForegroundProperty, Brushes.Black);
+        outputName.SetValue(FrameworkElement.MarginProperty, new Thickness(2));
+        outputName.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        outputName.SetValue(FrameworkElement.ToolTipProperty, "Edite o nome da tabela de saída");
+        groupList.Columns.Add(new DataGridTemplateColumn
+        {
+            Header = "Nome da saída", Width = new DataGridLength(1.35, DataGridLengthUnitType.Star), MinWidth = 100,
+            CellTemplate = new DataTemplate { VisualTree = outputName },
+        });
+        groupList.Columns.Add(new DataGridTextColumn { Header = "Linhas", Width = 65, MinWidth = 55, IsReadOnly = true, Binding = new Binding(nameof(GroupRow.Rows)) { StringFormat = "{0:N0}" } });
         groupList.PreviewMouseLeftButtonDown += GroupMouseDown;
         groupList.PreviewMouseMove += GroupMouseMove;
         groupList.PreviewMouseLeftButtonUp += (_, _) => { groupDragStart = null; groupDragRow = null; };
@@ -233,7 +300,7 @@ internal sealed class TableToolsView : UserControl
             })));
             Ui.AddHelp(panel, "A prévia mostra até cinco linhas.");
             panel.Children.Add(calculatedPreview);
-            panel.Children.Add(Ui.AsyncButton("Aplicar colunas na tabela", () => owner.Execute(SaveCalculatedTable)));
+            SetPrimaryAction(Ui.AsyncButton("Aplicar colunas na tabela", () => owner.Execute(SaveCalculatedTable)));
             Ui.AddHelp(panel, "Grava as novas colunas na própria tabela DLB selecionada. As outras tabelas do banco são preservadas.");
             }
             if (!calculateColumns)
@@ -322,11 +389,11 @@ internal sealed class TableToolsView : UserControl
             Ui.Field(panel, "Nome do resultado", name);
         }
         Ui.AddHelp(panel, "Resultados salvos no próprio arquivo DLB do projeto, sem gerar Excel automaticamente. Salve o projeto antes de executar. Use Exportar na tabela quando precisar de Excel ou CSV.");
-        if (!calculateColumns) panel.Children.Add(
+        if (!calculateColumns) SetPrimaryAction(
             Ui.AsyncButton(stratify ? "Gerar estratos" : "Juntar tabelas", () => owner.Execute(Run))
         );
         panel.Children.Add(status);
-        Content = Ui.Scroll(panel);
+        SetForm(panel);
     }
 
     private static DataGrid Grid(double height) =>
@@ -427,10 +494,10 @@ internal sealed class TableToolsView : UserControl
 
     private void GroupMouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (FindAncestor<StratumDragHandle>(e.OriginalSource as DependencyObject) is null)
-            return;
-        var item = ItemsControl.ContainerFromElement(groupList, e.OriginalSource as DependencyObject) as ListBoxItem;
-        groupDragRow = item?.DataContext as GroupRow;
+        if (FindAncestor<TextBox>(e.OriginalSource as DependencyObject) is not null
+            || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
+        var item = ItemsControl.ContainerFromElement(groupList, e.OriginalSource as DependencyObject) as DataGridRow;
+        groupDragRow = item?.Item as GroupRow;
         groupDragStart = groupDragRow is null ? null : e.GetPosition(groupList);
     }
 
@@ -467,7 +534,7 @@ internal sealed class TableToolsView : UserControl
     private GroupRow? GroupAt(DependencyObject? element) =>
         element is null
             ? null
-            : (ItemsControl.ContainerFromElement(groupList, element) as ListBoxItem)?.DataContext as GroupRow;
+            : (ItemsControl.ContainerFromElement(groupList, element) as DataGridRow)?.Item as GroupRow;
 
     private static T? FindAncestor<T>(DependencyObject? element) where T : DependencyObject
     {
@@ -484,6 +551,8 @@ internal sealed class TableToolsView : UserControl
     {
         if (ReferenceEquals(sourceRow, targetRow) || !groups.Contains(sourceRow) || !groups.Contains(targetRow))
             return;
+        groupList.CommitEdit(DataGridEditingUnit.Cell, true);
+        groupList.CommitEdit(DataGridEditingUnit.Row, true);
         mergeUndo.Push(groups.Select(CloneGroup).ToArray());
         undoMergeButton.IsEnabled = true;
         var merged = new GroupRow

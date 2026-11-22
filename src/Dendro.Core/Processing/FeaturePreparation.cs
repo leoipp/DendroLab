@@ -69,10 +69,14 @@ public static class FeaturePreparation
         RegistryAgeFallback.Apply(input, registry, config);
         int key = input.Require(config["arquivo_entrada"].S("chave", "Talhão"));
         var index = RegistryIndex(registry, config["cadastro"].S("chave", "Talhão"));
+        string plantingName = config.At("cadastro.colunas").S("data_plantio", "Data de Plantio");
         var map = Enumerable.Range(0, registry.Width).Select(c =>
         {
             string name = registry.Text(0, c);
-            return input.Column(name) < 0 && (neededRegistryColumns == null || neededRegistryColumns.Contains(name))
+            // The configured registry planting date is authoritative even if the
+            // inventory already has a same-named (possibly stale) column.
+            return (name == plantingName || input.Column(name) < 0)
+                && (neededRegistryColumns == null || neededRegistryColumns.Contains(name))
                 ? input.Ensure(name) : -1;
         }).ToArray();
         for (int r = 1; r < input.Count; r++)
@@ -136,8 +140,13 @@ public static class FeaturePreparation
             year = t.Ensure("Ano_Medicao");
         for (int r = 1; r < t.Count; r++)
         {
-            double measured = InventoryMath.Date(t.Text(r, dc));
-            t.Set(r, age, Math.Floor(measured - InventoryMath.Date(t.Text(r, pc))) / 365.25);
+            string measuredText = t.Text(r, dc), plantedText = t.Text(r, pc);
+            double measured = InventoryMath.Date(measuredText), planted = InventoryMath.Date(plantedText);
+            if (!double.IsFinite(measured) || !double.IsFinite(planted))
+                throw new InvalidDataException($"Linha {r + 1}: data de plantio ou medição inválida. Informe datas completas nas colunas '{t.Text(0, pc)}' e '{t.Text(0, dc)}'.");
+            if (planted > measured)
+                throw new InvalidDataException($"Linha {r + 1}: data de plantio posterior à data de medição.");
+            t.Set(r, age, Math.Floor(measured - planted) / 365.25);
             t.Set(r, year, (double)InventoryMath.Year(measured));
         }
         int stand = t.Require(cols.S("talhao", "Talhão")),
@@ -209,13 +218,13 @@ public static class FeaturePreparation
                 int a = t.Require(cols.S(entry.S("col_data1"))),
                     b = t.Require(cc.S(entry.S("col_data2")));
                 for (int r = 1; r < t.Count; r++)
-                    t.Set(
-                        r,
-                        dest,
-                        Math.Floor(
-                            InventoryMath.Date(t.Text(r, a)) - InventoryMath.Date(t.Text(r, b))
-                        ) / divisor
-                    );
+                {
+                    double firstDate = InventoryMath.Date(t.Text(r, a));
+                    double secondDate = InventoryMath.Date(t.Text(r, b));
+                    if (!double.IsFinite(firstDate) || !double.IsFinite(secondDate))
+                        throw new InvalidDataException($"Linha {r + 1}: data inválida para calcular '{name}'. Informe datas completas nas colunas '{t.Text(0, a)}' e '{t.Text(0, b)}'.");
+                    t.Set(r, dest, Math.Floor(firstDate - secondDate) / divisor);
+                }
                 continue;
             }
             if (TryString(expression, t, 1, out _))

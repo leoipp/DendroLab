@@ -11,6 +11,21 @@ namespace Dendro.Desktop;
 
 internal sealed partial class ChartView : DockPanel
 {
+    private static DockPanel ChartActionPanel(UIElement form, params Button[] actions)
+    {
+        var panel = new DockPanel();
+        var footer = Ui.ActionFooter(actions);
+        if (footer.Child is Grid row)
+        {
+            row.HorizontalAlignment = HorizontalAlignment.Right;
+            foreach (var column in row.ColumnDefinitions) column.Width = GridLength.Auto;
+            foreach (var button in actions) button.Margin = new Thickness(0);
+        }
+        DockPanel.SetDock(footer, Dock.Bottom);
+        panel.Children.Add(footer);
+        panel.Children.Add(Ui.Scroll(form));
+        return panel;
+    }
     private readonly MainWindow owner;
     private readonly ProjectSession session;
     private readonly bool fitting;
@@ -100,6 +115,7 @@ internal sealed partial class ChartView : DockPanel
             Ui.Field(data, "X", x);
             Ui.Field(data, "Y", y);
             Ui.Field(data, "Título", title);
+            Ui.AddHelp(data, "Use %% no título para inserir o nome da base de origem. Em lote, cada gráfico usa o nome da sua própria base.");
         }
         Ui.Field(data, "Coluna de estrato", stratum);
         Ui.Field(data, "Grupo", group);
@@ -107,40 +123,17 @@ internal sealed partial class ChartView : DockPanel
             "Gerar / atualizar gráfico",
             () => owner.Execute(() => Generate())
         );
+        var dataActions = new List<Button>();
         if (!fitting)
         {
-            var primaryActions = new Grid { Margin = new Thickness(0, 3, 0, 3) };
-            primaryActions.ColumnDefinitions.Add(new ColumnDefinition());
-            primaryActions.ColumnDefinitions.Add(new ColumnDefinition());
-            primaryActions.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
-            primaryActions.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
-
-            StyleChartAction(generateGraph, "Gerar / atualizar gráfico");
-            Ui.StyleAction(generateGraph, Ui.ActionEmphasis.Primary);
-            Grid.SetColumn(generateGraph, 0);
-            primaryActions.Children.Add(generateGraph);
-
             fitCurrentGraph = Ui.AsyncButton("Ajustar este gráfico", () => owner.Execute(() => owner.OpenChart(config.S("path"), true, config)));
-            StyleChartAction(fitCurrentGraph, "Ajustar este gráfico");
             Ui.StyleAction(fitCurrentGraph, Ui.ActionEmphasis.Secondary);
             fitCurrentGraph.IsEnabled = false;
-            Grid.SetColumn(fitCurrentGraph, 1);
-            primaryActions.Children.Add(fitCurrentGraph);
-            data.Children.Add(primaryActions);
-
-            var batchButton = Ui.AsyncButton("Gerar gráficos em lote…", () => owner.Execute(GenerateBatch));
-            Ui.StyleAction(batchButton, Ui.ActionEmphasis.Secondary);
-            batchButton.HorizontalAlignment = HorizontalAlignment.Stretch;
-            batchButton.HorizontalContentAlignment = HorizontalAlignment.Center;
-            batchButton.MinWidth = 0;
-            batchButton.Margin = new Thickness(2, 2, 2, 5);
-            data.Children.Add(batchButton);
-            Ui.AddHelp(data, "Aplica X, Y, estrato/grupo e aparência atuais a várias tabelas. Cada gráfico fica nos Conteúdos da sua tabela.");
+            dataActions.Add(Ui.AsyncButton("Batch Gerar", () => owner.Execute(GenerateBatch)));
+            dataActions.Add(fitCurrentGraph);
         }
-        else
-        {
-            data.Children.Add(generateGraph);
-        }
+        Ui.StyleAction(generateGraph, Ui.ActionEmphasis.Primary);
+        dataActions.Add(generateGraph);
 
         status.Margin = new Thickness(0);
         status.TextWrapping = TextWrapping.Wrap;
@@ -154,7 +147,7 @@ internal sealed partial class ChartView : DockPanel
         DockPanel.SetDock(statusFooter, Dock.Bottom);
         var dataPanel = new DockPanel();
         dataPanel.Children.Add(statusFooter);
-        dataPanel.Children.Add(Ui.Scroll(data));
+        dataPanel.Children.Add(ChartActionPanel(data, dataActions.ToArray()));
         tabs.Items.Add(new TabItem { Header = "Dados", Content = dataPanel });
         var appearance = Ui.Form();
         Ui.Section(appearance, "Rótulos e aparência");
@@ -174,11 +167,10 @@ internal sealed partial class ChartView : DockPanel
         Ui.Field(appearance,"Intervalo das marcações X (vazio = automático)",xTickStep);
         Ui.Field(appearance,"Intervalo das marcações Y (vazio = automático)",yTickStep);
         Ui.AddHelp(appearance,"As marcações automáticas priorizam inteiros quando a escala permite. Use intervalos como 1, 5, 10 ou 0,1. Em escala logarítmica, o intervalo é medido em expoentes de 10. Máximo de 200 divisões por eixo.");
-        appearance.Children.Add(
-            Ui.AsyncButton("Aplicar aparência", () => owner.Execute(() => Generate()))
-        );
+        var applyAppearance = Ui.AsyncButton("Aplicar aparência", () => owner.Execute(() => Generate()));
+        Ui.StyleAction(applyAppearance, Ui.ActionEmphasis.Primary);
         if (!fitting)
-            tabs.Items.Add(new TabItem { Header = "Aparência", Content = Ui.Scroll(appearance) });
+            tabs.Items.Add(new TabItem { Header = "Aparência", Content = ChartActionPanel(appearance, applyAppearance) });
         if (!fitting)
         {
             var violin = Ui.Form();
@@ -204,8 +196,9 @@ internal sealed partial class ChartView : DockPanel
             Ui.Field(siteIndex, "Desvio máximo na idade-base (%)", siteIndexDeviation);
             siteIndex.Children.Add(showSiteIndexCurves);
             Ui.AddHelp(siteIndex, "A equação-guia gera nove curvas anamórficas: valores igualmente espaçados entre −desvio e +desvio na idade-base. Cada três curvas formam as classes 1 (inferior), 2 (intermediária) e 3 (superior); a curva central coincide com a guia. Para base de 84 meses, informe 7 anos. As curvas só são aplicadas quando você atualiza o gráfico.");
-            siteIndex.Children.Add(Ui.AsyncButton("Aplicar curvas ao gráfico", () => owner.Execute(ApplySiteIndexCurves)));
-            tabs.Items.Add(new TabItem { Header = "Índice de sítio", Content = Ui.Scroll(siteIndex) });
+            var applyCurves = Ui.AsyncButton("Aplicar curvas ao gráfico", () => owner.Execute(ApplySiteIndexCurves));
+            Ui.StyleAction(applyCurves, Ui.ActionEmphasis.Primary);
+            tabs.Items.Add(new TabItem { Header = "Índice de sítio", Content = ChartActionPanel(siteIndex, applyCurves) });
         }
         var fit = Ui.Form();
         Ui.Section(fit, "Modelo de regressão");
@@ -235,19 +228,20 @@ internal sealed partial class ChartView : DockPanel
             showCurrentCurve.Unchecked += (_, _) => currentCurveSource.IsEnabled = false;
             currentCurveSource.IsEnabled = false;
         }
-        fit.Children.Add(Ui.AsyncButton("Ajustar", () => owner.Execute(() => Generate("fit", compareModels.IsChecked == true))));
+        var fitAction = Ui.AsyncButton("Ajustar", () => owner.Execute(() => Generate("fit", compareModels.IsChecked == true)));
+        Ui.StyleAction(fitAction, Ui.ActionEmphasis.Primary);
+        var fitActions = fitting
+            ? new[] { Ui.AsyncButton("Batch Ajustar", () => owner.Execute(GenerateFitBatch)), fitAction }
+            : new[] { fitAction };
         if (fitting)
-            fit.Children.Add(Ui.AsyncButton("Ajuste em lote…", () => owner.Execute(GenerateFitBatch)));
-        if (fitting)
-            tabs.Items.Add(new TabItem { Header = "Ajuste de regressão", Content = Ui.Scroll(fit) });
+            tabs.Items.Add(new TabItem { Header = "Ajuste de regressão", Content = ChartActionPanel(fit, fitActions) });
         var export = Ui.Form();
         Ui.Section(export, "Tamanho da exportação");
         Ui.Field(export, "Largura (pixels)", width);
         Ui.Field(export, "Altura (pixels)", height);
-        export.Children.Add(
-            Ui.AsyncButton("Exportar PNG, SVG ou Excel…", () => owner.Execute(Export))
-        );
-        tabs.Items.Add(new TabItem { Header = "Exportar", Content = Ui.Scroll(export) });
+        var exportAction = Ui.AsyncButton("Exportar PNG, SVG ou Excel…", () => owner.Execute(Export));
+        Ui.StyleAction(exportAction, Ui.ActionEmphasis.Primary);
+        tabs.Items.Add(new TabItem { Header = "Exportar", Content = ChartActionPanel(export, exportAction) });
         source.SelectionChanged += async (_, _) =>
         {
             if (loading)
@@ -549,13 +543,14 @@ internal sealed partial class ChartView : DockPanel
             stratum.SelectedItem = config.S("stratum");
             if (stratum.SelectedIndex < 0)
                 stratum.SelectedIndex = 0;
-            title.Text = config.S("title");
+            title.Text = config.S("title_pattern", config.S("title"));
             xlabel.Text = config.S("x_label");
             ylabel.Text = config.S("y_label");
             size.Text = config.N("point_size", 3).ToString();
             pointAlpha.Text = config.N("point_alpha", 1).ToString();
             color.SelectedIndex = (int)config.N("color");
             grid.IsChecked = config.B("grid", true);
+
             logx.IsChecked = config.B("log_x");
             logy.IsChecked = config.B("log_y");
             xmin.Text = config["xmin"].Display();
@@ -667,10 +662,13 @@ internal sealed partial class ChartView : DockPanel
             throw new InvalidOperationException("Selecione variáveis explicativas diferentes.");
         c["x_variables"] = xVariables;
         c["y"] = y.SelectedItem?.ToString();
-        c["title"] = string.IsNullOrWhiteSpace(title.Text)
+        string titlePattern = string.IsNullOrWhiteSpace(title.Text)
             ? $"{c.S("y")} × {c.S("x")}"
             : title.Text;
-        title.Text = c.S("title");
+        c["title"] = titlePattern.Replace("%%", session.ContentName(c.S("path")), StringComparison.Ordinal);
+        if (titlePattern.Contains("%%", StringComparison.Ordinal)) c["title_pattern"] = titlePattern;
+        else c.Remove("title_pattern");
+        title.Text = titlePattern;
         c["stratum"] = stratum.SelectedIndex > 0 ? stratum.SelectedItem?.ToString() : "";
         c["group"] = group.SelectedIndex > 0 ? group.SelectedItem?.ToString() : "";
         c["group_selected"] = group.SelectedIndex > 0;
@@ -707,6 +705,7 @@ internal sealed partial class ChartView : DockPanel
         }
         c["color"] = color.SelectedIndex;
         c["grid"] = grid.IsChecked == true;
+
         c["log_x"] = logx.IsChecked == true;
         c["log_y"] = logy.IsChecked == true;
         int selectedModelIndex = models.SelectedIndex;
@@ -994,6 +993,43 @@ internal sealed partial class ChartView : DockPanel
         scatterBody.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var topPanel = new StackPanel();
         topPanel.Children.Add(PlotLegend.Create(saved, data));
+        topPanel.Visibility = saved.B("visual_legend", true) ? Visibility.Visible : Visibility.Collapsed;
+        var visualMenu = new MenuItem { Header = "Configurações visuais…", Icon = new CommandIcon { Kind = CommandIconKind.Settings, Width = 16, Height = 16 } };
+        plot.ContextMenu.Items.Add(new Separator());
+        plot.ContextMenu.Items.Add(visualMenu);
+        visualMenu.Click += (_, e) =>
+        {
+            e.Handled = true;
+            var updated = ChartVisualDialog.Show(saved, data);
+            if (updated == null) return;
+            bool current = Identity(config) == Identity(saved);
+            int storedIndex = session.Meta.Arr("charts").Select((node, i) => (node, i))
+                .Where(item => item.node is JsonObject chart && Identity(chart) == Identity(saved))
+                .Select(item => item.i).DefaultIfEmpty(-1).First();
+            foreach (var pair in updated)
+            {
+                if (pair.Key == "fits" && saved["fits"] is JsonArray existing && pair.Value is JsonArray changed)
+                {
+                    for (int i = 0; i < Math.Min(existing.Count, changed.Count); i++)
+                        foreach (string key in new[] { "curve_color", "line_dashed" })
+                            existing[i]![key] = changed[i]![key]?.DeepClone();
+                }
+                else saved[pair.Key] = pair.Value?.DeepClone();
+            }
+            foreach (string key in new[] { "xmin", "xmax", "ymin", "ymax", "x_tick_step", "y_tick_step" })
+                if (updated[key] == null) saved.Remove(key);
+            if (updated["title_pattern"] == null) saved.Remove("title_pattern");
+            if (current) config = saved.DeepClone().AsObject();
+            plot.Config = saved;
+            topPanel.Children.Clear(); topPanel.Children.Add(PlotLegend.Create(saved, data));
+            topPanel.Visibility = saved.B("visual_legend", true) ? Visibility.Visible : Visibility.Collapsed;
+            if (storedIndex >= 0)
+            {
+                session.Meta.Arr("charts")[storedIndex] = saved.DeepClone();
+                session.Touch();
+            }
+            else session.StoreChart(saved);
+        };
         scatterBody.Children.Add(topPanel);
         scatterBody.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         System.Windows.Controls.Grid.SetRow(plot, 1);
@@ -1047,8 +1083,7 @@ internal sealed partial class ChartView : DockPanel
         });
         graphTabs.Items.Add(new TabItem { Header = "Violino e outliers", Content = violinBody });
         ChartWorkspace? workspace = null;
-        var graphSurface = new DockPanel();
-        var graphToolbar = new DockPanel { LastChildFill = true, Background = Brushes.White };
+        var graphSurface = new Grid();
         Button fullScreenButton = null!;
         void UpdateFullScreenButton(bool isFullScreen)
         {
@@ -1070,11 +1105,14 @@ internal sealed partial class ChartView : DockPanel
         fullScreenButton = Ui.IconButton("Tela cheia · Ctrl+Alt ou Ctrl+Shift + → próximo gráfico / ← anterior", CommandIconKind.FullScreen, ToggleFullScreen);
         UpdateFullScreenButton(owner.IsChartFullScreen);
         fullScreenButton.HorizontalAlignment = HorizontalAlignment.Right;
-        DockPanel.SetDock(fullScreenButton, Dock.Right);
-        graphToolbar.Children.Add(fullScreenButton);
-        DockPanel.SetDock(graphToolbar, Dock.Top);
-        graphSurface.Children.Add(graphToolbar);
+        fullScreenButton.VerticalAlignment = VerticalAlignment.Top;
+        fullScreenButton.Margin = new Thickness(0, 40, 6, 0);
+        fullScreenButton.Width = fullScreenButton.MinWidth = 30;
+        fullScreenButton.Height = fullScreenButton.MinHeight = 28;
+        fullScreenButton.Padding = new Thickness(4);
+        Panel.SetZIndex(fullScreenButton, 1);
         graphSurface.Children.Add(graphTabs);
+        graphSurface.Children.Add(fullScreenButton);
         body.Children.Add(graphSurface);
         FrameworkElement? modelsPanel = null;
         CheckBox? showRemovedToggle = null;
@@ -1154,6 +1192,13 @@ internal sealed partial class ChartView : DockPanel
             table.CanUserAddRows = false;
             table.IsReadOnly = true;
             table.SelectionUnit = DataGridSelectionUnit.FullRow;
+            table.MouseDoubleClick += async (_, e) =>
+            {
+                var row = FindFitRow(e.OriginalSource as DependencyObject);
+                if (row?.Item is not System.Data.DataRowView selected) return;
+                e.Handled = true;
+                await FitDiagnosticWindow.Open(owner, session, saved, fits[(int)selected["fit_index"]]!.AsObject());
+            };
             var view = (System.Data.DataView)table.ItemsSource;
             view.Table!.Columns.Add("fit_index", typeof(int));
             view.Table.Columns.Add("curve_color", typeof(string));
@@ -1268,10 +1313,6 @@ internal sealed partial class ChartView : DockPanel
                 session.StoreChart(saved);
             };
             var tablePanel = new DockPanel();
-            var hint = Ui.Help("Modelos exibidos · Ctrl + clique para selecionar vários; Shift para selecionar um intervalo.");
-            hint.Margin = new Thickness(10, 5, 10, 5);
-            DockPanel.SetDock(hint, Dock.Top);
-            tablePanel.Children.Add(hint);
             tablePanel.Children.Add(table);
             modelsPanel = tablePanel;
         }

@@ -145,7 +145,7 @@ internal static class StreamingDirectProcessor
                 int column = plotColumns[index];
                 if (column != dateColumn) return Text(values[column]);
                 string? raw = null;
-                double date = values[column] is double serial ? serial : InventoryMath.Date(raw = Text(values[column]));
+                double date = InventoryMath.Date(raw = Text(values[column]));
                 if (!double.IsFinite(date))
                 {
                     raw ??= Text(values[column]);
@@ -263,8 +263,13 @@ internal static class StreamingDirectProcessor
                     if (!double.IsFinite(value)) reasons.Add(name + " vazio, não numérico ou fora do intervalo.");
                     else if (positive && value <= 0) reasons.Add(name + " menor ou igual a zero.");
                 }
+                void CheckAngle(double value, string name)
+                {
+                    if (!double.IsFinite(value)) reasons.Add(name + " vazio ou não numérico.");
+                    else if (!InventoryMath.ValidDeclination(value)) reasons.Add(name + " deve ser maior que −90° e menor que 90°.");
+                }
                 Check(length, "Comprimento", true); Check(width, "Largura", true);
-                Check(sl, "Declinação no comprimento", false); Check(sw, "Declinação na largura", false);
+                CheckAngle(sl, "Declinação no comprimento"); CheckAngle(sw, "Declinação na largura");
                 if (reasons.Count == 0) reasons.Add(double.IsFinite(area) ? "A correção pelas declinações resultou em área nula ou negativa." : "O cálculo resultou em área não finita.");
                 var key = (stand, plot, lot, Text(row[dateColumn]), Text(row[lengthColumn]), Text(row[widthColumn]),
                     Text(slopeLengthValue), Text(slopeWidthValue), sourceColumn >= 0 ? Text(row[sourceColumn]) : "");
@@ -344,14 +349,17 @@ internal static class StreamingDirectProcessor
             string registryKeyValue = Text(row[registryKeyColumn]);
             if (!registry.TryGetValue(registryKeyValue, out var registryEntry))
                 throw new InvalidDataException($"Linha {rowNumber}: chave não encontrada no cadastro: {registryKeyValue}.");
-            double planting = registryEntry.PlantingDate, measured = InventoryMath.Date(Text(row[dateColumn]));
+            string measuredText = Text(row[dateColumn]);
+            double planting = registryEntry.PlantingDate, measured = InventoryMath.Date(measuredText);
             if (!double.IsFinite(planting) || !double.IsFinite(measured))
             {
                 var invalid = new List<string>();
-                if (!double.IsFinite(planting)) invalid.Add($"plantio na coluna '{plantName}' (valor: '{registryEntry.InvalidPlantingText}')");
-                if (!double.IsFinite(measured)) invalid.Add($"medição na coluna '{input.Columns[dateColumn]}' (valor: '{Text(row[dateColumn])}')");
+                if (!double.IsFinite(planting)) invalid.Add(DateProblem("plantio", plantName, registryEntry.InvalidPlantingText ?? ""));
+                if (!double.IsFinite(measured)) invalid.Add(DateProblem("medição", input.Columns[dateColumn], measuredText));
                 throw new InvalidDataException($"Linha {rowNumber}: data inválida de {string.Join(" e ", invalid)}.");
             }
+            if (planting > measured)
+                throw new InvalidDataException($"Linha {rowNumber}: data de plantio {DateLabel(planting)} posterior à data de medição {DateLabel(measured)} para o talhão '{stand}', parcela '{plot}', lote '{lot}'.");
             double age = Math.Floor(measured - planting) / 365.25;
             string code = InventoryMath.EquationCode(lot, age, ageLimit), curve = InventoryMath.EquationCode(lot, 0);
             if (!models.TryGetValue(code, out var equation))
@@ -375,6 +383,13 @@ internal static class StreamingDirectProcessor
         progress?.Invoke(100, "Resumo direto concluído.");
         return result;
     }
+
+    private static string DateProblem(string label, string column, string value) =>
+        InventoryMath.IsYearOnly(value)
+            ? $"{label} na coluna '{column}' contém somente o ano '{value}'; informe uma data completa ou um serial Excel válido"
+            : $"{label} na coluna '{column}' (valor: '{value}')";
+
+    private static string DateLabel(double serial) => DateTime.FromOADate(serial).ToString("dd/MM/yyyy", CultureInfo.GetCultureInfo("pt-BR"));
 
     private static InvalidDataException AreaError(
         Dictionary<(string Stand, string Plot, string Lot, string Date, string Length, string Width, string SlopeLength, string SlopeWidth, string Source), AreaIssue> issues,

@@ -17,6 +17,7 @@ internal static class SettingsView
                     && k.Key != "volume"
                     && k.Key != "curvas_crescimento"
                     && k.Key != "regressoes"
+                    && k.Key != "taper"
                     && k.Key != "identificacao"
                 )
                 .ToArray()
@@ -58,6 +59,8 @@ internal static class SettingsView
         tabs.Items.Add(new TabItem { Header = "Regras de volumetria", Content = volumeEditor });
         var regressions = new RegressionCatalogView(copy);
         tabs.Items.Add(new TabItem { Header = "Modelos de regressão", Content = regressions });
+        var taperEquations = new TaperEquationCatalogEditor(copy);
+        tabs.Items.Add(new TabItem { Header = "Equações de taper", Content = taperEquations });
         var satelliteSettings = new StackPanel { Margin = new Thickness(18) };
         satelliteSettings.Children.Add(Ui.Text("Acesso a imagens NOAA", 18));
         Ui.AddHelp(satelliteSettings, "Os serviços públicos de NDVI usados pelo DendroLab não exigem chave. Se você recebeu um token específico para o ImageServer NOAA, ele fica criptografado pelo Windows neste usuário e não é salvo no arquivo do projeto. Tokens de outros produtos NOAA, como Climate Data Online, não autenticam esse serviço de imagens.");
@@ -109,12 +112,15 @@ internal static class SettingsView
         satelliteSettings.Children.Add(copernicusActions);
         tabs.Items.Add(new TabItem { Header = "Imagens de satélite", Content = Ui.Scroll(satelliteSettings) });
         var apply = Ui.Button("Aplicar configurações", () => { });
+        var cursorSnap = new CursorSnapPreferences.Editor();
+        tabs.Items.Add(new TabItem { Header = "Cursor dos gráficos", Content = Ui.Scroll(cursorSnap) });
         var window = Ui.Dialog("Configurações do projeto", Ui.WithToolbar(tabs, apply), 1100, 780);
         apply.Click += async (_, _) =>
         {
             apply.IsEnabled = false;
             try
             {
+                var cursorSettings = cursorSnap.Read();
                 foreach (var pair in editors)
                     copy[pair.Key] = pair.Value.Read();
                 copy["identificacao"] = identification.Read();
@@ -122,6 +128,7 @@ internal static class SettingsView
                 foreach (var pair in volumeEditor.Read().AsObject())
                     copy.Obj("volume")[pair.Key] = pair.Value?.DeepClone();
                 copy["regressoes"] = regressions.Read();
+                copy.Obj("taper")["equations"] = taperEquations.Read();
                 copy.Obj("_dendro").Remove("registry");
                 var cadastro = copy.Obj("cadastro");
                 if (!string.IsNullOrWhiteSpace(cadastro.S("caminho")))
@@ -138,6 +145,7 @@ internal static class SettingsView
                 var valid = await WorkspaceOperations.Run(
                     new() { ["op"] = "validate", ["project"] = copy.DeepClone() }
                 );
+                CursorSnapPreferences.Save(cursorSettings);
                 session.Replace(valid["project"]!.AsObject());
                 owner.Log("Configurações atualizadas. Salve o projeto para reutilizá-las.");
                 window.Close();

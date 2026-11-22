@@ -8,7 +8,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class IsolationForestView : ScrollViewer
+internal sealed class IsolationForestView : ToolFormView
 {
     private readonly MainWindow owner;
     private readonly ProjectSession session;
@@ -25,8 +25,7 @@ internal sealed class IsolationForestView : ScrollViewer
     public IsolationForestView(MainWindow owner, ProjectSession session)
     {
         this.owner = owner; this.session = session;
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-        var panel = Ui.Form(); Content = panel;
+        var panel = Ui.Form(); SetForm(panel);
         panel.Children.Add(owner.ToolHeader("Isolation Forest"));
         Ui.AddHelp(panel, "Detecta observações que são isoladas rapidamente por árvores aleatórias. Selecione as variáveis numéricas e treine um modelo; depois aplique o mesmo modelo a outras tabelas.");
         Ui.Section(panel,"Dados de treinamento");
@@ -48,11 +47,11 @@ internal sealed class IsolationForestView : ScrollViewer
         Ui.Section(panel,"Gráfico de diagnóstico");
         Ui.Field(panel, "Eixo X do gráfico", x); Ui.Field(panel, "Eixo Y do gráfico", y);
         Ui.AddHelp(panel, "O modelo usa todas as variáveis selecionadas. O gráfico é uma projeção em dois eixos: azul = normal; vermelho = anomalia. O relatório mantém todas as linhas e acrescenta IF_Score e IF_Classificacao.");
-        panel.Children.Add(Ui.AsyncButton("Treinar modelo e gerar gráfico", () => owner.Execute(() => Run(true))));
+        var train = Ui.AsyncButton("Treinar e gerar gráfico", () => owner.Execute(() => Run(true)));
         Ui.Section(panel,"Aplicar modelo existente");
         Ui.Field(panel, "Modelos salvos no projeto", models);
         panel.Children.Add(Ui.Button("Atualizar modelos", RefreshModels));
-        panel.Children.Add(Ui.AsyncButton("Aplicar modelo salvo e gerar gráfico", () => owner.Execute(() => Run(false))));
+        SetPrimaryActions(train, Ui.AsyncButton("Aplicar modelo salvo", () => owner.Execute(() => Run(false))));
         Ui.AddHelp(panel, "Aplicar um modelo salvo mantém suas variáveis, árvores e limiar de treinamento. A tabela selecionada deve conter as mesmas variáveis.");
         var files = new WrapPanel();
         files.Children.Add(Ui.Button("Exportar modelo JSON…", ExportModel));

@@ -202,11 +202,14 @@ public static class GrowthDiagnostics
         IReadOnlyList<GrowthCurve> curves,
         double minAge,
         double maxAge,
-        bool annualDifference
+        bool annualDifference,
+        IReadOnlyList<string>? plotGroups = null
     )
     {
         if (curves.Count is < 1 or > 12)
             throw new InvalidDataException("Selecione de 1 a 12 curvas.");
+        if (plotGroups is not null && plotGroups.Count != curves.Count)
+            throw new InvalidDataException("A configuração dos gráficos não corresponde às curvas selecionadas.");
         var diagnostics = curves
             .Select(c => Calculate(c, minAge, maxAge, annualDifference))
             .ToArray();
@@ -217,14 +220,9 @@ public static class GrowthDiagnostics
             "IMA (por ano)",
             "ICA (por ano)",
         ]);
-        var points = new List<ChartPoint>();
-        var lines = new List<double[][]>();
-        var fits = new JsonArray();
         var summaries = new JsonArray();
-        string[] colors = ["#21669D", "#1C8965", "#D56D2C", "#8155B4", "#C33E5E", "#008A99"];
         foreach (var d in diagnostics)
         {
-            int index = summaries.Count;
             summaries.Add(
                 new JsonObject
                 {
@@ -249,73 +247,16 @@ public static class GrowthDiagnostics
             foreach (var p in d.Points)
             {
                 details.Add(d.Curve.Name, p.Age, p.Volume, p.Ima, p.Ica);
-                points.Add(new(p.Age, p.Ima, points.Count + 1, d.Curve.Name));
-                points.Add(new(p.Age, p.Ica, points.Count + 1, d.Curve.Name));
-            }
-            foreach (bool ica in new[] { false, true })
-            {
-                fits.Add(
-                    new JsonObject
-                    {
-                        ["converged"] = true,
-                        ["model"] = ica ? "ICA" : "IMA",
-                        ["group"] = d.Curve.Name,
-                        ["curve_color"] = colors[index % colors.Length],
-                        ["line_dashed"] = ica,
-                    }
-                );
-                lines.Add(d.Points.Select(p => new[] { p.Age, ica ? p.Ica : p.Ima }).ToArray());
             }
         }
-        var chart = new JsonObject
-        {
-            ["title"] = "ICA e IMA",
-            ["x_label"] = "Idade (anos)",
-            ["y_label"] = "Incremento por ano",
-            ["point_size"] = 0,
-            ["fits"] = fits,
-            ["selected_fits"] = new JsonArray(
-                Enumerable
-                    .Range(0, fits.Count)
-                    .Select(i => (JsonNode?)JsonValue.Create(i))
-                    .ToArray()
-            ),
-        };
-        chart["frontier_points"] = new JsonArray(
-            diagnostics
-                .SelectMany(d => d.Crossings)
-                .Select(c =>
-                    (JsonNode?)
-                        new JsonObject
-                        {
-                            ["x"] = c.Age,
-                            ["y"] = c.Value,
-                            ["side"] = 1,
-                        }
-                )
-                .ToArray()
-        );
-        chart["xmin"] = minAge;
-        chart["xmax"] = maxAge;
-        chart["ymin"] = Math.Min(0, points.Min(p => p.Y));
-        chart["reference_lines"] = new JsonArray(
-            diagnostics
-                .SelectMany(d => d.Crossings)
-                .Take(20)
-                .Select(c =>
-                    (JsonNode?)
-                        new JsonObject
-                        {
-                            ["x"] = c.Age,
-                            ["label"] =
-                                c.Age.ToString(
-                                    "0.###",
-                                    System.Globalization.CultureInfo.CurrentCulture
-                                ) + " anos",
-                        }
-                )
-                .ToArray()
-        );
+        var groupIds = plotGroups?.ToArray() ?? curves.Select((_, i) => $"Gráfico {i + 1}").ToArray();
+        var groupOrder = groupIds.Distinct(StringComparer.Ordinal).ToArray();
+        var plots = groupOrder.Select((group, i) => BuildPlot(
+            diagnostics.Where((_, curveIndex) => groupIds[curveIndex] == group).ToArray(),
+            groupOrder.Length == 1 ? "" : group,
+            minAge,
+            maxAge
+        )).ToArray();
         var summary = new JsonObject
         {
             ["test"] = "Diagnóstico ICA e IMA",
@@ -327,6 +268,54 @@ public static class GrowthDiagnostics
             ["age_unit"] = "anos",
             ["curves"] = summaries,
         };
-        return new(summary, details, new(chart, points.ToArray(), lines.ToArray(), 0));
+        return new(summary, details, plots[0], plots.Skip(1).ToArray());
+    }
+
+    private static ChartResult BuildPlot(GrowthDiagnostic[] diagnostics, string group, double minAge, double maxAge)
+    {
+        var points = new List<ChartPoint>();
+        var lines = new List<double[][]>();
+        var fits = new JsonArray();
+        string[] colors = ["#21669D", "#1C8965", "#D56D2C", "#8155B4", "#C33E5E", "#008A99"];
+        for (int index = 0; index < diagnostics.Length; index++)
+        {
+            var d = diagnostics[index];
+            foreach (var p in d.Points)
+            {
+                points.Add(new(p.Age, p.Ima, points.Count + 1, d.Curve.Name));
+                points.Add(new(p.Age, p.Ica, points.Count + 1, d.Curve.Name));
+            }
+            foreach (bool ica in new[] { false, true })
+            {
+                fits.Add(new JsonObject
+                {
+                    ["converged"] = true,
+                    ["model"] = ica ? "ICA" : "IMA",
+                    ["group"] = d.Curve.Name,
+                    ["curve_color"] = colors[index % colors.Length],
+                    ["line_dashed"] = ica,
+                });
+                lines.Add(d.Points.Select(p => new[] { p.Age, ica ? p.Ica : p.Ima }).ToArray());
+            }
+        }
+        var chart = new JsonObject
+        {
+            ["title"] = "ICA e IMA" + (group.Length > 0 ? " · " + group : ""),
+            ["x_label"] = "Idade (anos)",
+            ["y_label"] = "Incremento por ano",
+            ["point_size"] = 0,
+            ["fits"] = fits,
+            ["selected_fits"] = new JsonArray(Enumerable.Range(0, fits.Count).Select(i => (JsonNode?)JsonValue.Create(i)).ToArray()),
+            ["frontier_points"] = new JsonArray(diagnostics.SelectMany(d => d.Crossings).Select(c => (JsonNode?)new JsonObject { ["x"] = c.Age, ["y"] = c.Value, ["side"] = 1 }).ToArray()),
+            ["xmin"] = minAge,
+            ["xmax"] = maxAge,
+            ["ymin"] = Math.Min(0, points.Min(p => p.Y)),
+            ["reference_lines"] = new JsonArray(diagnostics.SelectMany(d => d.Crossings).Take(20).Select(c => (JsonNode?)new JsonObject
+            {
+                ["x"] = c.Age,
+                ["label"] = c.Age.ToString("0.###", System.Globalization.CultureInfo.CurrentCulture) + " anos",
+            }).ToArray()),
+        };
+        return new(chart, points.ToArray(), lines.ToArray(), 0);
     }
 }

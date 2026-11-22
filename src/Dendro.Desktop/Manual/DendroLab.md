@@ -240,7 +240,7 @@ Talhão e parcela podem formar uma unidade, mas observações da mesma parcela a
 
 ## ICA e IMA
 ### Finalidade e entradas
-Compara incrementos de curvas ajustadas ou cadastradas. Para ajustes de gráficos, confirme que X representa idade e Y produção acumulada; indique anos ou meses. O intervalo de análise é informado em anos.
+Compara modelos cadastrados em Crescimento e produção. Selecione até 12 modelos; o intervalo de análise é informado em anos.
 ### Fórmulas
 `IMA(t) = V(t) / t`. O ICA instantâneo usa derivada numérica em relação à idade em anos. O ICA anual usa `V(t) − V(t − 1 ano)`, quando as avaliações existem. As unidades originais dos coeficientes são respeitadas na avaliação da equação.
 ### Resultados
@@ -284,13 +284,13 @@ Uma árvore rara pode ser biologicamente válida. Confirme a origem antes de ret
 
 ## K-means
 ### Finalidade
-Agrupa observações numericamente semelhantes. Selecione duas ou mais variáveis quantitativas e escolha os eixos usados para visualizar os grupos.
+Agrupa observações numericamente semelhantes. Selecione duas ou mais variáveis quantitativas; o gráfico dos grupos usa as duas primeiras selecionadas. As curvas elbow e silhouette não dependem de eixos X/Y.
 ### Regra técnica
 As variáveis são padronizadas por z-score antes das distâncias. A inicialização k-means++ e as repetições reduzem a dependência de um centro inicial. O agrupamento procura reduzir as distâncias quadráticas dos pontos aos seus centros.
 ### Escolha de K
 Compare inertia, mostrada pela curva elbow, e silhouette. Inertia tende a cair com mais grupos; procure o ponto em que o ganho marginal diminui. Silhouette compara coesão com separação, mas não substitui conhecimento do domínio. É possível escolher K final em vez do automático.
 ### Limites e saída
-O limite de treinamento usa uma amostra determinística quando necessário; as linhas completas recebem grupo posteriormente. A silhouette pode ser estimada em amostra estratificada. Identificadores numéricos ou variáveis redundantes podem dominar a separação. Os grupos são descrições estatísticas, não classes biológicas automaticamente validadas.
+O ajuste, a inertia e a silhouette usam todas as linhas completas. K mínimo começa em 2 e K máximo deve ser maior que o mínimo e caber no número de linhas completas; não há teto fixo de K. A silhouette exata compara distâncias entre todas as linhas e pode demorar em bases grandes. Identificadores numéricos ou variáveis redundantes podem dominar a separação. Os grupos são descrições estatísticas, não classes biológicas automaticamente validadas.
 
 # Catálogos de equações
 ## Volumetria

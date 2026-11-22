@@ -16,17 +16,35 @@ internal sealed class TaperModelsView : DockPanel
     private readonly ComboBox source=Ui.Combo([]), tree=Ui.Combo([]), dap=Ui.Combo([]), total=Ui.Combo([]), height=Ui.Combo([]), diameter=Ui.Combo([]), stratum=Ui.Combo([]);
     private readonly CheckBox stratified=new(){Content="Ajustar separadamente por estrato"};
     private readonly Dictionary<string,CheckBox> models=new();
+    private readonly TaperModel[] taperModels;
     private readonly DataGrid catalog=new();
+    private readonly Button exportSavedButton, removeSavedButton;
     private readonly TextBlock status=Ui.Text("");
+    private readonly TextBlock catalogStatus=Ui.Text("");
     private Source[] sources=[];
     private bool loading, initialized;
-    internal TaperModelsView(MainWindow owner,ProjectSession session)
+    internal TaperModelsView(MainWindow owner,ProjectSession session, bool catalogOnly = false)
     {
         this.owner=owner;this.session=session;
+        taperModels=TaperAdjustment.ReadModels(session.Data!);
         Background=System.Windows.Media.Brushes.White;
-        var tabs=new TabControl{Background=System.Windows.Media.Brushes.White};Children.Add(tabs);
+        LastChildFill=true;
+        FrameworkElement header;
+        if(catalogOnly)
+        {
+            var catalogHeader=new StackPanel{Margin=new Thickness(8,6,8,4)};
+            catalogHeader.Children.Add(Ui.Text("Ajustes salvos de taper",22));
+            Ui.AddHelp(catalogHeader,"Catálogo do projeto para os ajustes de afilamento. Salve um modelo pelo botão direito sobre o ajuste nos resultados. Selecione uma linha para exportar os dados do ajuste ou removê-lo do catálogo.");
+            header=catalogHeader;
+        }
+        else
+        {
+            var toolHeader=owner.ToolHeader("Ajuste de taper");
+            toolHeader.Margin=new Thickness(10,8,10,5);
+            header=toolHeader;
+        }
+        DockPanel.SetDock(header, Dock.Top); Children.Add(header);
         var form=Ui.Form();
-        form.Children.Add(Ui.Text("Modelos de Afilamento",22));
         form.Children.Add(Ui.Text("Ajuste o diâmetro ao longo do fuste a partir de dados de cubagem. DAP e d em cm; H e h em metros.",13));
         Ui.Section(form,"Dados de cubagem");
         Ui.Field(form,"Tabela de origem",source);
@@ -36,7 +54,7 @@ internal sealed class TaperModelsView : DockPanel
         form.Children.Add(stratified);Ui.Field(form,"Campo de estrato",stratum);stratum.IsEnabled=false;
         stratified.Click+=(_,_)=>stratum.IsEnabled=stratified.IsChecked==true;
         Ui.Section(form,"Modelos para ajustar");
-        foreach(var model in TaperAdjustment.Models)
+        foreach(var model in taperModels)
         {
             var check=new CheckBox{Content=model.Name,IsChecked=true,ToolTip=model.Formula};models[model.Id]=check;form.Children.Add(check);
         }
@@ -45,42 +63,34 @@ internal sealed class TaperModelsView : DockPanel
         var host=new DockPanel();
         var footer=Ui.ActionFooter(Ui.AsyncButton("Ajustar modelos",()=>owner.Execute(Run),Ui.ActionEmphasis.Primary));
         DockPanel.SetDock(footer,Dock.Bottom);host.Children.Add(footer);host.Children.Add(Ui.Scroll(form));
-        tabs.Items.Add(new TabItem{Header="Ajuste",Content=host});
         var saved=new DockPanel();
-        var actions=new WrapPanel{Margin=new Thickness(8)};
-        actions.Children.Add(Ui.AsyncButton("Exportar XLSX…",()=>owner.Execute(ExportSaved),Ui.ActionEmphasis.Secondary));
-        actions.Children.Add(Ui.Button("Abrir estatísticas",()=>_=owner.Execute(()=>OpenSaved("Estatisticas")),Ui.ActionEmphasis.Secondary));
-        actions.Children.Add(Ui.Button("Abrir parâmetros",()=>_=owner.Execute(()=>OpenSaved("Parametros")),Ui.ActionEmphasis.Secondary));
-        actions.Children.Add(Ui.Button("Abrir dados estimados",()=>_=owner.Execute(()=>OpenSaved("Dados")),Ui.ActionEmphasis.Secondary));
-        DockPanel.SetDock(actions,Dock.Top);saved.Children.Add(actions);saved.Children.Add(catalog);
-        tabs.Items.Add(new TabItem{Header="Ajustes salvos",Content=saved});
-        var definitions=new StackPanel{Margin=new Thickness(16)};
-        foreach(var model in TaperAdjustment.Models){Ui.Section(definitions,model.Name);definitions.Children.Add(Ui.Text(model.Formula));}
-        definitions.Children.Add(Ui.Text("Ormerod usa o coeficiente b1. Os demais coeficientes seguem b0…b3. São as cinco definições da referência IFPC; o otimizador nativo pode produzir diferenças numéricas em relação ao SciPy.",12));
-        tabs.Items.Add(new TabItem{Header="Equações",Content=Ui.Scroll(definitions)});
+        var actions=new WrapPanel{Margin=new Thickness(8,1,8,4)};
+        exportSavedButton=Ui.IconButton("Exportar ajuste selecionado para XLSX",CommandIconKind.Export,()=>_=owner.Execute(ExportSaved));
+        removeSavedButton=Ui.IconButton("Remover ajuste selecionado",CommandIconKind.Remove,()=>_=owner.Execute(RemoveSaved));
+        actions.Children.Add(exportSavedButton);actions.Children.Add(removeSavedButton);
+        DockPanel.SetDock(actions,Dock.Top);saved.Children.Add(actions);
+        catalogStatus.Margin=new Thickness(8,4,8,8);DockPanel.SetDock(catalogStatus,Dock.Bottom);saved.Children.Add(catalogStatus);
+        catalog.AutoGenerateColumns=false;catalog.IsReadOnly=true;catalog.CanUserAddRows=false;catalog.SelectionMode=DataGridSelectionMode.Single;catalog.SelectionUnit=DataGridSelectionUnit.FullRow;catalog.MinColumnWidth=75;catalog.RowHeight=32;catalog.EnableColumnVirtualization=false;
+        foreach(var column in new[]{("ID","ID",110d),("Modelo","Modelo",175d),("Grupo","Grupo",130d),("N","N",65d),("Árvores","Árvores",80d),("Status","Status",100d),("R²","R²",85d),("RMSE (cm)","RMSE (cm)",100d),("Bias (%)","Bias (%)",95d),("Coeficientes","Coeficientes",220d),("Origem","Origem",170d),("Data","Data",150d)})
+            catalog.Columns.Add(new DataGridTextColumn{Header=column.Item1,Binding=new System.Windows.Data.Binding(column.Item2),Width=column.Item3});
+        catalog.SelectionChanged+=(_,_)=>UpdateCatalogActions();saved.Children.Add(catalog);
+        RefreshCatalog();
+        Children.Add(catalogOnly ? saved : host);
         source.SelectionChanged+=async(_,_)=>{if(!loading)await LoadColumns();};
-        catalog.AutoGeneratingColumn+=(_,e)=>{if(e.PropertyName=="ID")e.Cancel=true;};
-        Loaded+=async(_,_)=>{if(!initialized){initialized=true;await Initialize();}RefreshCatalog();};RefreshCatalog();
+        Loaded+=async(_,_)=>{session.Changed+=SessionChanged;if(!initialized){initialized=true;await Initialize();}RefreshCatalog();};
+        Unloaded+=(_,_)=>session.Changed-=SessionChanged;
+        RefreshCatalog();
     }
     private async Task Initialize()
     {
         try
         {
             loading=true;
-            sources=await Task.Run(()=>
-            {
-                var available=new List<Source>();
-                foreach(string path in session.Files.Where(session.IsTabular))
-                {
-                    try
-                    {
-                        foreach(string table in TableStore.Tables(session.Resolve(path)))
-                            available.Add(new(path,new(session.Resolve(path),table,session.IsSpreadsheet(path)?(int)session.ExcelOptions(path).N("header_row",1):1),session.ContentName(path)+" · "+table));
-                    }
-                    catch(Exception ex) when(ex is IOException or InvalidDataException or UnauthorizedAccessException) { }
-                }
-                return available.ToArray();
-            });
+            string[] paths=session.Files.Where(session.IsTabular).ToArray();
+            // Match the Processador: one selectable source per tabular item in Contents,
+            // with the worksheet/table and header already configured for that item.
+            var tables=session.TableSources(paths);
+            sources=paths.Select((path,index)=>new Source(path,tables[index],session.ContentName(path))).ToArray();
             source.ItemsSource=sources.Select(s=>s.Label).ToArray();source.SelectedIndex=sources.Length>0?0:-1;
             loading=false;await LoadColumns();
             if(sources.Length==0)status.Text="Adicione uma tabela de cubagem ao projeto para começar.";
@@ -113,20 +123,20 @@ internal sealed class TaperModelsView : DockPanel
         var cancellation=owner.OperationCancellation;var progress=owner.StartTableOperation("Ajustando modelos de afilamento…");
         try
         {
-            var result=await Task.Run(()=>TaperAdjustment.Run(selected.Table,options,stage,cancellation,progress));
+            var result=await Task.Run(()=>TaperAdjustment.Run(selected.Table,options,stage,taperModels,cancellation,progress));
             cancellation.ThrowIfCancellationRequested();
             await session.AddTableResults(result.Tables,selected.Path,selected.Table.Table);
             string reference=session.Files.First(path=>!before.Contains(path));
             session.RenameContent(reference,"Afilamento · "+session.ContentName(selected.Path));
-            foreach(var fit in result.Fits.OfType<JsonObject>())
+            var fits=result.Fits.OfType<JsonObject>().Select(fit=>fit.DeepClone().AsObject()).ToArray();
+            foreach(var fit in fits)
             {
                 fit["path"]=reference;fit["source_path"]=selected.Path;fit["source_table"]=selected.Table.Table;fit["created"]=DateTimeOffset.Now.ToString("O");
                 fit["tree_column"]=options.Tree;fit["dap_column"]=options.Dap;fit["total_height_column"]=options.TotalHeight;fit["section_height_column"]=options.Height;fit["diameter_column"]=options.Diameter;fit["stratum_column"]=options.Stratum;
-                session.Meta.Arr("taper_fits").Add(fit.DeepClone());
             }
-            session.Touch();RefreshCatalog();
             status.Text=$"{result.Rows:N0} medições · {result.Invalid:N0} inválidas · {result.Fits.Count} ajustes. Dados, parâmetros e estatísticas salvos no projeto.";
-            owner.Log(status.Text);await owner.OpenTable(reference,"Estatisticas");
+            owner.Log(status.Text);
+            owner.Document("taper-results:"+reference,"Afilamento · resultados",new TaperFitResultsView(owner,session,fits));
         }
         finally{if(File.Exists(stage))File.Delete(stage);}
     }
@@ -135,9 +145,26 @@ internal sealed class TaperModelsView : DockPanel
         var table=new System.Data.DataTable();
         foreach(string name in new[]{"ID","Modelo","Grupo","N","Árvores","Status","R²","RMSE (cm)","Bias (%)","Coeficientes","Origem","Data"})table.Columns.Add(name);
         foreach(var fit in session.Meta.Arr("taper_fits").OfType<JsonObject>())
-            table.Rows.Add(fit.S("id"),fit.S("name"),fit.S("group"),fit.N("n"),fit.N("trees"),fit.S("status"),fit["r2"]?.ToString(),fit["rmse"]?.ToString(),fit["bias_pct"]?.ToString(),fit["coefficients"]?.ToJsonString(),session.ContentName(fit.S("source_path")),fit.S("created"));
+            table.Rows.Add(fit.S("id"),fit.S("name"),fit.S("group"),fit.N("n"),fit.N("trees"),fit.S("status"),fit["r2"]?.ToString(),fit["rmse"]?.ToString(),fit["bias_pct"]?.ToString(),fit["coefficients"]?.ToJsonString(),session.ContentName(fit.S("source_path")),DateLabel(fit.S("created")));
         catalog.ItemsSource=table.DefaultView;
+        int count=session.Meta.Arr("taper_fits").Count;
+        catalogStatus.Text=count==0
+            ? "Nenhum ajuste salvo. Nos resultados, clique com o botão direito em um ajuste OK para salvá-lo no projeto."
+            : $"{count:N0} ajuste(s) salvo(s) no projeto. Selecione uma linha para exportar os dados ou remover o ajuste.";
+        UpdateCatalogActions();
     }
+    private void SessionChanged()
+    {
+        if(Dispatcher.CheckAccess())RefreshCatalog();
+        else Dispatcher.BeginInvoke(RefreshCatalog);
+    }
+    private void UpdateCatalogActions()
+    {
+        if(exportSavedButton==null)return;
+        bool selected=catalog.SelectedItem is DataRowView row&&session.Meta.Arr("taper_fits").OfType<JsonObject>().Any(f=>f.S("id")==row["ID"].ToString());
+        exportSavedButton.IsEnabled=selected;removeSavedButton.IsEnabled=selected;
+    }
+    private static string DateLabel(string value)=>DateTimeOffset.TryParse(value,out var date)?date.ToLocalTime().ToString("g"):value;
     private async Task ExportSaved()
     {
         if(catalog.SelectedItem is not DataRowView row)throw new InvalidOperationException("Selecione um ajuste salvo.");
@@ -154,10 +181,14 @@ internal sealed class TaperModelsView : DockPanel
         },cancellation);
         owner.Log("Resultados de afilamento exportados em XLSX.");
     }
-    private Task OpenSaved(string sheet)
+    private Task RemoveSaved()
     {
-        if(catalog.SelectedItem is not DataRowView row)throw new InvalidOperationException("Selecione um ajuste salvo.");
-        var fit=session.Meta.Arr("taper_fits").OfType<JsonObject>().First(f=>f.S("id")==row["ID"].ToString());
-        return owner.OpenTable(fit.S("path"),sheet);
+        if(catalog.SelectedItem is not DataRowView row)return Task.CompletedTask;
+        string id=row["ID"].ToString()??"";
+        var fit=session.Meta.Arr("taper_fits").OfType<JsonObject>().FirstOrDefault(item=>item.S("id")==id);
+        if(fit==null)return Task.CompletedTask;
+        if(!Ui.Confirm("Remover ajuste salvo de taper",$"Remover {fit.S("name")} · {fit.S("group")} do catálogo?","Remover",true))return Task.CompletedTask;
+        session.Meta.Arr("taper_fits").Remove(fit);session.Touch();RefreshCatalog();owner.Log("Ajuste removido do catálogo de taper.");
+        return Task.CompletedTask;
     }
 }

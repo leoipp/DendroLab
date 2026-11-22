@@ -49,7 +49,7 @@ internal static class BiologicalAssetFallbackEditor
             }
             Set(key, existing?.ProcessingKey, ["Talhão", "Chave"]);
             Set(date, existing?.MeasurementDate, ["Data_Medicao", "Data"]);
-            Set(volume, existing?.VolumeColumn, ["Volume_m3_ha", "VTCC_ha", "VCCC_ha"]);
+            Set(volume, existing?.VolumeColumn, ["VTCC_m3_ha", "Volume_m3_ha", "VTCC_ha", "VCCC_ha"]);
             curve.ItemsSource = new[] { "(Usar ID da base)" }.Concat(names).ToArray();
             curve.SelectedItem = existing?.CurveIdColumn.Length > 0 && names.Contains(existing.CurveIdColumn) ? existing.CurveIdColumn : "(Usar ID da base)";
             foreach (var pair in mappings)

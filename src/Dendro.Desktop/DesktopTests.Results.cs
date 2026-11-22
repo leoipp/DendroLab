@@ -120,8 +120,8 @@ internal static partial class DesktopTests
 
         await window.Execute(() => Task.CompletedTask);
         Check(window.Progress.Value == 100 && window.ProgressDisplay.Visibility == Visibility.Visible, "progresso concluído permanece visível em 100%");
-        await Task.Delay(TimeSpan.FromSeconds(10.3));
-        Check(window.ProgressDisplay.Visibility == Visibility.Collapsed, "progresso some depois de dez segundos");
+        await Task.Delay(TimeSpan.FromSeconds(1.3));
+        Check(window.ProgressDisplay.Visibility == Visibility.Collapsed, "progresso some após a confirmação breve de conclusão");
         var gate = new TaskCompletionSource();
         Task operation = window.Execute(() => gate.Task);
         Check(window.ProgressDisplay.Visibility == Visibility.Visible && window.Progress.Value == 0, "nova operação reapresenta e reinicia progresso");

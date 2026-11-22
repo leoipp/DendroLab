@@ -19,38 +19,79 @@ using Dendro.Core;
 
 namespace Dendro.Desktop;
 
-internal sealed record GisFeature(int Type, Point[][] Parts, int Round = 0, int RecordIndex = -1);
+internal sealed record GisFeature(int Type, Point[][] Parts, int Round = 0, int RecordIndex = -1, Rect Bounds = default);
+internal sealed record GisBasemapSource(string Id, string Name, string? TileUrl, string Attribution, string AttributionUrl)
+{
+    internal static readonly GisBasemapSource[] Available =
+    [
+        new("openstreetmap", "OpenStreetMap", "https://tile.openstreetmap.org/{z}/{x}/{y}.png", "© OpenStreetMap contributors", "https://www.openstreetmap.org/copyright"),
+        new("esri-imagery", "Imagem de satélite (Esri)", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Tiles © Esri, Maxar, Earthstar Geographics, and the GIS User Community", "https://www.esri.com/en-us/legal/terms/full-master-agreement"),
+        new("none", "Sem mapa base", null, "", "https://www.openstreetmap.org/copyright"),
+    ];
+    internal static GisBasemapSource FromId(string id) => Available.FirstOrDefault(source => source.Id == id) ?? Available[0];
+}
+
 internal sealed record GisRasterLayer(string Path, string Name, BitmapSource Image, Rect Extent)
 {
     internal bool Visible { get; set; } = true;
 }
 
-internal sealed class GisLayer(string path, string name, GisFeature[] features, Rect extent, string? warning)
+internal sealed class GisLayer
 {
-    internal string Path { get; } = path;
-    internal string Name { get; } = name;
-    internal GisFeature[] Features { get; } = features;
-    internal Rect Extent { get; } = extent;
-    internal string? Warning { get; } = warning;
+    private sealed record IndexNode(Rect Bounds,int[]? Items,IndexNode[]? Children);
+    private readonly IndexNode? featureIndex;
+    internal string Path { get; }
+    internal string Name { get; }
+    internal GisFeature[] Features { get; }
+    internal Rect Extent { get; }
+    internal string? Warning { get; }
     internal bool Visible { get; set; } = true;
     internal VectorSymbology? Symbology { get; set; }
     internal string?[]? CategoryKeys { get; set; }
     internal string? CategoryWarning { get; set; }
+    internal GisLayer(string path,string name,GisFeature[] features,Rect extent,string? warning)
+    {
+        Path=path;Name=name;Features=features;Extent=extent;Warning=warning;
+        var level=Enumerable.Range(0,features.Length).OrderBy(i=>features[i].Bounds.X+features[i].Bounds.Width/2)
+            .Chunk(64).Select(indices=>new IndexNode(Union(indices.Select(i=>features[i].Bounds)),indices,null)).ToArray();
+        while(level.Length>1)level=level.OrderBy(node=>node.Bounds.X+node.Bounds.Width/2)
+            .Chunk(64).Select(children=>new IndexNode(Union(children.Select(node=>node.Bounds)),null,children)).ToArray();
+        featureIndex=level.FirstOrDefault();
+    }
+    internal int[] Query(Rect bounds)
+    {
+        if(featureIndex==null)return [];
+        var result=new List<int>();var stack=new Stack<IndexNode>();stack.Push(featureIndex);
+        while(stack.Count>0){var node=stack.Pop();if(!node.Bounds.IntersectsWith(bounds))continue;
+            if(node.Items!=null){foreach(int index in node.Items)if(Features[index].Bounds.IntersectsWith(bounds))result.Add(index);}
+            else if(node.Children!=null)foreach(var child in node.Children)stack.Push(child);
+        }
+        return result.ToArray();
+    }
+    private static Rect Union(IEnumerable<Rect> rectangles)
+    { using var iterator=rectangles.GetEnumerator();if(!iterator.MoveNext())return Rect.Empty;Rect result=iterator.Current;while(iterator.MoveNext())result.Union(iterator.Current);return result; }
 }
 
 internal sealed class GisView : DockPanel, IDisposable
 {
     private readonly ProjectSession session;
+    private string[] layerPaths;
     private readonly GisMapCanvas map = new();
     private readonly List<GisLayer> layers = new();
     private readonly List<GisRasterLayer> rasters = new();
     private bool disposed;
     internal IReadOnlyList<GisLayer> VectorLayers => layers;
 
-    internal GisView(ProjectSession session)
+    internal GisView(ProjectSession session) : this(session,
+        session.Files.Where(path => Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase) || IsSupportedRaster(path)).ToArray(),
+        GisBasemapSource.Available[0]) { }
+
+    internal GisView(ProjectSession session, string[] layerPaths, GisBasemapSource source)
     {
         this.session = session;
+        this.layerPaths = layerPaths;
         Background = Brushes.White;
+        map.BasemapSource = source;
         var mapHost = new Grid();
         mapHost.Children.Add(map);
         var credit = new Border
@@ -61,16 +102,19 @@ internal sealed class GisView : DockPanel, IDisposable
             Child = new TextBlock { FontSize = 11 },
         };
         var attribution = (TextBlock)credit.Child;
-        var copyright = new Hyperlink(new Run("© OpenStreetMap contributors")) { NavigateUri = new Uri("https://www.openstreetmap.org/copyright") };
-        copyright.RequestNavigate += (_, e) => Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
-        attribution.Inlines.Add(copyright);
-        mapHost.Children.Add(credit);
+        if (source.TileUrl != null)
+        {
+            var copyright = new Hyperlink(new Run(source.Attribution)) { NavigateUri = new Uri(source.AttributionUrl) };
+            copyright.RequestNavigate += (_, e) => Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+            attribution.Inlines.Add(copyright);
+            mapHost.Children.Add(credit);
+        }
         Children.Add(mapHost);
     }
 
     internal async Task Initialize(string? selectedVector = null)
     {
-        var paths = session.Files.ToArray();
+        var paths = layerPaths.Where(path => session.Files.Contains(path, StringComparer.OrdinalIgnoreCase)).ToArray();
         var vectorPaths = paths.Where(path => Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase)).ToArray();
         var rasterPaths = paths.Where(IsSupportedRaster).ToArray();
         var loadedVectors = await Task.Run(() => vectorPaths.Select(path =>
@@ -121,6 +165,8 @@ internal sealed class GisView : DockPanel, IDisposable
         map.Fit(layers.Where(layer => selectedVector == null || string.Equals(layer.Path, selectedVector, StringComparison.OrdinalIgnoreCase)).Select(layer => layer.Extent)
             .Concat(rasters.Where(layer => selectedVector == null || string.Equals(layer.Path, selectedVector, StringComparison.OrdinalIgnoreCase)).Select(layer => layer.Extent)).ToArray());
     }
+
+    internal void SetLayerPaths(string[] paths) => layerPaths = paths;
 
     private static bool IsSupportedRaster(string path) => Path.GetExtension(path) is string extension
         && (extension.Equals(".tif", StringComparison.OrdinalIgnoreCase)
@@ -191,7 +237,8 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
     private readonly Dictionary<(int Z, int X, int Y), BitmapSource> tiles = new();
     private readonly HashSet<(int Z, int X, int Y)> pending = new();
     private readonly Dictionary<(int Z, int X, int Y), DateTimeOffset> retryAfter = new();
-    private readonly Dictionary<GisLayer, Geometry?[]> geometryCache = new();
+    private readonly Dictionary<GeometryKey, Geometry> geometryCache = new();
+    private readonly HashSet<GeometryKey> geometryPending = new();
     private readonly CancellationTokenSource cancellation = new();
     private IReadOnlyList<GisLayer> layers = Array.Empty<GisLayer>();
     private IReadOnlyList<GisRasterLayer> rasters = Array.Empty<GisRasterLayer>();
@@ -202,8 +249,14 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
     private bool dragging;
     private bool hasCenter;
     private bool disposed;
-    private bool showBasemap = true;
-    internal bool ShowBasemap { get => showBasemap; set { showBasemap = value; InvalidateVisual(); } }
+    private GisBasemapSource basemapSource = GisBasemapSource.Available[0];
+    private readonly record struct GeometryKey(GisLayer Layer,int Feature,int Lod);
+    internal GisBasemapSource BasemapSource { get => basemapSource; set { basemapSource = value; InvalidateVisual(); } }
+    internal bool ShowBasemap
+    {
+        get => BasemapSource.TileUrl != null;
+        set => BasemapSource = value ? GisBasemapSource.Available[0] : GisBasemapSource.FromId("none");
+    }
 
     internal GisMapCanvas()
     {
@@ -215,6 +268,7 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
             double next = Math.Clamp(zoom + (e.Delta > 0 ? 0.5 : -0.5), 1, 19);
             if (Math.Abs(next - zoom) < 0.001) return;
             zoom = next;
+            geometryCache.Clear();
             InvalidateVisual();
         };
         MouseLeftButtonDown += (_, e) =>
@@ -245,7 +299,7 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
     }
 
     internal void SetLayers(IReadOnlyList<GisLayer> value, IReadOnlyList<GisRasterLayer> rasterLayers)
-    { layers = value; rasters = rasterLayers; geometryCache.Clear(); InvalidateVisual(); }
+    { layers = value; rasters = rasterLayers; geometryCache.Clear(); geometryPending.Clear(); InvalidateVisual(); }
 
     internal void Fit(IReadOnlyList<Rect> visible)
     {
@@ -320,7 +374,7 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
     {
         try
         {
-            string file = Path.Combine(TileCache, key.Z.ToString(CultureInfo.InvariantCulture), key.X.ToString(CultureInfo.InvariantCulture), key.Y.ToString(CultureInfo.InvariantCulture) + ".png");
+            string file = Path.Combine(TileCache, BasemapSource.Id, key.Z.ToString(CultureInfo.InvariantCulture), key.X.ToString(CultureInfo.InvariantCulture), key.Y.ToString(CultureInfo.InvariantCulture) + ".png");
             string metaFile = file + ".json";
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
             TileMetadata? metadata = null;
@@ -337,7 +391,10 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
                 await Requests.WaitAsync(token);
                 try
                 {
-                    using var request = new HttpRequestMessage(HttpMethod.Get, $"https://tile.openstreetmap.org/{key.Z}/{key.X}/{key.Y}.png");
+                    string tileUrl = BasemapSource.TileUrl!.Replace("{z}", key.Z.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                        .Replace("{x}", key.X.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                        .Replace("{y}", key.Y.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
+                    using var request = new HttpRequestMessage(HttpMethod.Get, tileUrl);
                     if (metadata?.ETag is string etag && EntityTagHeaderValue.TryParse(etag, out var parsedTag)) request.Headers.IfNoneMatch.Add(parsedTag);
                     if (metadata?.LastModifiedUtc is DateTimeOffset modified) request.Headers.IfModifiedSince = modified;
                     using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
@@ -403,12 +460,14 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
     private void DrawLayers(DrawingContext dc)
     {
         double scale = PixelScale(zoom);
+        var viewportWorld=new Rect(center.X-ActualWidth/(2*scale),center.Y-ActualHeight/(2*scale),ActualWidth/scale,ActualHeight/scale);
+        int lod=(int)Math.Round(zoom*2);
+        var visibleGeometries=new HashSet<GeometryKey>();
         var matrix = new Matrix(scale, 0, 0, -scale, ActualWidth / 2 - center.X * scale, ActualHeight / 2 + center.Y * scale);
         for (int li = 0; li < layers.Count; li++)
         {
             var layer = layers[li]; if (!layer.Visible) continue;
             var style = layer.Symbology ?? VectorSymbology.Default(li);
-            var geometries = GetGeometries(layer);
             var symbols = new Dictionary<(string Key, bool Line), (VectorSymbology Style, Brush? Fill, Pen? Pen)?>();
             (VectorSymbology Style, Brush? Fill, Pen? Pen)? Symbol(GisFeature feature)
             {
@@ -430,8 +489,10 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
                 symbols[cacheKey] = symbol;
                 return symbol;
             }
-            foreach (var feature in layer.Features.Where(feature => feature.Type is 1 or 8))
+            var visibleFeatures=layer.Query(viewportWorld);
+            foreach (int featureIndex in visibleFeatures)
             {
+                var feature=layer.Features[featureIndex];if(feature.Type is not (1 or 8))continue;
                 var item = Symbol(feature); if (item == null) continue;
                 var pointStyle = item.Value.Style;
                 var pointFill = pointStyle.FillEnabled ? new SolidColorBrush((Color)ColorConverter.ConvertFromString(pointStyle.FillColor)) { Opacity = pointStyle.FillOpacity } : null;
@@ -446,17 +507,22 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
                 }
             }
             dc.PushTransform(new MatrixTransform(matrix));
-            for (int fi = 0; fi < layer.Features.Length; fi++)
+            foreach(int fi in visibleFeatures)
             {
                 var feature = layer.Features[fi];
                 if (feature.Type is 1 or 8) continue;
-                var geometry = geometries[fi];
-                if (geometry == null) continue;
+                var key=new GeometryKey(layer,fi,lod);visibleGeometries.Add(key);
                 var item = Symbol(feature); if (item == null) continue;
+                if(!geometryCache.TryGetValue(key,out var geometry))
+                {
+                    if(geometryPending.Count<48&&geometryPending.Add(key))_ = BuildGeometryAsync(key,feature,1.25/scale,cancellation.Token);
+                    continue;
+                }
                 dc.DrawGeometry(feature.Type == 5 ? item.Value.Fill : null, item.Value.Pen, geometry);
             }
             dc.Pop();
         }
+        foreach(var key in geometryCache.Keys.Where(key=>key.Lod!=lod||!visibleGeometries.Contains(key)).ToArray())geometryCache.Remove(key);
     }
 
     internal static Brush SamplingPointBrush(int round) => round switch
@@ -468,28 +534,76 @@ internal sealed class GisMapCanvas : FrameworkElement, IDisposable
         _ => Brushes.RoyalBlue,
     };
 
-    private Geometry?[] GetGeometries(GisLayer layer)
+    private async Task BuildGeometryAsync(GeometryKey key,GisFeature feature,double tolerance,CancellationToken cancellation)
     {
-        if (geometryCache.TryGetValue(layer, out var cached)) return cached;
-        var geometries = new Geometry?[layer.Features.Length];
-        for (int i = 0; i < layer.Features.Length; i++)
+        try
         {
-            var feature = layer.Features[i];
-            if (feature.Type is 1 or 8) continue;
-            var geometry = new StreamGeometry { FillRule = FillRule.EvenOdd };
-            using (var context = geometry.Open())
+            var geometry=await Task.Run(()=>
             {
-                foreach (var part in feature.Parts)
+                cancellation.ThrowIfCancellationRequested();
+                var built=new StreamGeometry{FillRule=FillRule.EvenOdd};
+                using(var context=built.Open())
                 {
-                    if (part.Length == 0) continue;
-                    context.BeginFigure(part[0], feature.Type == 5, feature.Type == 5);
-                    if (part.Length > 1) context.PolyLineTo(part.Skip(1).ToArray(), true, false);
+                    foreach(var sourcePart in feature.Parts)
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        var part=Simplify(sourcePart,tolerance,feature.Type==5);
+                        if(part.Length==0)continue;
+                        context.BeginFigure(part[0],feature.Type==5,feature.Type==5);
+                        if(part.Length>1)context.PolyLineTo(part.Skip(1).ToArray(),true,false);
+                    }
                 }
-            }
-            geometry.Freeze(); geometries[i] = geometry;
+                built.Freeze();return built;
+            },cancellation);
+            if(!disposed)await Dispatcher.InvokeAsync(()=>{if(disposed||cancellation.IsCancellationRequested)return;geometryCache[key]=geometry;geometryPending.Remove(key);InvalidateVisual();});
         }
-        geometryCache[layer] = geometries;
-        return geometries;
+        catch(OperationCanceledException){}
+        catch(InvalidOperationException){}
+        finally
+        {
+            if(!disposed)await Dispatcher.InvokeAsync(()=>geometryPending.Remove(key));
+        }
+    }
+
+    private static Point[] Simplify(Point[] source,double tolerance,bool closed)
+    {
+        if(source.Length<3)return source;
+        int count=source.Length;
+        bool repeats=closed&&(source[0]-source[^1]).LengthSquared<1e-16;
+        int usable=repeats?count-1:count;
+        if(usable<4)return source;
+        var points=new Point[usable];int write=0;
+        for(int i=0;i<usable;i++)if(write==0||(source[i]-points[write-1]).LengthSquared>1e-16)points[write++]=source[i];
+        if(write<3)return source;Array.Resize(ref points,write);
+        var keep=new bool[points.Length];keep[0]=true;keep[^1]=true;
+        if(closed)
+        {
+            int farthest=1;double max=0;
+            for(int i=1;i<points.Length;i++){double d=(points[i]-points[0]).LengthSquared;if(d>max){max=d;farthest=i;}}
+            if(farthest>1&&farthest<points.Length-1){keep[farthest]=true;SimplifyRange(points,0,farthest,tolerance*tolerance,keep);SimplifyRange(points,farthest,points.Length-1,tolerance*tolerance,keep);}
+            else SimplifyRange(points,0,points.Length-1,tolerance*tolerance,keep);
+        }
+        else SimplifyRange(points,0,points.Length-1,tolerance*tolerance,keep);
+        var result=points.Where((_,index)=>keep[index]).ToList();
+        if(closed){if(result.Count<3)return source;result.Add(result[0]);}
+        else if(result.Count<2)return source;
+        return result.ToArray();
+    }
+
+    private static void SimplifyRange(Point[] points,int start,int end,double toleranceSquared,bool[] keep)
+    {
+        var pending=new Stack<(int Start,int End)>();pending.Push((start,end));
+        while(pending.Count>0)
+        {
+            var range=pending.Pop();if(range.End<=range.Start+1)continue;
+            Point a=points[range.Start],b=points[range.End];Vector ab=b-a;double denominator=ab.LengthSquared,max=toleranceSquared;int best=-1;
+            for(int i=range.Start+1;i<range.End;i++)
+            {
+                Vector ap=points[i]-a;double t=denominator<=1e-24?0:Math.Clamp(Vector.Multiply(ap,ab)/denominator,0,1);Vector delta=points[i]-(a+ab*t);double distance=delta.LengthSquared;
+                if(distance>max){max=distance;best=i;}
+            }
+            if(best<0)continue;keep[best]=true;pending.Push((range.Start,best));pending.Push((best,range.End));
+        }
     }
 
     private Point Screen(Point world, double scale) => new((world.X - center.X) * scale + ActualWidth / 2, (center.Y - world.Y) * scale + ActualHeight / 2);
@@ -803,6 +917,7 @@ internal static class ShapefileReader
                 for (int i = 0; i < partCount; i++) parts[i] = points[starts[i]..starts[i + 1]];
             }
             else throw new NotSupportedException($"Tipo de geometria SHP não suportado ({type}).");
+            Rect? featureBounds=null;
             for (int pi = 0; pi < parts.Length; pi++)
             for (int i = 0; i < parts[pi].Length; i++)
             {
@@ -811,10 +926,11 @@ internal static class ShapefileReader
                     throw new InvalidDataException("coordenadas inválidas para longitude/latitude; confira o sistema de referência no arquivo .prj.");
                 Point world = new(6378137d * lonLat.X * Math.PI / 180, 6378137d * Math.Log(Math.Tan(Math.PI / 4 + Math.Clamp(lonLat.Y, -85.05112878, 85.05112878) * Math.PI / 360)));
                 parts[pi][i] = world;
+                if(featureBounds==null)featureBounds=new Rect(world,new Size(0,0));else{var featureRect=featureBounds.Value;featureRect.Union(world);featureBounds=featureRect;}
                 if (bounds == null) bounds = new Rect(world, new Size(0, 0));
                 else { var currentBounds = bounds.Value; currentBounds.Union(world); bounds = currentBounds; }
             }
-            features.Add(new GisFeature(family, parts, RecordIndex: rowIndex));
+            features.Add(new GisFeature(family, parts, RecordIndex: rowIndex,Bounds:featureBounds??Rect.Empty));
             stream.Position = end;
         }
         if (features.Count == 0 || bounds == null) throw new InvalidDataException("O shapefile não contém feições.");

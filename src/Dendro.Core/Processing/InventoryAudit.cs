@@ -71,9 +71,9 @@ public static class InventoryAudit
             || !double.IsFinite(o.DeclineTolerancePercent) || o.DeclineTolerancePercent is < 0 or > 100)
             throw new InvalidDataException("Parâmetros inválidos da auditoria. Limiares e faixa de idade devem ser positivos; mínimo de 3 pares e de 1 a 5.000 parcelas na origem.");
         var cfg = configuration.DeepClone().AsObject(); InventoryIdentity.Validate(cfg);
-        bool direct = results.Column("Volume_m3_ha") >= 0;
+        bool direct = results.Column("Volume_m3_ha") >= 0 || results.Column("VTCC_m3_ha") >= 0;
         int Col(params string[] names) => names.Select(results.Column).FirstOrDefault(i => i >= 0, -1);
-        int volumeColumn = Col("Volume_m3_ha", "VTCC_ha"), densityColumn = Col("Fustes_ha"), vmiColumn = Col("VMI_m3_fuste", "VMI"),
+        int volumeColumn = Col("VTCC_m3_ha", "Volume_m3_ha", "VTCC_ha"), densityColumn = Col("Fustes_ha"), vmiColumn = Col("VMI_m3_fuste", "VMI"),
             idColumn = Col("Parcela_ID"), ageColumn = Col("Idade_anos"), lotColumn = Col("Lote"), plotColumn = Col("Parcela");
         if (volumeColumn < 0 || densityColumn < 0 || vmiColumn < 0 || plotColumn < 0)
             throw new InvalidDataException("Selecione DIRETO - PARCELAS ou RESULTADO - PARCELAS, contendo volume por hectare, fustes por hectare, VMI e Parcela.");
@@ -186,7 +186,7 @@ public static class InventoryAudit
         int[] keys=(options.TemporalColumns ?? ["Talhão","Parcela","Lote","Tipo_Inventario"]).Select(results.Require)
             .Concat(results.Column("Tipo_Inventario")>=0 ? new[]{results.Require("Tipo_Inventario")} : []).Distinct().ToArray();
         if(keys.Length==0)throw new InvalidDataException("Selecione as colunas da identidade física para a evolução temporal.");
-        int date=Col("Data_Medicao"), age=Col("Idade_anos"), volume=Col("Volume_m3_ha","VTCC_ha"), stems=Col("Fustes_ha"), vmi=Col("VMI_m3_fuste","VMI"), area=Col("area_corr"), origin=Col("Base_Origem");
+        int date=Col("Data_Medicao"), age=Col("Idade_anos"), volume=Col("VTCC_m3_ha","Volume_m3_ha","VTCC_ha"), stems=Col("Fustes_ha"), vmi=Col("VMI_m3_fuste","VMI"), area=Col("area_corr"), origin=Col("Base_Origem");
         double Time(int row)=>date>=0 ? InventoryMath.Date(results.Text(row,date))/365.25 : Math.Round(results.Number(row,age)*365.25)/365.25;
         var output=new DataTable(["Identidade_fisica","Talhão","Parcela","Tipo_Inventario","Fonte_anterior","Fonte_atual","Parcela_ID_anterior","Parcela_ID_atual",
             "Data_anterior","Data_atual","Idade_anterior","Idade_atual","Intervalo_anos","Volume_anterior_ha","Volume_atual_ha","Variacao_m3_ha","Variacao_pct","Incremento_m3_ha_ano",

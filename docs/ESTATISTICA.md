@@ -5,10 +5,13 @@ Math.NET Numerics gerenciado; nenhum runtime Python/R ou provedor nativo é usad
 
 ## ICA e IMA
 
-Em **Ferramentas > ICA e IMA**, selecione até 12 curvas: ajustes convergidos de
-gráficos ou versões em Crescimento e produção. Para ajustes de gráficos, confirme
-que X é idade e Y é produção acumulada e informe se X está em anos ou meses.
-Versões cadastradas devem ter uma única entrada de idade com unidade conhecida.
+Em **Ferramentas > ICA e IMA**, selecione até 12 modelos cadastrados em
+Crescimento e produção. Cada modelo deve ter uma única entrada de idade com
+unidade conhecida.
+Cada curva selecionada começa em um gráfico separado. Para comparar curvas no
+mesmo gráfico, arraste uma linha sobre outra. Se a linha arrastada estiver
+selecionada, todas as curvas selecionadas que já pertencem ao gráfico dela são
+movidas juntas para o gráfico de destino.
 
 O intervalo é informado em anos. A unidade dos coeficientes originais é preservada
 na avaliação da equação, inclusive quando usa meses e fator de conversão.

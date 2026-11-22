@@ -119,8 +119,7 @@ public sealed class InventoryIdentity
             foreach (int c in columns)
             {
                 if (c != dateColumn) { yield return input.Text(row, c); continue; }
-                object? cell = input.Value(row, c);
-                double date = cell is double number ? number : InventoryMath.Date(input.Text(row, c));
+                double date = InventoryMath.Date(input.Text(row, c));
                 if (!double.IsFinite(date))
                 {
                     string rawDate = input.Text(row, c);

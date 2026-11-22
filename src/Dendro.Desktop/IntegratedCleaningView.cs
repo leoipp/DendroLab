@@ -6,7 +6,7 @@ using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
 
-internal sealed class IntegratedCleaningView : ScrollViewer
+internal sealed class IntegratedCleaningView : ToolFormView
 {
     private readonly MainWindow owner;
     private readonly ProjectSession session;
@@ -18,14 +18,14 @@ internal sealed class IntegratedCleaningView : ScrollViewer
 
     internal IntegratedCleaningView(MainWindow owner,ProjectSession session)
     {
-        this.owner=owner;this.session=session;VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
-        var form=Ui.Form();Content=form;form.Children.Add(owner.ToolHeader("Limpeza integrada"));
+        this.owner=owner;this.session=session;
+        var form=Ui.Form();SetForm(form);form.Children.Add(owner.ToolHeader("Limpeza integrada"));
         Ui.Field(form,"Tabela de origem",source);Ui.Field(tables,"Tabela / aba",sheet);form.Children.Add(tables);
         Ui.Field(form,"Gráficos para vincular",new ScrollViewer{Content=graphs,MaxHeight=260,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});
         Ui.AddHelp(form,"Selecione dois ou mais gráficos da mesma tabela. A sessão usa cópias dos gráficos e todas as linhas atuais da tabela; exclusões e ajustes anteriores não são importados. Os gráficos originais e a tabela de origem são preservados.");
         Ui.Field(form,"Eixo X para adicionar um gráfico",x);Ui.Field(form,"Eixo Y",y);
         form.Children.Add(Ui.Button("Adicionar gráfico à limpeza",AddChart));
-        form.Children.Add(Ui.AsyncButton("Iniciar limpeza integrada",()=>owner.Execute(Start)));
+        SetPrimaryAction(Ui.AsyncButton("Iniciar limpeza integrada",()=>owner.Execute(Start)));
         Ui.AddHelp(form,"Clique ou desenhe um contorno para selecionar pontos. A seleção acompanha os demais gráficos; Remover seleção retira as mesmas linhas de todos eles. Desfazer recupera a última remoção. Exporte ou salve a tabela limpa antes de fechar a sessão temporária.");
         source.SelectionChanged+=async(_,_)=>{if(!loading&&source.SelectedIndex>=0)await owner.Execute(()=>LoadTables());};
         sheet.SelectionChanged+=async(_,_)=>{if(!loading&&sheet.SelectedIndex>=0)await owner.Execute(LoadCharts);};

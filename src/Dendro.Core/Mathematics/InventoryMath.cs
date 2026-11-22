@@ -31,13 +31,13 @@ public static class InventoryMath
             output[i] = Volume(dap[i], height[i], b0, b1, b2) * factor;
     }
 
+    public static bool ValidDeclination(double degrees) => double.IsFinite(degrees) && Math.Abs(degrees) < 90;
+
     public static double Area(double length, double width, double slopeLength, double slopeWidth) =>
-        length
-        / 10
-        * Math.Cos(slopeLength * Math.PI / 180)
-        * width
-        / 10
-        * Math.Cos(slopeWidth * Math.PI / 180);
+        ValidDeclination(slopeLength) && ValidDeclination(slopeWidth)
+            ? length / 10 * Math.Cos(slopeLength * Math.PI / 180)
+                * width / 10 * Math.Cos(slopeWidth * Math.PI / 180)
+            : double.NaN;
 
     public static string EquationCode(string lot, double age, double limit = 15) =>
         age > limit
@@ -60,7 +60,7 @@ public static class InventoryMath
     public static double Date(string text)
     {
         if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var serial))
-            return serial;
+            return IsYearOnly(serial) ? double.NaN : serial;
         if (DateTime.TryParseExact(
             text.Trim(),
             ["yyyy-MM-dd", "dd/MM/yyyy", "yyyy-MM-dd HH:mm:ss"],
@@ -75,6 +75,12 @@ public static class InventoryMath
             ? invariant.ToOADate()
             : double.NaN;
     }
+
+    public static bool IsYearOnly(double value) => double.IsFinite(value)
+        && value == Math.Truncate(value) && value is >= 1800 and <= 9999;
+
+    public static bool IsYearOnly(string text) =>
+        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double value) && IsYearOnly(value);
 
     public static int Year(double serial) =>
         double.IsFinite(serial) && serial >= 1 && serial <= 2958465

@@ -15,79 +15,108 @@ internal static partial class DesktopTests
     internal static async Task RunDeferredRemoval(string root)
     {
         Directory.CreateDirectory(root);
-        string project = Path.Combine(root, "removal-rollback.dlb");
+        string project = Path.Combine(root, "removal.dlb");
         var session = new ProjectSession();
-        await session.New("Teste de remoção transacional");
+        await session.New("Teste de exclusão persistente");
         await session.Save(project);
 
-        string CreateSource(string name)
+        string CreateSource(string name, params string[] sheets)
         {
             string path = Path.Combine(root, name + ".dlb");
             using var writer = new CompactBankWriter(path);
-            string id = writer.AddTable(["ID", "Valor"], "Dados");
-            writer.Add(id, ["A", 42d]);
+            foreach (string sheet in sheets)
+            {
+                string id = writer.AddTable(["Key", "Date", "Volume"], sheet);
+                writer.Add(id, ["A", "2025-04-10", 100d]);
+            }
             writer.Complete();
             return path;
         }
-
-        string contentDataset = "conteudo_teste.dlb";
-        string resultDataset = "tabela_teste.dlb";
-        string contentReference = Path.Combine(Path.GetFileName(project), contentDataset);
-        string resultReference = Path.Combine(Path.GetFileName(project), resultDataset);
-        CompactBankFile.Import(project, [
-            (CreateSource("conteudo"), contentDataset),
-            (CreateSource("resultado"), resultDataset),
-        ]);
-        session.AddFile(contentReference);
-        session.AddFile(resultReference);
+        string source = CreateSource("base", "Dados");
+        session.AddFile(source);
         await session.Save(project);
 
-        int contentIndex = session.Files.ToList().IndexOf(contentReference);
-        await session.RemoveFile(contentIndex);
-        Check(CompactBankFile.Exists(session.Resolve(contentReference)),
-            "remover conteúdo mantém dataset físico enquanto o projeto não é salvo");
-        await session.Open(project); // Reabrir sem salvar simula a escolha Descartar.
-        Check(session.Files.Contains(contentReference, StringComparer.OrdinalIgnoreCase)
-            && CompactBankFile.Exists(session.Resolve(contentReference)),
-            "descartar remoção de conteúdo restaura referência e preserva o dataset");
-
-        await session.RemoveResultTable(resultReference, "Dados");
-        Check(CompactBankFile.Exists(session.Resolve(resultReference)),
-            "remover tabela filha mantém dataset físico até salvar o projeto");
-        await session.Open(project);
-        Check(session.Files.Contains(resultReference, StringComparer.OrdinalIgnoreCase)
-            && TableStore.Read(new(session.Resolve(resultReference), "Dados")).Count == 2,
-            "descartar remoção de tabela filha restaura referência e dados");
-
-        await session.RemoveResultTable(resultReference, "Dados");
-        string copyProject = Path.Combine(root, "removal-save-as.dlb");
-        await session.Save(copyProject);
-        var savedCopy = ProjectStore.Read(copyProject);
-        string copiedResultReference = Path.Combine(Path.GetFileName(copyProject), resultDataset);
-        Check(!session.Files.Contains(resultReference, StringComparer.OrdinalIgnoreCase)
-            && !CompactBankFile.Exists(Path.Combine(copyProject, resultDataset))
-            && CompactBankFile.Exists(Path.Combine(project, resultDataset))
-            && CompactBankFile.Exists(copyProject),
-            "salvar remoção em Save As apaga a cópia, preserva a origem e mantém DLB válido");
-        Check(savedCopy.Obj("_dendro").Arr("files").All(f =>
-            !string.Equals(f.Display(), copiedResultReference, StringComparison.OrdinalIgnoreCase)),
-            "metadata de Save As não referencia o dataset excluído");
-
-        await session.Open(project);
-        int savedContentIndex = session.Files.ToList().IndexOf(contentReference);
-        await session.RemoveFile(savedContentIndex);
+        // Reproduce the real BiologicalAsset -> AddTableResults -> contents removal path.
+        string asset = Path.Combine(session.ProjectWorkFolder(), "ativo.dlb");
+        var result = BiologicalAsset.Join(new(source, "Dados"), new(source, "Dados"),
+            new("Key", "Key", "Date", ["Volume"]), asset);
+        await session.AddTableResults([new(asset, "Ativo biológico", result.BaseRows)], source, "Dados");
+        string assetReference = session.Files.Last();
         await session.Save(project);
-        var savedOriginal = ProjectStore.Read(project);
-        Check(!session.Files.Contains(contentReference, StringComparer.OrdinalIgnoreCase)
-            && !CompactBankFile.Exists(Path.Combine(project, contentDataset))
-            && CompactBankFile.Exists(project),
-            "salvar remoção de conteúdo exclui o dataset e mantém projeto DLB válido");
-        Check(savedOriginal.Obj("_dendro").Arr("files").All(f =>
-            !string.Equals(f.Display(), contentReference, StringComparison.OrdinalIgnoreCase)),
-            "metadata salvo não referencia o dataset excluído");
-        File.WriteAllText(Path.Combine(root, "self-test.log"), $"Remoção transacional: {checks} verificações aprovadas.\n");
+        session.Meta["unsaved_probe"] = "não salvar";
+        session.Touch();
+        await session.RemoveFile(session.Files.ToList().IndexOf(assetReference));
+        Check(!CompactBankFile.Exists(session.Resolve(assetReference)), "ativo biológico é excluído imediatamente do catálogo DLB");
+        Check(!ProjectStore.Read(project).Obj("_dendro").Arr("files").Any(f => f.Display() == assetReference), "exclusão atualiza metadados persistidos sem salvar manualmente");
+        Check(session.Meta.S("unsaved_probe") == "não salvar" && ProjectStore.Read(project).Obj("_dendro").S("unsaved_probe").Length == 0,
+            "exclusão não salva alterações não relacionadas");
+        await session.Open(project);
+        Check(!session.Files.Contains(assetReference), "descartar alterações e reabrir não ressuscita a tabela excluída");
+        Check(TableStore.Read(new(source, "Dados")).Count == 2, "excluir resultado preserva a base original");
+
+        // All these tools use the same shared publication/removal pipeline.
+        foreach (string tool in new[] { "regressoes", "estratificacao", "coluna", "pareamento", "auditoria", "sentinel" })
+        {
+            string stage = CreateSource(tool, "Resultado");
+            await session.AddTableResults([new(stage, "Resultado", 1)], source, "Dados");
+            string reference = session.Files.Last();
+            await session.Save(project);
+            await session.RemoveResultTable(reference, "Resultado");
+            Check(!CompactBankFile.Exists(session.Resolve(reference)), tool + ": excluir tabela filha elimina dados do DLB");
+            await session.Open(project);
+            Check(!session.Files.Contains(reference), tool + ": resultado permanece excluído ao reabrir");
+        }
+
+        string multi = CreateSource("afilamento", "Dados", "Parametros", "Estatisticas");
+        await session.AddTableResults([new(multi, "Estatisticas", 1)], source, "Dados");
+        string multiReference = session.Files.Last();
+        session.Meta.Arr("taper_fits").Add(new JsonObject { ["path"] = multiReference, ["id"] = "teste" });
+        string child = CreateSource("derivado", "Resultado");
+        await session.AddTableResults([new(child, "Resultado", 1)], multiReference, "Dados");
+        string childReference = session.Files.Last();
+        await session.Save(project);
+        await session.RemoveResultTable(multiReference, "Dados");
+        Check(TableStore.Tables(session.Resolve(multiReference)).SequenceEqual(new[] { "Parametros", "Estatisticas" }),
+            "excluir uma aba preserva abas irmãs no mesmo dataset");
+        Check(!CompactBankFile.Exists(session.Resolve(childReference)), "excluir aba elimina também os dados de seus derivados");
+        await session.Open(project);
+        Check(!session.Files.Contains(childReference) && session.Files.Contains(multiReference), "reabertura preserva somente resultados e abas remanescentes");
+        await session.RemoveResultTable(multiReference, "Parametros");
+        await session.RemoveResultTable(multiReference, "Estatisticas");
+        Check(!session.Meta.Arr("taper_fits").Any() && !ProjectStore.Read(project).Obj("_dendro").Arr("taper_fits").Any(),
+            "excluir último resultado de afilamento limpa o catálogo de ajustes");
+
+        var batch = new List<string>();
+        foreach (string name in new[] { "lote_a", "lote_b" })
+        {
+            await session.AddTableResults([new(CreateSource(name, "Dados"), "Dados", 1)], source, "Dados");
+            batch.Add(session.Files.Last());
+        }
+        await session.Save(project);
+        await session.RemoveFiles(batch);
+        Check(batch.All(p => !CompactBankFile.Exists(session.Resolve(p))), "exclusão múltipla elimina todos os datasets imediatamente");
+        string copy = Path.Combine(root, "copia.dlb");
+        await session.Save(copy);
+        Check(batch.All(p => !CompactBankFile.Exists(Path.Combine(copy, Path.GetFileName(p)))), "Salvar como não copia resultados já excluídos");
+
+        await session.Open(project);
+        await session.AddTableResults([new(CreateSource("concorrente", "Dados"), "Dados", 1)], source, "Dados");
+        string conflictReference = session.Files.Last();
+        await session.Save(project);
+        var concurrent = ProjectStore.Read(project);
+        concurrent.Obj("_dendro")["concurrent_probe"] = true;
+        ProjectStore.Save(project, concurrent);
+        bool rejected = false;
+        try { await session.RemoveResultTable(conflictReference, "Dados"); }
+        catch (InvalidOperationException) { rejected = true; }
+        Check(rejected && CompactBankFile.Exists(session.Resolve(conflictReference)) && session.Files.Contains(conflictReference),
+            "conflito de versão rejeita exclusão sem remover dados ou referências");
+        await session.Open(project);
+        await session.RemoveFile(session.Files.ToList().IndexOf(source));
+        Check(File.Exists(source) && !CompactBankFile.Exists(session.Resolve(conflictReference)),
+            "remover fonte externa preserva seu arquivo e elimina seus derivados incorporados");
+        File.WriteAllText(Path.Combine(root, "self-test.log"), $"Exclusão persistente: {checks} verificações aprovadas.\n");
     }
-
     internal static async Task RunDuplicateSettings(string root)
     {
         Directory.CreateDirectory(root);

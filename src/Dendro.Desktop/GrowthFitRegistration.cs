@@ -8,12 +8,12 @@ namespace Dendro.Desktop;
 internal static class GrowthFitRegistration
 {
     public static bool CanRegister(JsonObject fit) =>
-        fit.B("converged") && fit.N("predictor_count", 1) is >= 1 and <= 3 && fit.N("parameters") is >= 1 and <= 3;
+        fit.B("converged") && fit.N("predictor_count", 1) is >= 1 and <= 3 && fit.N("parameters") is >= 1 and <= 4;
 
     public static Task Open(MainWindow owner, ProjectSession session, JsonObject chart, JsonObject fit)
     {
         if (!CanRegister(fit))
-            throw new InvalidOperationException("Cadastre ajustes convergidos 1P, 2P ou 3P com até três coeficientes.");
+            throw new InvalidOperationException("Cadastre ajustes convergidos 1P, 2P ou 3P com até quatro coeficientes.");
 
         string guessedUnit = chart.S("x").Contains("mes", StringComparison.OrdinalIgnoreCase) ? "meses" : "anos";
         var id = Ui.Input("REG" + Guid.NewGuid().ToString("N")[..10].ToUpperInvariant());
@@ -137,6 +137,7 @@ internal static class GrowthFitRegistration
                         ["inputs"] = inputs.DeepClone(),
                     },
                 };
+                if (fit.N("parameters") == 4) request["b3"] = fit.N("b3");
                 await session.Mutate(request);
                 owner.Log($"Regressão {modelName} cadastrada em Crescimento e produção como {code} · {versionYear}.");
                 window.Close();

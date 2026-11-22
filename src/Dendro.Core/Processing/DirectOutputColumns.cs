@@ -24,10 +24,10 @@ public static class DirectOutputColumns
                 .. VolumeTypes.Select(type => type + "_m3"), RegistryAgeFallback.FlagColumn, RegistryAgeFallback.DateColumn, .. context];
         if (level == "parcela")
             return ["Grupo", "Talhão", "Parcela", "Lote", "Ano_Medicao", "N_Parcelas", "DAP_medio", "Dq", "H_medio", "DAPd", "Hd", "IS", "AB",
-                "Volume_m3_ha", .. VolumeTypes.Select(type => type + "_m3_ha"), "Fustes_ha", "VMI_m3_fuste", "Area_efetiva_ha", "Volume_total_m3",
+                .. VolumeTypes.Select(type => type + "_m3_ha"), "Fustes_ha", "VMI_m3_fuste", "Area_efetiva_ha", "Volume_total_m3",
                 .. VolumeTypes.Select(type => type + "_total_m3"), "Fustes_totais_estimados", "Fustes_sem_volume", "Idade_anos", "Idade_meses", "Data_Medicao", "area_corr", .. context];
         return ["Grupo", "Talhão", "Parcela", "Lote", "Ano_Medicao", "N_Parcelas", "Volume_amostrado_m3",
-            .. VolumeTypes.Select(type => type + "_amostrado_m3"), "Fustes_amostrados", "VMI_amostrado_m3_fuste", "Volume_m3_ha",
+            .. VolumeTypes.Select(type => type + "_amostrado_m3"), "Fustes_amostrados", "VMI_amostrado_m3_fuste",
             .. VolumeTypes.Select(type => type + "_m3_ha"), "Fustes_ha", "VMI_m3_fuste", "DAPd", "Hd", "IS", "Area_efetiva_ha", "Volume_total_m3",
             .. VolumeTypes.Select(type => type + "_total_m3"), "Fustes_totais_estimados", "Fustes_sem_volume",
             .. (level == "talhao" ? new[] { "Idade_anos", "Idade_meses" } : Array.Empty<string>()),
@@ -39,11 +39,12 @@ public static class DirectOutputColumns
         || level == "arvore" && column is "Linha_Origem" or "DAP" or "H" or "Volume_m3"
         || level == "parcela" && column is "Data_Medicao" or "area_corr"
         || level != "arvore" && column == "Data_Medicao"
-        || level != "arvore" && column is "Volume_m3_ha" or "Fustes_ha" or "VMI_m3_fuste"
+        || level != "arvore" && column is "VTCC_m3_ha" or "Fustes_ha" or "VMI_m3_fuste"
         || level == "talhao" && column == "Talhão" || level == "lote" && column == "Lote" || level == "projeto" && column == "Grupo";
 
-    public static bool Enabled(JsonNode? processing, string level, string column) => Required(level, column)
-        || (processing?["colunas_direto"]?[level].B(column, DefaultEnabled(level, column)) ?? DefaultEnabled(level, column));
+    public static bool Enabled(JsonNode? processing, string level, string column) => column != "Volume_m3_ha"
+        && (Required(level, column)
+        || (processing?["colunas_direto"]?[level].B(column, DefaultEnabled(level, column)) ?? DefaultEnabled(level, column)));
 
     public static void Validate(JsonNode? processing)
     {
@@ -55,9 +56,11 @@ public static class DirectOutputColumns
                 throw new InvalidDataException("Nível inválido nas colunas do resumo direto.");
             foreach (var column in columns)
             {
+                // Older projects stored this generic column; typed VTCC replaces it.
+                if (column.Key == "Volume_m3_ha" && level.Key != "arvore") continue;
                 if (!Headers(level.Key).Contains(column.Key) || column.Value is not JsonValue value || !value.TryGetValue<bool>(out bool enabled))
                     throw new InvalidDataException($"Coluna inválida no resumo direto: {level.Key} / {column.Key}.");
-                if (!enabled && Required(level.Key, column.Key))
+                if (!enabled && Required(level.Key, column.Key) && column.Key != "VTCC_m3_ha")
                     throw new InvalidDataException($"A coluna {column.Key} é obrigatória no nível {level.Key}.");
             }
         }

@@ -8,38 +8,43 @@ namespace Dendro.Desktop;
 
 internal sealed partial class ProjectSession
 {
-    private sealed class PendingBankRemoval
-    {
-        public HashSet<(string Dataset, string Id)> Tables { get; } = [];
-        public HashSet<string> Datasets { get; } = new(StringComparer.Ordinal);
-    }
-
     private string? workFolder;
-    private readonly Dictionary<string, PendingBankRemoval> pendingBankRemovals = new(StringComparer.OrdinalIgnoreCase);
 
-    private void DeferBankRemoval(string path, IEnumerable<(string Dataset, string Id)>? tables = null, IEnumerable<string>? datasets = null)
+    // Publish the new catalog and its removal-only metadata in one bank generation.
+    // Other unsaved edits remain in memory and are not silently saved by deletion.
+    private async Task CommitBankRemoval(JsonObject updated, string bank,
+        IReadOnlyCollection<(string Dataset, string Id)> tables, IReadOnlyCollection<string> datasets,
+        Action<JsonObject> pruneSaved)
     {
-        path = Path.GetFullPath(path);
-        if (!pendingBankRemovals.TryGetValue(path, out var pending))
-            pendingBankRemovals[path] = pending = new PendingBankRemoval();
-        if (tables != null) pending.Tables.UnionWith(tables);
-        if (datasets != null) pending.Datasets.UnionWith(datasets);
+        if (string.Equals(Path.GetFullPath(bank), FilePath, StringComparison.OrdinalIgnoreCase))
+        {
+            long expectedRevision = (long)Meta.N("store_revision");
+            await Task.Run(() => CompactBankFile.UpdateTextDataset(bank, ProjectStore.ProjectMetadataDataset, current =>
+            {
+                var saved = JsonNode.Parse(current ?? throw new InvalidDataException("Metadados do projeto ausentes."))!.AsObject();
+                long revision = (long)saved.Obj("_dendro").N("store_revision");
+                if (revision != expectedRevision)
+                    throw new InvalidOperationException("O projeto foi salvo por outro usuário. Reabra a versão atual antes de excluir dados.");
+                pruneSaved(saved);
+                saved.Obj("_dendro")["store_revision"] = revision + 1;
+                updated.Obj("_dendro")["store_revision"] = revision + 1;
+                return saved.ToJsonString();
+            }, removeDatasets: datasets, removeTables: tables));
+        }
+        else
+            await Task.Run(() => CompactBankFile.RemoveTables(bank, tables, datasets));
+        Replace(updated);
     }
 
-    private async Task ApplyPendingBankRemovals(string originalProject, string savedProject)
+    private static void RemoveSavedFiles(JsonObject project, IEnumerable<string> paths)
     {
-        foreach (var pair in pendingBankRemovals.ToArray())
+        var files = project.Obj("_dendro").Arr("files");
+        foreach (string path in paths)
         {
-            // Save As copies the project's bank to the new path; keep the source project intact.
-            string bank = string.Equals(pair.Key, originalProject, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(originalProject, savedProject, StringComparison.OrdinalIgnoreCase)
-                ? savedProject
-                : pair.Key;
-            await Task.Run(() => CompactBankFile.RemoveTables(bank, pair.Value.Tables, pair.Value.Datasets));
-            pendingBankRemovals.Remove(pair.Key);
+            int index = files.ToList().FindIndex(value => string.Equals(value.Display().Replace('/', '\\'), path.Replace('/', '\\'), StringComparison.OrdinalIgnoreCase));
+            if (index >= 0) ProjectModels.RemoveFile(project, index);
         }
     }
-
     public bool IsManagedTable(string path) => Meta.S("database_path").Length > 0
         && Resolve(path).StartsWith(Resolve(Meta.S("database_path")) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     // Work files live outside the project and are removed after being committed to its single bank.
@@ -82,7 +87,7 @@ internal sealed partial class ProjectSession
         return (updated, removed);
     }
 
-    public Task RemoveFile(int index)
+    public async Task RemoveFile(int index)
     {
         var (updated, removed) = PrepareFileRemoval(index);
         string database = Meta.S("database_path");
@@ -97,10 +102,13 @@ internal sealed partial class ProjectSession
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
             if (datasets.Length > 0)
-                DeferBankRemoval(bank, datasets: datasets);
+            {
+                await CommitBankRemoval(updated, bank, [], datasets, saved => RemoveSavedFiles(saved, removed));
+                return;
+            }
         }
         Replace(updated);
-        return Task.CompletedTask;
+
     }
 
     internal string[] PreviewRemoveFiles(IEnumerable<string> paths) => PrepareFileRemoval(paths).Removed;
@@ -147,7 +155,7 @@ internal sealed partial class ProjectSession
         return (updated, removed.ToArray());
     }
 
-    public Task RemoveFiles(IEnumerable<string> paths)
+    public async Task RemoveFiles(IEnumerable<string> paths)
     {
         var (updated, removed) = PrepareFileRemoval(paths);
         string database = Meta.S("database_path");
@@ -161,10 +169,14 @@ internal sealed partial class ProjectSession
                 .Select(location => location.Dataset)
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
-            if (datasets.Length > 0) DeferBankRemoval(bank, datasets: datasets);
+            if (datasets.Length > 0)
+            {
+                await CommitBankRemoval(updated, bank, [], datasets, saved => RemoveSavedFiles(saved, removed));
+                return;
+            }
         }
         Replace(updated);
-        return Task.CompletedTask;
+
     }
 
     internal string[] PreviewRemoveResultTable(string path, string sheet)
@@ -186,7 +198,7 @@ internal sealed partial class ProjectSession
         return descendants;
     }
 
-    public Task RemoveResultTable(string path, string sheet)
+    public async Task RemoveResultTable(string path, string sheet)
     {
         if (IsHistoricalTable(path)) throw new InvalidOperationException("As tabelas de uma versão histórica são preservadas. Crie uma revisão para aplicar fatores.");
         string resolved = Resolve(path);
@@ -208,6 +220,17 @@ internal sealed partial class ProjectSession
         string[] descendantDatasets = removedPaths.Select(p => CompactBankFile.Location(Resolve(p)))
             .Where(p => p.Dataset.Length > 0 && string.Equals(p.File, bank, StringComparison.OrdinalIgnoreCase))
             .Select(p => p.Dataset).Distinct(StringComparer.Ordinal).ToArray();
+        RemoveResultReferences(updated, path, sheet, remaining);
+        await CommitBankRemoval(updated, bank, [(selected.Dataset, selected.Id)], descendantDatasets, saved =>
+        {
+            RemoveSavedFiles(saved, removedPaths);
+            RemoveResultReferences(saved, path, sheet, remaining);
+        });
+    }
+
+    private static void RemoveResultReferences(JsonObject project, string path, string sheet, string[] remaining)
+    {
+        var meta = project.Obj("_dendro");
         foreach (var result in meta.Arr("processing_results").OfType<JsonObject>().Where(r => r.S("path") == path).ToArray())
         {
             foreach (var value in result.Arr("sheets").Where(s => s.Display() == sheet).ToArray()) result.Arr("sheets").Remove(value);
@@ -224,14 +247,13 @@ internal sealed partial class ProjectSession
         }
         if (remaining.Length == 0)
         {
+            foreach (var fit in meta.Arr("taper_fits").OfType<JsonObject>().Where(e => e.S("path") == path).ToArray())
+                meta.Arr("taper_fits").Remove(fit);
             foreach (string section in new[] { "files", "batch_inputs" })
                 foreach (var value in meta.Arr(section).Where(v => v.Display() == path).ToArray()) meta.Arr(section).Remove(value);
             foreach (var entry in meta.Arr("derived_tables").OfType<JsonObject>().Where(e => e.S("path") == path).ToArray())
                 meta.Arr("derived_tables").Remove(entry);
         }
-        DeferBankRemoval(bank, [(selected.Dataset, selected.Id)], descendantDatasets);
-        Replace(updated);
-        return Task.CompletedTask;
     }
 
     private static string[] DescendantPathsToRemove(JsonObject updated, string path, string sheet, string[] remaining, string firstSheet)
@@ -342,7 +364,7 @@ internal sealed partial class ProjectSession
             FilePath = path; Replace(r["project"]!.AsObject(), false);
         }
         catch { if (original.Length > 0 && path != original && File.Exists(path)) File.Delete(path); throw; }
-        await ApplyPendingBankRemovals(original, path);
+
     }
 
     public string ProjectReference(string path)

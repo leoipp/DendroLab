@@ -134,7 +134,7 @@ internal sealed class PairedMeasurementsView : ToolFormView
         date.SelectedItem = selectedDate;
         values.ItemsSource = columns;
         values.SelectedItems.Clear();
-        string[] preferredValues = ["Volume_m3_ha", "VTCC_ha", "Fustes_ha", "VMI_m3_fuste", "VMI", "Idade_anos"];
+        string[] preferredValues = ["VTCC_m3_ha", "Volume_m3_ha", "VTCC_ha", "Fustes_ha", "VMI_m3_fuste", "VMI", "Idade_anos"];
         foreach (string field in preferredValues.Where(field => columns.Contains(field, StringComparer.Ordinal)))
             values.SelectedItems.Add(field);
         if (values.SelectedItems.Count == 0)

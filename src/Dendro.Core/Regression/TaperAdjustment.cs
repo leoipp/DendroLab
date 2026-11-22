@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using Dendro.Core.Mathematics;
 using Dendro.Core.Tabular;
@@ -11,13 +12,44 @@ public sealed record TaperResult(TableResult[] Tables, JsonArray Fits, int Rows,
 
 public static class TaperAdjustment
 {
+    private static readonly ConcurrentDictionary<string, Formula> Compiled = new(StringComparer.Ordinal);
     public static readonly TaperModel[] Models = [
-        new("kozak_model", "Kozak", "d = DAP × √max(b0 + b1×h/H + b2×(h/H)², 0)", ["b0","b1","b2"], [1,-.1,-.5]),
-        new("demaerschalk_model", "Demaerschalk", "d = 10^b0 × DAP^b1 × H^(2×b2) × (H-h)^(2×b3)", ["b0","b1","b2","b3"], [-1,1,0,.5]),
-        new("ormerod_diameter_model", "Ormerod", "d = DAP × ((H-h)/(H-1,3))^b1", ["b1"], [.6]),
-        new("garcia_model", "Garcia", "d = DAP × √max(b0 + b1×√(h/H) + b2×h/H, 0)", ["b0","b1","b2"], [1,-.1,-.5]),
-        new("garay_model", "Garay", "d = DAP^b0 × (1 + b1×ln(1-b2×(h/H)^b3))", ["b0","b1","b2","b3"], [1,-.5,.9,1])
+        new("kozak_model", "Kozak", "DAP*sqrt(max(b0+b1*z+b2*z^2,0))", ["b0","b1","b2"], [1,-.1,-.5]),
+        new("demaerschalk_model", "Demaerschalk", "10^b0*DAP^b1*H^(2*b2)*(H-h)^(2*b3)", ["b0","b1","b2","b3"], [-1,1,0,.5]),
+        new("ormerod_diameter_model", "Ormerod", "DAP*((H-h)/(H-1.3))^b1", ["b1"], [.6]),
+        new("garcia_model", "Garcia", "DAP*sqrt(max(b0+b1*sqrt(z)+b2*z,0))", ["b0","b1","b2"], [1,-.1,-.5]),
+        new("garay_model", "Garay", "DAP^b0*(1+b1*ln(1-b2*z^b3))", ["b0","b1","b2","b3"], [1,-.5,.9,1])
     ];
+    public static JsonArray DefaultDefinitions() => new(Models.Select(model => (JsonNode?)new JsonObject
+    {
+        ["id"] = model.Id, ["name"] = model.Name, ["formula"] = model.Formula,
+        ["parameters"] = new JsonArray(model.Parameters.Select(p => (JsonNode?)JsonValue.Create(p)).ToArray()),
+        ["initial"] = new JsonArray(model.Initial.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray()),
+    }).ToArray());
+
+    public static TaperModel[] ReadModels(JsonObject project)
+    {
+        var entries = project.Obj("taper").Arr("equations");
+        if (entries.Count == 0) return Models;
+        return entries.OfType<JsonObject>().Select(entry => new TaperModel(entry.S("id"), entry.S("name"), entry.S("formula"),
+            entry.Arr("parameters").Select(p => p?.GetValue<string>() ?? "").ToArray(),
+            entry.Arr("initial").Select(p => p?.GetValue<double>() ?? 1).ToArray())).ToArray();
+    }
+
+    public static double Predict(TaperModel model, double[] b, double dap, double total, double height)
+    {
+        if (!double.IsFinite(dap) || !double.IsFinite(total) || !double.IsFinite(height) || dap <= 0 || total <= 1.3 || height < 0 || height > total) return double.NaN;
+        try
+        {
+            var formula = Compiled.GetOrAdd(model.Id + "\0" + model.Formula, _ => new Formula(model.Formula, model.Parameters.Concat(["DAP", "H", "h", "z"])));
+            return formula.Evaluate(name => name switch
+            {
+                "DAP" => dap, "H" => total, "h" => height, "z" => height / total,
+                _ => b[Array.IndexOf(model.Parameters, name)],
+            });
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ArithmeticException or IndexOutOfRangeException) { return double.NaN; }
+    }
     public static double Predict(string model, double[] b, double dap, double total, double height)
     {
         if (!double.IsFinite(dap) || !double.IsFinite(total) || !double.IsFinite(height) || dap <= 0 || total <= 1.3 || height < 0 || height > total) return double.NaN;
@@ -37,8 +69,11 @@ public static class TaperAdjustment
             && Dap > 0 && H > 1.3 && h >= 0 && h < H && d > 0;
     }
     public static TaperResult Run(TableSource source, TaperOptions options, string output, CancellationToken cancellation = default, IProgress<TableProgress>? progress = null)
+        => Run(source, options, output, Models, cancellation, progress);
+
+    public static TaperResult Run(TableSource source, TaperOptions options, string output, TaperModel[] models, CancellationToken cancellation = default, IProgress<TableProgress>? progress = null)
     {
-        var selected = Models.Where(m => options.Models.Contains(m.Id)).ToArray();
+        var selected = models.Where(m => options.Models.Contains(m.Id)).ToArray();
         if (selected.Length == 0 || selected.Length != options.Models.Distinct().Count()) throw new InvalidDataException("Selecione modelos de afilamento válidos.");
         using var cursor = new TableCursor(source);
         int Column(string name) => Array.IndexOf(cursor.Columns, name) is int i && i >= 0 ? i : throw new InvalidDataException("Coluna ausente: " + name);
@@ -65,7 +100,7 @@ public static class TaperAdjustment
             var valid = group.Where(r => r.Valid).ToArray();
             var b = valid.Length > model.Initial.Length ? Fit(model, valid, cancellation) : null;
             string status = valid.Length <= model.Initial.Length ? "Observações insuficientes" : b == null ? "Sem convergência" : "OK";
-            double[] estimates = b == null ? [] : valid.Select(r => Predict(model.Id,b,r.Dap,r.H,r.h)).ToArray();
+            double[] estimates = b == null ? [] : valid.Select(r => Predict(model,b,r.Dap,r.H,r.h)).ToArray();
             double sse = b == null ? double.NaN : valid.Select((r,i) => Math.Pow(r.d-estimates[i],2)).Sum();
             double mean = valid.Length == 0 ? double.NaN : valid.Average(r => r.d);
             double sst = valid.Sum(r => Math.Pow(r.d-mean,2));
@@ -98,7 +133,7 @@ public static class TaperAdjustment
         {
             cancellation.ThrowIfCancellationRequested();
             var estimates = selected.Select(model => fitted.TryGetValue((row.Group,model.Id),out var b) && row.Tree.Length>0
-                ? JsonExtensions.Finite(Predict(model.Id,b,row.Dap,row.H,row.h))?.GetValue<double>() as object : null).ToArray();
+                ? JsonExtensions.Finite(Predict(model,b,row.Dap,row.H,row.h))?.GetValue<double>() as object : null).ToArray();
             writer.Add(dataId,[..row.Values,..estimates]);
         }
         foreach(var row in parameters) writer.Add(paramId,row);
@@ -115,7 +150,7 @@ public static class TaperAdjustment
         double Score(double[] b)
         {
             double sum=0;
-            foreach(var r in rows) {double p=Predict(model.Id,b,r.Dap,r.H,r.h); if(!double.IsFinite(p))return double.PositiveInfinity;sum+=Math.Pow(r.d-p,2);}
+            foreach(var r in rows) {double p=Predict(model,b,r.Dap,r.H,r.h); if(!double.IsFinite(p))return double.PositiveInfinity;sum+=Math.Pow(r.d-p,2);}
             return sum;
         }
         double best=double.PositiveInfinity; double[]? result=null;
@@ -129,19 +164,19 @@ public static class TaperAdjustment
                 var a=new double[k,k]; var rhs=new double[k];
                 foreach(var row in rows)
                 {
-                    double prediction=Predict(model.Id,b,row.Dap,row.H,row.h);var jac=new double[k];
+                    double prediction=Predict(model,b,row.Dap,row.H,row.h);var jac=new double[k];
                     for(int j=0;j<k;j++)
                     {
                         double old=b[j],delta=1e-5*Math.Max(1,Math.Abs(old));
                         double up=Clamp(j,old+delta),down=Clamp(j,old-delta);
-                        b[j]=up;double p=Predict(model.Id,b,row.Dap,row.H,row.h);
-                        b[j]=down;double m=Predict(model.Id,b,row.Dap,row.H,row.h);b[j]=old;
+                        b[j]=up;double p=Predict(model,b,row.Dap,row.H,row.h);
+                        b[j]=down;double m=Predict(model,b,row.Dap,row.H,row.h);b[j]=old;
                         jac[j]=(p-m)/(up-down);
                     }
                     for(int j=0;j<k;j++){rhs[j]+=jac[j]*(row.d-prediction);for(int l=0;l<k;l++)a[j,l]+=jac[j]*jac[l];}
                 }
                 if(rhs.Any(v=>!double.IsFinite(v)))break;
-                if(rhs.Max(v=>Math.Abs(v))<1e-8 && (score<1e-12 || rows.Select(r=>Predict(model.Id,b,r.Dap,r.H,r.h)).Max()-rows.Select(r=>Predict(model.Id,b,r.Dap,r.H,r.h)).Min()>1e-8))
+                if(rhs.Max(v=>Math.Abs(v))<1e-8 && (score<1e-12 || rows.Select(r=>Predict(model,b,r.Dap,r.H,r.h)).Max()-rows.Select(r=>Predict(model,b,r.Dap,r.H,r.h)).Min()>1e-8))
                 {if(score<best){best=score;result=(double[])b.Clone();}break;}
                 for(int j=0;j<k;j++)a[j,j]+=lambda*Math.Max(1,a[j,j]);
                 if(!InventoryMath.Solve(a,rhs,out var step)){lambda*=10;continue;}

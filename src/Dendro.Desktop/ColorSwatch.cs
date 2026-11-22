@@ -60,7 +60,9 @@ internal sealed class ColorSwatch : Button
         Ui.Field(form, "Transparência (0% = opaco · 100% = transparente)", alpha);
         var alphaValue = Ui.Text(""); form.Children.Add(alphaValue);
         Ui.Field(form, "Cor hexadecimal (#RRGGBB)", hex); form.Children.Add(error);
-        var dialog = Ui.Dialog("Selecionar cor", null!, 440, 690);
+        // Ui.Dialog walks the content tree while building the window, so it must
+        // receive a real element even though the completed body is assigned below.
+        var dialog = Ui.Dialog("Selecionar cor", new DockPanel(), 440, 690);
         dialog.MinWidth = 360; dialog.MaxHeight = SystemParameters.WorkArea.Height * .9;
         dialog.Owner = Window.GetWindow(this);
         bool syncing = false;

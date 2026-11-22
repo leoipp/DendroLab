@@ -161,6 +161,10 @@ public static class ProjectModels
             ["modelo_nome"] = builtin?.Name ?? custom.S("nome"),
             ["unidade_idade"] = custom.S("unidade_idade", "meses"),
         };
+        if (request["b3"] is not null)
+            row["b3"] = request["b3"]!.DeepClone();
+        else if (index >= 0 && models[index].S("modelo") == family && models[index]?["b3"] is not null)
+            row["b3"] = models[index]!["b3"]!.DeepClone();
         if (custom?["entradas"] is not null)
             row["entradas"] = custom["entradas"]!.DeepClone();
         if (request["fixed_inputs"] is JsonObject fixedInputs)
@@ -243,7 +247,7 @@ public static class ProjectModels
         for (int i = files.Count - 1; i >= 0; i--)
             if (Contains(files[i].Display())) files.RemoveAt(i);
         foreach (
-            string key in new[] { "file_options", "charts", "derived_tables", "content_names", "processing_results", "sampling_results", "analyses" }
+            string key in new[] { "file_options", "charts", "derived_tables", "content_names", "processing_results", "sampling_results", "analyses", "taper_fits" }
         )
         {
             var array = meta[key] as JsonArray;

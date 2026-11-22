@@ -6,7 +6,7 @@ using System.Windows.Controls.Primitives;
 
 namespace Dendro.Desktop;
 
-internal sealed class NoaaNdviView : DockPanel
+internal sealed class NoaaNdviView : ToolFormView
 {
     private const double EarthRadius = 6378137d;
     private readonly MainWindow owner;
@@ -28,9 +28,10 @@ internal sealed class NoaaNdviView : DockPanel
         DockPanel header = owner.ToolHeader("Imagens NOAA");
         header.Margin = new Thickness(24, 10, 12, 2);
         DockPanel.SetDock(header, Dock.Top);
-        Children.Add(header);
+
 
         var form = Ui.Form();
+        form.Children.Add(header);
         form.Margin = new Thickness(28, 12, 16, 20);
         Ui.AddHelp(form, "Baixa imagens georreferenciadas do NOAA e abre a camada no GIS. RGB usa a imagem diária em cor natural; NDVI usa as composições semanais, mensais ou anuais. A resolução é regional, adequada para contexto amplo, não para separar árvores ou talhões pequenos.");
         Ui.Field(form, "Produto", product);
@@ -64,13 +65,13 @@ internal sealed class NoaaNdviView : DockPanel
         var download = Ui.AsyncButton("Baixar imagem e abrir no GIS", async () => await Download());
         download.HorizontalAlignment = HorizontalAlignment.Left;
         download.Margin = new Thickness(0, 9, 0, 8);
-        form.Children.Add(download);
+        SetPrimaryAction(download);
         if (!session.IsOpen)
         {
             download.IsEnabled = false;
             Ui.AddHelp(form, "Abra ou crie um projeto para salvar a imagem como uma camada do GIS.");
         }
-        Children.Add(Ui.Scroll(form));
+        SetForm(form);
     }
 
     private static void AddBound(Panel panel, string label, TextBox field)

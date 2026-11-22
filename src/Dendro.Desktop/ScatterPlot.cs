@@ -150,25 +150,46 @@ internal sealed class ScatterPlot : FrameworkElement
             text,
             CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight,
-            new Typeface("Segoe UI"),
+            new Typeface(Config.S("visual_font", "Segoe UI")),
             size,
-            brush ?? Brushes.SlateGray,
+            brush ?? VisualBrush("visual_text_color", "#526579"),
             VisualTreeHelper.GetDpi(this).PixelsPerDip
         );
         dc.DrawText(f, new Point(x, y));
     }
 
+    private Brush VisualBrush(string key, string fallback) => new SolidColorBrush((Color)ColorConverter.ConvertFromString(Config.S(key, fallback)));
+
+    private void DrawPoint(DrawingContext dc, Brush brush, Point center, double radius)
+    {
+        if (Config.N("visual_point_shape") == 1)
+            dc.DrawRectangle(brush, null, new Rect(center.X - radius, center.Y - radius, radius * 2, radius * 2));
+        else if (Config.N("visual_point_shape") == 2)
+        {
+            var geometry = new StreamGeometry();
+            using (var path = geometry.Open())
+            {
+                path.BeginFigure(new Point(center.X, center.Y - radius), true, true);
+                path.LineTo(new Point(center.X + radius, center.Y), true, false);
+                path.LineTo(new Point(center.X, center.Y + radius), true, false);
+                path.LineTo(new Point(center.X - radius, center.Y), true, false);
+            }
+            dc.DrawGeometry(brush, null, geometry);
+        }
+        else dc.DrawEllipse(brush, null, center, radius, radius);
+    }
+
     private void TextRight(DrawingContext dc, string text, double right, double y, double size = 12)
     {
         var formatted = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-            new Typeface("Segoe UI"), size, Brushes.SlateGray, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            new Typeface(Config.S("visual_font", "Segoe UI")), size, VisualBrush("visual_text_color", "#526579"), VisualTreeHelper.GetDpi(this).PixelsPerDip);
         dc.DrawText(formatted, new Point(right - formatted.Width, y));
     }
 
     private void VerticalText(DrawingContext dc, string text, double centerX, double centerY, double size = 12)
     {
         var formatted = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-            new Typeface("Segoe UI"), size, Brushes.SlateGray, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            new Typeface(Config.S("visual_font", "Segoe UI")), size, VisualBrush("visual_text_color", "#526579"), VisualTreeHelper.GetDpi(this).PixelsPerDip);
         dc.PushTransform(new RotateTransform(-90, centerX, centerY));
         dc.DrawText(formatted, new Point(centerX - formatted.Width / 2, centerY - formatted.Height / 2));
         dc.Pop();
@@ -176,6 +197,25 @@ internal sealed class ScatterPlot : FrameworkElement
 
     private void DrawCrosshair(DrawingContext dc, Point cursor)
     {
+        bool snapX = false, snapY = false;
+        if (CursorSnapPreferences.Current.B("cursor_snap"))
+        {
+            double tolerance = Math.Clamp(CursorSnapPreferences.Current.N("cursor_snap_tolerance", 10), 0, 100);
+            if (CursorSnapPreferences.Current["cursor_snap_x"] != null)
+            {
+                double target = Transform(CursorSnapPreferences.Current.N("cursor_snap_x"), true);
+                double pixel = plot.Left + (target - xmin) / (xmax - xmin) * plot.Width;
+                if (double.IsFinite(pixel) && pixel >= plot.Left && pixel <= plot.Right && Math.Abs(cursor.X - pixel) <= tolerance)
+                { cursor.X = pixel; snapX = true; }
+            }
+            if (CursorSnapPreferences.Current["cursor_snap_y"] != null)
+            {
+                double target = Transform(CursorSnapPreferences.Current.N("cursor_snap_y"), false);
+                double pixel = plot.Bottom - (target - ymin) / (ymax - ymin) * plot.Height;
+                if (double.IsFinite(pixel) && pixel >= plot.Top && pixel <= plot.Bottom && Math.Abs(cursor.Y - pixel) <= tolerance)
+                { cursor.Y = pixel; snapY = true; }
+            }
+        }
         var pen = new Pen(new SolidColorBrush(Color.FromArgb(205, 67, 91, 112)), 1)
         { DashStyle = DashStyles.Dash };
         pen.Freeze();
@@ -189,18 +229,30 @@ internal sealed class ScatterPlot : FrameworkElement
         string xText = "X = " + x.ToString("G6", CultureInfo.CurrentCulture);
         string yText = "Y = " + y.ToString("G6", CultureInfo.CurrentCulture);
         DrawValueBadge(dc, xText,
-            Math.Clamp(cursor.X, plot.Left, Math.Max(plot.Left, plot.Right - 90)), plot.Bottom - 22);
+            Math.Clamp(cursor.X, plot.Left, Math.Max(plot.Left, plot.Right - 90)), plot.Bottom - 22, snapX);
         DrawValueBadge(dc, yText, plot.Left + 3,
-            Math.Clamp(cursor.Y - 10, plot.Top, Math.Max(plot.Top, plot.Bottom - 21)));
+            Math.Clamp(cursor.Y - 10, plot.Top, Math.Max(plot.Top, plot.Bottom - 21)), snapY);
     }
 
-    private void DrawValueBadge(DrawingContext dc, string text, double x, double y)
+    private void DrawValueBadge(DrawingContext dc, string text, double x, double y, bool snapped = false)
     {
+        Brush fill = new SolidColorBrush(Color.FromArgb(238, 255, 255, 255));
+        Brush ink = new SolidColorBrush(Color.FromRgb(38, 70, 96));
+        if (snapped)
+        {
+            try
+            {
+                var color = (Color)ColorConverter.ConvertFromString(CursorSnapPreferences.Current.S("cursor_snap_color", "#239B56"));
+                fill = new SolidColorBrush(color);
+                ink = .2126 * color.R + .7152 * color.G + .0722 * color.B > 150 ? Brushes.Black : Brushes.White;
+            }
+            catch (FormatException) { fill = Brushes.ForestGreen; ink = Brushes.White; }
+        }
         var formatted = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-            new Typeface("Segoe UI Semibold"), 10, new SolidColorBrush(Color.FromRgb(38, 70, 96)),
+            new Typeface("Segoe UI Semibold"), 10, ink,
             VisualTreeHelper.GetDpi(this).PixelsPerDip);
         var bounds = new Rect(x, y, formatted.Width + 10, formatted.Height + 5);
-        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(238, 255, 255, 255)),
+        dc.DrawRoundedRectangle(fill,
             new Pen(new SolidColorBrush(Color.FromRgb(126, 153, 176)), 1), bounds, 4, 4);
         dc.DrawText(formatted, new Point(x + 5, y + 2));
     }
@@ -263,14 +315,14 @@ internal sealed class ScatterPlot : FrameworkElement
             }
             else selection.DrawGeometry(new SolidColorBrush(Color.FromArgb(30, 33, 102, 157)), new Pen(Brushes.SteelBlue, 1), SelectionGeometry());
         }
-        if (cursorPosition is Point cursor && plot.Contains(cursor))
+        if (Config.B("visual_cursor", true) && cursorPosition is Point cursor && plot.Contains(cursor))
             DrawCrosshair(selection, cursor);
         selection.Pop();
     }
 
     private void DrawPreparing(DrawingContext dc)
     {
-        dc.DrawRectangle(Brushes.White, null, new Rect(RenderSize));
+        dc.DrawRectangle(VisualBrush("visual_background", "#FFFFFF"), null, new Rect(RenderSize));
         if (RenderSize.Width >= 180 && RenderSize.Height >= 160)
             Text(dc, scenePending ? "Preparando gráfico…" : "Selecione X e Y e gere o gráfico.", 25, 30, 17);
     }
@@ -345,7 +397,9 @@ internal sealed class ScatterPlot : FrameworkElement
     private static PreparedScene Prepare(JsonObject input, JsonObject options, Size size, int generation, CancellationToken cancellation)
     {
         var points = ChartPointView.Open(input, options);
-        var plot = new Rect(110, 57, Math.Max(1, size.Width - 140), Math.Max(1, size.Height - 117));
+        double left = options.N("visual_margin_left", 110), right = options.N("visual_margin_right", 30),
+            top = options.N("visual_margin_top", 57), bottom = options.N("visual_margin_bottom", 60);
+        var plot = new Rect(left, top, Math.Max(1, size.Width - left - right), Math.Max(1, size.Height - top - bottom));
         if (points.Count == 0)
             return new(generation, size, plot, new(0, 1, 0, 1), [], [], 1, PlotSelectionIndex.Empty(), false,
                 EmptyMessage: "Selecione X e Y e gere o gráfico.");
@@ -456,7 +510,7 @@ internal sealed class ScatterPlot : FrameworkElement
 
     private void DrawScene(DrawingContext dc, PreparedScene prepared)
     {
-        dc.DrawRectangle(Brushes.White, null, new Rect(RenderSize));
+        dc.DrawRectangle(VisualBrush("visual_background", "#FFFFFF"), null, new Rect(RenderSize));
         if (RenderSize.Width < 180 || RenderSize.Height < 160)
             return;
         if (prepared.Error.Length > 0)
@@ -471,31 +525,31 @@ internal sealed class ScatterPlot : FrameworkElement
             Text(dc, prepared.EmptyMessage.Length > 0 ? prepared.EmptyMessage : "Todos os pontos foram removidos. Use Desfazer ou Mostrar removidos.", 25, 60, 15);
             return;
         }
-        Text(dc, Config.S("title"), plot.Left, 15, 19, Brushes.DarkSlateGray);
-        var grid = new Pen(new SolidColorBrush(Color.FromRgb(229, 235, 243)), 1) { DashStyle = DashStyles.Dash };
+        Text(dc, Config.S("title"), plot.Left, 15, Config.N("visual_title_size", 19));
+        var grid = new Pen(VisualBrush("visual_grid_color", "#E5EBF3"), Config.N("visual_grid_width", 1)) { DashStyle = DashStyles.Dash };
         foreach(var tick in Dendro.Core.Regression.ChartTicks.Create(xmin,xmax,Config.N("x_tick_step"),Config.B("log_x")))
         {
             double x=plot.Left+(tick.Position-xmin)/(xmax-xmin)*plot.Width;
             if (Config.B("grid", true))
                 dc.DrawLine(grid, new Point(x, plot.Top), new Point(x, plot.Bottom));
-            Text(dc,tick.Label,x-15,plot.Bottom+9);
+            Text(dc,tick.Label,x-15,plot.Bottom+9, Config.N("visual_tick_size", 12));
         }
         foreach(var tick in Dendro.Core.Regression.ChartTicks.Create(ymin,ymax,Config.N("y_tick_step"),Config.B("log_y")))
         {
             double y=plot.Bottom-(tick.Position-ymin)/(ymax-ymin)*plot.Height;
             if(Config.B("grid",true))
                 dc.DrawLine(grid, new Point(plot.Left, y), new Point(plot.Right, y));
-            TextRight(dc, tick.Label, plot.Left - 7, y - 8);
+            TextRight(dc, tick.Label, plot.Left - 7, y - 8, Config.N("visual_tick_size", 12));
         }
-        dc.DrawLine(new Pen(Brushes.SlateGray, 1), plot.BottomLeft, plot.BottomRight);
-        dc.DrawLine(new Pen(Brushes.SlateGray, 1), plot.BottomLeft, plot.TopLeft);
+        dc.DrawLine(new Pen(VisualBrush("visual_axis_color", "#708090"), Config.N("visual_axis_width", 1)), plot.BottomLeft, plot.BottomRight);
+        dc.DrawLine(new Pen(VisualBrush("visual_axis_color", "#708090"), Config.N("visual_axis_width", 1)), plot.BottomLeft, plot.TopLeft);
         Text(
             dc,
             Config.S("x_label", Config.S("x")),
             plot.Left + plot.Width / 2 - 30,
-            plot.Bottom + 34
+            plot.Bottom + 34, Config.N("visual_label_size", 12)
         );
-        VerticalText(dc, Config.S("y_label", Config.S("y")), 38, plot.Top + plot.Height / 2);
+        VerticalText(dc, Config.S("y_label", Config.S("y")), 38, plot.Top + plot.Height / 2, Config.N("visual_label_size", 12));
         dc.PushClip(new RectangleGeometry(plot));
         foreach (var reference in Config["reference_lines"] as JsonArray ?? [])
         {
@@ -549,7 +603,7 @@ internal sealed class ScatterPlot : FrameworkElement
                     dc.DrawLine(pen, new Point(pt.X - 4, pt.Y - 4), new Point(pt.X + 4, pt.Y + 4));
                     dc.DrawLine(pen, new Point(pt.X - 4, pt.Y + 4), new Point(pt.X + 4, pt.Y - 4));
                 }
-                else dc.DrawEllipse(brush, null, pt, radius, radius);
+                else DrawPoint(dc, brush, pt, radius);
             }
         }
         else
@@ -565,7 +619,7 @@ internal sealed class ScatterPlot : FrameworkElement
                     dc.DrawLine(pen, new Point(pt.X - 4, pt.Y - 4), new Point(pt.X + 4, pt.Y + 4));
                     dc.DrawLine(pen, new Point(pt.X - 4, pt.Y + 4), new Point(pt.X + 4, pt.Y - 4));
                 }
-                else dc.DrawEllipse(brush, null, pt, radius, radius);
+                else DrawPoint(dc, brush, pt, radius);
             }
         }
         foreach (var p in Config["frontier_points"] as JsonArray ?? new JsonArray())
@@ -616,7 +670,7 @@ internal sealed class ScatterPlot : FrameworkElement
                     new BrushConverter().ConvertFromString(
                         Dendro.Core.Regression.FitDisplay.Color(fit)
                     )!;
-                var curvePen = new Pen(curveBrush, 2.2);
+                var curvePen = new Pen(curveBrush, Config.N("visual_curve_width", 2.2));
                 if (fit.N("frontier") == 2 || fit.B("line_dashed"))
                     curvePen.DashStyle = DashStyles.Dash;
                 dc.DrawGeometry(null, curvePen, geometry);
