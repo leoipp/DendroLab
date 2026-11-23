@@ -7,6 +7,12 @@ public partial class App : Application
 {
     internal static bool IsSelfTest { get; private set; }
 
+    protected override void OnExit(ExitEventArgs e)
+    {
+        Dendro.Core.Tabular.DlbEncryptionSession.Clear();
+        base.OnExit(e);
+    }
+
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -37,6 +43,7 @@ public partial class App : Application
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
             Ui.Alert("DendroLab", args.Exception.Message, Ui.MessageTone.Error);
+            Shutdown(1);
         };
         if (e.Args.Length > 0 && e.Args[0] is "--self-test" or "--self-test-ui-layout" or "--self-test-ui-results" or "--self-test-stacked-tabs" or "--self-test-chart-visuals" or "--self-test-workflow" or "--self-test-duplicates" or "--self-test-remove-discard" or "--self-test-context-menu-icons" or "--self-test-gis-contents")
         {
@@ -44,6 +51,8 @@ public partial class App : Application
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             try
             {
+                string selfTestFailure = Path.Combine(AppContext.BaseDirectory, "self-test-error.txt");
+                if (File.Exists(selfTestFailure)) File.Delete(selfTestFailure);
                 if (e.Args[0] == "--self-test-ui-layout") await DesktopTests.RunUiLayout(e.Args[1]);
                 else if (e.Args[0] == "--self-test-gis-contents") await DesktopTests.RunGisContents(e.Args[1]);
                 else if (e.Args[0] == "--self-test-workflow") await DesktopTests.RunProcessingWorkflow(e.Args[1]);

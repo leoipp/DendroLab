@@ -87,32 +87,40 @@ public static partial class ForestSampler
         if (!File.Exists(Path.ChangeExtension(shapefilePath, ".prj")))
             throw new InvalidDataException("O shapefile precisa ter .prj para confirmar que as coordenadas estão em metros.");
         string wkt = File.ReadAllText(Path.ChangeExtension(shapefilePath, ".prj"));
-        if (!wkt.Contains("PROJCS", StringComparison.OrdinalIgnoreCase) && !wkt.Contains("PROJCRS", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("O shapefile precisa usar um sistema projetado em metros. Reprojete para UTM antes da amostragem.");
-        if (wkt.Contains("UNIT[\"Foot", StringComparison.OrdinalIgnoreCase) || wkt.Contains("UNIT[\"US survey foot", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("O sistema do shapefile está em pés. Reprojete para um sistema métrico antes da amostragem.");
+        ValidateProjectedMeterCrsWkt(wkt);
         Validate(options);
 
         var stands = new List<Stand>();
-        foreach (var feature in Shapefile.ReadAllFeatures(shapefilePath))
+        int featureIndex = 0;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            Geometry? shape = feature.Geometry;
-            if (shape is not (Polygon or MultiPolygon)) continue;
-            if (!shape.IsValid) shape = shape.Buffer(0);
-            if (shape.IsEmpty || shape.Area <= 0) continue;
-            var attrs = feature.Attributes.GetNames().ToDictionary(name => name, name => (object?)feature.Attributes[name], StringComparer.OrdinalIgnoreCase);
-            string id = attrs.TryGetValue(options.IdField, out var rawId) && rawId != null
-                ? Convert.ToString(rawId, CultureInfo.InvariantCulture) ?? ""
-                : $"T{stands.Count + 1:0000}";
-            if (string.IsNullOrWhiteSpace(id)) id = $"T{stands.Count + 1:0000}";
-            double areaHa = shape.Area / 10_000d;
-            if (stands.Any(s => string.Equals(s.Id, id, StringComparison.Ordinal)))
+            foreach (var feature in Shapefile.ReadAllFeatures(shapefilePath))
             {
-                if (options.Method == ForestSamplingMethod.Grts) throw new ArgumentException($"O identificador '{id}' está duplicado. Escolha um campo que identifique cada talhão para o GRTS.");
-                id = $"{id}_{stands.Count + 1:0000}";
+                featureIndex++;
+                cancellationToken.ThrowIfCancellationRequested();
+                Geometry? shape = feature.Geometry;
+                if (shape is not (Polygon or MultiPolygon)) continue;
+                if (!shape.IsValid)
+                    throw new InvalidDataException($"A geometria poligonal no registro {featureIndex} é inválida. Corrija a geometria no arquivo de origem e execute novamente; a aplicação não a reparou automaticamente.");
+                if (shape.IsEmpty || shape.Area <= 0)
+                    throw new InvalidDataException($"A geometria poligonal no registro {featureIndex} está vazia ou sem área positiva.");
+                var attrs = feature.Attributes.GetNames().ToDictionary(name => name, name => (object?)feature.Attributes[name], StringComparer.OrdinalIgnoreCase);
+                string id = attrs.TryGetValue(options.IdField, out var rawId) && rawId != null
+                    ? Convert.ToString(rawId, CultureInfo.InvariantCulture) ?? ""
+                    : $"T{stands.Count + 1:0000}";
+                if (string.IsNullOrWhiteSpace(id)) id = $"T{stands.Count + 1:0000}";
+                double areaHa = shape.Area / 10_000d;
+                if (stands.Any(s => string.Equals(s.Id, id, StringComparison.Ordinal)) )
+                {
+                    if (options.Method == ForestSamplingMethod.Grts) throw new ArgumentException($"O identificador '{id}' está duplicado. Escolha um campo que identifique cada talhão para o GRTS.");
+                    id = $"{id}_{stands.Count + 1:0000}";
+                }
+                stands.Add(new Stand(id, shape, attrs, areaHa, RequiredPlots(areaHa, options)));
             }
-            stands.Add(new Stand(id, shape, attrs, areaHa, RequiredPlots(areaHa, options)));
+        }
+        catch (ShapefileException ex)
+        {
+            throw new InvalidDataException($"Não foi possível ler ou validar a geometria do registro {featureIndex + 1}. Corrija os dados no shapefile e execute novamente; nenhuma geometria foi reparada silenciosamente.", ex);
         }
         if (stands.Count == 0) throw new InvalidDataException("Nenhum polígono válido foi encontrado no shapefile.");
         if (options.Method == ForestSamplingMethod.Grts) return RunGrts(stands, shapefilePath, options, cancellationToken);
@@ -130,6 +138,61 @@ public static partial class ForestSampler
         int incomplete = stands.Count(s => allocated[s.Id].Count < s.Required);
         string? warning = incomplete > 0 ? $"{incomplete} talhão(ões) ficaram abaixo da quantidade solicitada por causa da área útil ou da distância mínima." : null;
         return new ForestSamplingResult(samples, stands.Count, incomplete, stands.Sum(s => s.AreaHa), stands.Sum(s => s.Required), shapefilePath, options.Method, warning, options);
+    }
+
+    public static void ValidateProjectedMeterCrsWkt(string wkt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(wkt);
+        int wkt2Start = wkt.IndexOf("PROJCRS[", StringComparison.OrdinalIgnoreCase);
+        int wkt1Start = wkt.IndexOf("PROJCS[", StringComparison.OrdinalIgnoreCase);
+        if (wkt2Start < 0 && wkt1Start < 0)
+            throw new InvalidDataException("O shapefile precisa usar um sistema projetado com unidade linear em metros. Reprojete para UTM antes da amostragem.");
+
+        var factors = new List<double>();
+        if (wkt2Start >= 0)
+        {
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(
+                wkt, """LENGTHUNIT\s*\[\s*"[^"]+"\s*,\s*([-+0-9.eE]+)""", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                if (double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double factor))
+                    factors.Add(factor);
+        }
+        else
+        {
+            int rootOpen = wkt.IndexOf('[', wkt1Start);
+            int rootEnd = MatchingBracket(wkt, rootOpen);
+            int geographicStart = wkt.IndexOf("GEOGCS[", rootOpen, rootEnd - rootOpen, StringComparison.OrdinalIgnoreCase);
+            int unitSearchStart = geographicStart >= 0
+                ? MatchingBracket(wkt, wkt.IndexOf('[', geographicStart)) + 1
+                : rootOpen + 1;
+            string projectedPart = wkt[unitSearchStart..(rootEnd + 1)];
+            var match = System.Text.RegularExpressions.Regex.Match(projectedPart,
+                """UNIT\s*\[\s*"[^"]+"\s*,\s*([-+0-9.eE]+)""", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (match.Success && double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double factor))
+                factors.Add(factor);
+        }
+
+        if (factors.Count == 0 || factors.Any(factor => !double.IsFinite(factor) || Math.Abs(factor - 1d) > 1e-12))
+            throw new InvalidDataException("O sistema do shapefile não declara unidade linear métrica inequívoca. Reprojete para um CRS projetado em metros antes da amostragem.");
+    }
+
+    private static int MatchingBracket(string text, int open)
+    {
+        if (open < 0 || open >= text.Length || text[open] != '[') throw new InvalidDataException("WKT do sistema de coordenadas inválido.");
+        int depth = 0;
+        bool quoted = false;
+        for (int index = open; index < text.Length; index++)
+        {
+            char value = text[index];
+            if (value == '"')
+            {
+                if (quoted && index + 1 < text.Length && text[index + 1] == '"') { index++; continue; }
+                quoted = !quoted;
+            }
+            if (quoted) continue;
+            if (value == '[') depth++;
+            else if (value == ']' && --depth == 0) return index;
+        }
+        throw new InvalidDataException("WKT do sistema de coordenadas inválido: colchete sem fechamento.");
     }
 
     public static int RequiredPlots(double areaHa, ForestSamplingOptions options)

@@ -49,6 +49,36 @@ public sealed class GrtsDesignTests : IDisposable
         Assert.False(first.Samples.Select(sample => (sample.X, sample.Y)).SequenceEqual(ForestSampler.Run(path, Basic with { Seed = 99 }).Samples.Select(sample => (sample.X, sample.Y))));
     }
 
+    [Theory]
+    [InlineData("PROJCS[\"Metric\",GEOGCS[\"Base\",DATUM[\"D\",SPHEROID[\"E\",6378137,298.257]],PRIMEM[\"G\",0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"x\",0],UNIT[\"metre\",1]]", true)]
+    [InlineData("PROJCS[\"US feet\",GEOGCS[\"Base\",DATUM[\"D\",SPHEROID[\"E\",6378137,298.257]],PRIMEM[\"G\",0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"x\",0],UNIT[\"US survey foot\",0.3048006096012192]]", false)]
+    [InlineData("PROJCRS[\"Metric\",BASEGEOGCRS[\"Base\",DATUM[\"D\",ELLIPSOID[\"E\",6378137,298.257,LENGTHUNIT[\"metre\",1]],PRIMEM[\"G\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]]],CONVERSION[\"UTM\"],CS[Cartesian,2],AXIS[\"E\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"N\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]", true)]
+    [InlineData("PROJCRS[\"US feet\",BASEGEOGCRS[\"Base\",DATUM[\"D\",ELLIPSOID[\"E\",6378137,298.257,LENGTHUNIT[\"metre\",1]],PRIMEM[\"G\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]]],CONVERSION[\"UTM\"],CS[Cartesian,2],AXIS[\"E\",east,ORDER[1],LENGTHUNIT[\"US survey foot\",0.3048006096012192]],AXIS[\"N\",north,ORDER[2],LENGTHUNIT[\"US survey foot\",0.3048006096012192]]]", false)]
+    public void ProjectedWktValidatesTheLinearUnit(string wkt, bool valid)
+    {
+        if (valid) ForestSampler.ValidateProjectedMeterCrsWkt(wkt);
+        else Assert.Throws<InvalidDataException>(() => ForestSampler.ValidateProjectedMeterCrsWkt(wkt));
+    }
+
+    [Fact]
+    public void InvalidPolygonIsRejectedWithItsFeatureIndexInsteadOfSilentlyRepaired()
+    {
+        string invalidPath = Path.Combine(folder, "invalid.shp");
+        var factory = new GeometryFactory();
+        var bowTie = factory.CreatePolygon(new[]
+        {
+            new Coordinate(0, 0), new Coordinate(100, 100), new Coordinate(0, 100),
+            new Coordinate(100, 0), new Coordinate(0, 0)
+        });
+        Shapefile.WriteAllFeatures([new Feature(bowTie, new AttributesTable { { "ID", "bad" } })], invalidPath);
+        File.WriteAllText(Path.ChangeExtension(invalidPath, ".prj"), "PROJCS[\"Metric\",UNIT[\"metre\",1]]");
+
+        var error = Assert.Throws<InvalidDataException>(() => ForestSampler.Run(invalidPath, Basic));
+
+        Assert.Contains("registro 1", error.Message);
+        Assert.Contains("nenhuma geometria foi reparada silenciosamente", error.Message);
+    }
+
     [Fact]
     public void UserFieldAndExplicitStratumQuantitiesAreApplied()
     {

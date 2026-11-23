@@ -24,7 +24,4 @@
     <EmbeddedResource Include="Manual\DendroLab.md" />
     <EmbeddedResource Include="Manual\Calculos.md" />
   </ItemGroup>
-  <ItemGroup>
-    <Content Include="Scripts\model_fitter_bridge.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-  </ItemGroup>
 </Project>

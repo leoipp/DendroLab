@@ -85,6 +85,11 @@ public partial class MainWindow : Window
             var style = (Style)((Style)DockManager.Resources["StackedPaneStyle"]).Setters.OfType<Setter>().Single().Value;
             foreach (var pane in FindVisualChildren<LayoutAnchorablePaneControl>(DockManager))
             {
+                // AvalonDock can reapply the theme background after initial load
+                // when a pane is restored or moved between dock hosts. Keep the
+                // pane surface transparent so only the rounded content frame draws.
+                pane.Background = Brushes.Transparent;
+                pane.BorderThickness = new Thickness(0);
                 var applied = paneTabStyles.GetValue(pane, control =>
                 {
                     // Preserve AvalonDock's model/content and selection bindings when
@@ -102,6 +107,9 @@ public partial class MainWindow : Window
                 if (tabs.Margin != tabInset) tabs.Margin = tabInset;
         };
         var workArea = SystemParameters.WorkArea;
+        Size fittedMinimum = MinimumSizeForWorkArea(new Size(MinWidth, MinHeight), new Size(workArea.Width, workArea.Height));
+        MinWidth = fittedMinimum.Width;
+        MinHeight = fittedMinimum.Height;
         Width = Math.Min(Width, Math.Max(MinWidth, workArea.Width * 0.94));
         Height = Math.Min(Height, Math.Max(MinHeight, workArea.Height * 0.92));
         ContentsTree.AllowDrop = true;
@@ -170,6 +178,9 @@ public partial class MainWindow : Window
             { SetRibbonExpanded(false); e.Handled = true; }
         };
     }
+
+    internal static Size MinimumSizeForWorkArea(Size requestedMinimum, Size workArea) =>
+        new(Math.Min(requestedMinimum.Width, workArea.Width), Math.Min(requestedMinimum.Height, workArea.Height));
 
     internal void Log(string message)
     {
@@ -1963,11 +1974,26 @@ public partial class MainWindow : Window
     {
         if (!await MayReplace())
             return;
+        DlbEncryptionKey? candidate = DlbEncryptionKey.IsEncryptedFile(path)
+            ? DlbPasswordDialog.Unlock(this, path) : null;
+        if (DlbEncryptionKey.IsEncryptedFile(path) && candidate == null) return;
+        var previousKey = DlbEncryptionSession.Current;
+        DlbEncryptionSession.Current = candidate;
         await Execute(async () =>
         {
-            await Session.Open(path);
-            ProjectLoaded();
-            Log("Projeto aberto.");
+            try
+            {
+                await Session.Open(path);
+                previousKey?.Dispose();
+                ProjectLoaded();
+                Log("Projeto aberto.");
+            }
+            catch
+            {
+                DlbEncryptionSession.Current = previousKey;
+                candidate?.Dispose();
+                throw;
+            }
         });
     }
 
@@ -1984,10 +2010,24 @@ public partial class MainWindow : Window
     {
         if (!await MayReplace())
             return;
+        var candidate = DlbPasswordDialog.Create(this);
+        if (candidate == null) return;
+        var previousKey = DlbEncryptionSession.Current;
+        DlbEncryptionSession.Current = candidate;
         await Execute(async () =>
         {
-            await Session.New("Novo projeto");
-            ProjectLoaded();
+            try
+            {
+                await Session.New("Novo projeto");
+                previousKey?.Dispose();
+                ProjectLoaded();
+            }
+            catch
+            {
+                DlbEncryptionSession.Current = previousKey;
+                candidate.Dispose();
+                throw;
+            }
         });
     }
 
@@ -2015,6 +2055,22 @@ public partial class MainWindow : Window
             if (path == null)
                 return false;
             string original = Session.FilePath;
+            if (DlbEncryptionSession.Current == null)
+            {
+                var candidate = DlbPasswordDialog.Create(this);
+                if (candidate == null) return false;
+                try
+                {
+                    if (original.Length > 0 && File.Exists(original) && !DlbEncryptionKey.IsEncryptedFile(original))
+                        await Task.Run(() => CompactBankFile.EncryptInPlace(original, candidate, OperationCancellation));
+                    DlbEncryptionSession.Current = candidate;
+                }
+                catch
+                {
+                    candidate.Dispose();
+                    throw;
+                }
+            }
             await Session.Save(path);
             if (original.Length > 0 && !string.Equals(original, Session.FilePath, StringComparison.OrdinalIgnoreCase)
                 && Session.Meta.S("database_path").Length > 0) { CloseDocuments(); ShowTools(); }
@@ -2067,6 +2123,22 @@ public partial class MainWindow : Window
     private void ToolsClick(object s, RoutedEventArgs e) => ToolsPane.Show();
 
     private void HistoryClick(object s, RoutedEventArgs e) => HistoryPane.Show();
+
+    private void AuditCenterClick(object s, RoutedEventArgs e)
+    {
+        var center = new Window
+        {
+            Title = "Central de auditoria",
+            Owner = this,
+            Width = 980,
+            Height = 640,
+            MinWidth = Math.Min(720, SystemParameters.WorkArea.Width),
+            MinHeight = Math.Min(420, SystemParameters.WorkArea.Height),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new AuditCenterView(),
+        };
+        center.ShowDialog();
+    }
 
     private void ClearHistoryClick(object s, RoutedEventArgs e) => HistoryText.Clear();
 
@@ -2250,7 +2322,7 @@ public partial class MainWindow : Window
                     "Ajuste de regressão" => CommandIconKind.Regression,
                     "Ajuste de taper" => CommandIconKind.Taper,
                     "Aplicar regressões" => CommandIconKind.ApplyRegression,
-                    "Aplicar taper" => CommandIconKind.Taper,
+                    "Aplicar taper" => CommandIconKind.TaperApplication,
                     "Ajustar rede neural" => CommandIconKind.NeuralNetwork,
                     "Ajustar Random Forest" => CommandIconKind.RandomForest,
                     "Ajustar Gradient Boosting" => CommandIconKind.GradientBoosting,
@@ -2262,15 +2334,16 @@ public partial class MainWindow : Window
                     "ICA e IMA" => CommandIconKind.Increments,
                     "Comparar curvas de produção" => CommandIconKind.CurveComparison,
                     "Isolation Forest" => CommandIconKind.Anomaly,
-                    "K-means" => CommandIconKind.Statistics,
+                    "K-means" => CommandIconKind.KMeans,
                     "Imagens NOAA" => CommandIconKind.Satellite,
                     "Imagens Sentinel-2" => CommandIconKind.Multispectral,
-                    "Catálogo temporal Sentinel-2" => CommandIconKind.Multispectral,
-                    "Série de pixels Sentinel-2" => CommandIconKind.Multispectral,
-                    "Explorar série temporal Sentinel-2" => CommandIconKind.Multispectral,
+                    "Catálogo temporal Sentinel-2" => CommandIconKind.TemporalCatalog,
+                    "Série de pixels Sentinel-2" => CommandIconKind.PixelSeries,
+                    "Explorar série temporal Sentinel-2" => CommandIconKind.TimeSeriesExplorer,
                     "Limpeza integrada" => CommandIconKind.IntegratedCleaning,
-                    "Testes estatísticos" => CommandIconKind.Statistics,
+                    "Testes estatísticos" => CommandIconKind.HypothesisTest,
                     "Validação de modelos" => CommandIconKind.ModelValidation,
+                    "Amostragem" => CommandIconKind.ForestSampling,
                     _ => CommandIconKind.Stratify,
                 });
                 list.Items.Add(entry);

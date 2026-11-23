@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Dendro.Core.Configuration;
 using Dendro.Core.Tabular;
+using Dendro.Core.Statistics;
 
 namespace Dendro.Core.Processing;
 
@@ -235,9 +236,10 @@ public sealed class DirectInventorySummary : IDisposable
                 double[] sampledTyped = TypedSums(all);
                 double[] typedHa = TypedPerHa(all, level, effective);
                 double[] typedTotals = typedHa.Select(value => level == "parcela" ? double.NaN : value * effective).ToArray();
-                double[] sampleVolumes = all.Select(p => p.VolumeHa).Where(double.IsFinite).ToArray();
-                double absoluteError = sampleVolumes.Length >= minimumPlots && sampleVolumes.Length > 1
-                    ? SamplingAbsoluteError(sampleVolumes, confidence) : double.NaN;
+                var strata = all.GroupBy(plot => plot.Stand, StringComparer.Ordinal)
+                    .Select(group => new AreaStratumSample(group.First().Effective, group.Select(plot => plot.VolumeHa).ToArray()));
+                double absoluteError = StratifiedSamplingStatistics.AreaWeightedMarginOfError(
+                    strata, confidence, (int)Math.Ceiling(minimumPlots));
                 double samplingError = double.IsFinite(volumeHa) && volumeHa > 0 && double.IsFinite(absoluteError)
                     ? absoluteError / volumeHa * 100 : double.NaN;
                 double stemsHa = level == "parcela" ? first.StemsHa : level == "talhao" ? all.Average(p => p.StemsHa)
@@ -293,7 +295,7 @@ public sealed class DirectInventorySummary : IDisposable
         writer.Add(info, ["Modo", "Resumo direto: volumetria, fustes e VMI; sem curvas de crescimento, comparação IFC e relatórios estatísticos completos."]);
         writer.Add(info, ["Tipos de volume", "As equações ativas VTCC, VCCC, VTSC e VCSC são calculadas na ordem configurada. Volume_m3 e os indicadores derivados usam a primeira equação disponível para cada código; colunas tipadas podem ser habilitadas por nível."]);
         writer.Add(info, ["Amostra e totais", "Volume/fustes amostrados são somas observadas. Por hectare: média entre parcelas por talhão; lote/projeto ponderam talhões por área efetiva. Totais dependem dessa área e ficam vazios se desconhecida."]);
-        writer.Add(info, ["Erro amostral", $"Erro absoluto e erro amostral (%) do volume principal são calculados nos níveis de talhão, lote e projeto com IC de {confidence:P0}; exigem ao menos {minimumPlots:G} parcelas. O erro absoluto está em m³/ha."]);
+        writer.Add(info, ["Erro amostral", $"Erro absoluto e erro amostral (%) do volume principal são calculados nos níveis de lote e projeto com IC t de {confidence:P0}, ponderação por área efetiva entre talhões e variância dentro de cada talhão. Exigem ao menos {minimumPlots:G} parcelas no total e duas por talhão. Graus de liberdade usam aproximação de Satterthwaite; não há correção para população finita porque o tamanho populacional por talhão não está disponível. O erro absoluto está em m³/ha."]);
         writer.Add(info, ["Modelos de volume", "Cada tipo usa a equação cadastrada. Modelos configurados como razão multiplicam o volume anterior da sequência; modelos de saída direta usam o valor calculado e o fator informado no resumo direto."]);
         if (vcccPairs > 0) writer.Add(info, ["Auditoria de hierarquia dos volumes", $"VTCC > VCCC: {vcccViolations:N0} violações em {vcccPairs:N0} árvores avaliadas."]);
         writer.Add(info, ["Volumes ausentes", "Fustes_sem_volume identifica DAP positivo sem volume válido; reveja os dados antes de interpretar VMI e totais."]);
@@ -317,10 +319,4 @@ public sealed class DirectInventorySummary : IDisposable
     }
     public void Dispose() { writer.Dispose(); if (!published && File.Exists(temporary)) File.Delete(temporary); }
 
-    private static double SamplingAbsoluteError(double[] values, double confidence)
-    {
-        double mean = values.Average();
-        double sd = Math.Sqrt(values.Sum(v => (v - mean) * (v - mean)) / (values.Length - 1));
-        return InventoryReport.StudentT(confidence, values.Length - 1) * sd / Math.Sqrt(values.Length);
-    }
 }

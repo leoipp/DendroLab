@@ -24,6 +24,9 @@ internal static partial class DesktopTests
         string spreadsheetPath = Path.Combine(root, "origem.xlsx");
         File.WriteAllBytes(spreadsheetPath, []);
         window.Session.AddFile(spreadsheetPath);
+        string vectorPath = Path.Combine(root, "talhoes.shp");
+        WriteSamplingSource(vectorPath, "ID", "PROJETO");
+        window.Session.AddFile(vectorPath);
         string outputPath = Path.Combine(root, "resultado.dlb");
         using (var writer = new CompactBankWriter(outputPath))
         {
@@ -77,15 +80,18 @@ internal static partial class DesktopTests
         var nodes = LogicalControls<TreeViewItem>(window.ContentsTree).ToArray();
         var sheetsRoot = nodes.Single(node => node.Header?.ToString() == "Planilhas");
         var databasesRoot = nodes.Single(node => node.Header?.ToString() == "Bancos de dados");
-        var vectorsRoot = nodes.Single(node => node.Header?.ToString() == "Dados vetoriais");
-        var basemapsRoot = nodes.Single(node => node.Header?.ToString() == "Mapas base");
+        var mapRoot = nodes.Single(node => node.Header?.ToString() == "GIS").Items.OfType<TreeViewItem>()
+            .Single(node => node.Header?.ToString() == "Mapa 1");
+        var vectorsRoot = mapRoot.Items.OfType<TreeViewItem>().Single(node => node.Header?.ToString() == "Dados vetoriais");
+        var basemapsRoot = mapRoot;
         var sourceNode = nodes.Single(node => node.Tag as string == spreadsheetPath);
+        var vectorNode = nodes.Single(node => node.Tag as string == vectorPath);
         var groupNode = nodes.Single(node => node.Header?.ToString() == "Grupo de planilhas QA");
         var resultTableNode = nodes.First(node => node.Header?.ToString() == "ESTATISTICAS INV");
         var chartNode = nodes.Single(node => node.Header?.ToString() == "Gráfico QA");
         var analysisNode = nodes.Single(node => node.Header?.ToString() == "Análise QA");
         var revisionNode = nodes.Single(node => node.Tag is MainWindow.ProcessingVersionReference);
-        var basemapNode = nodes.Single(node => node.Header?.ToString() == "OpenStreetMap");
+        var basemapNode = mapRoot.Items.OfType<TreeViewItem>().Single(node => node.Header?.ToString() == "OpenStreetMap");
 
         CheckMenuIcon(sheetsRoot, "Adicionar planilha…", CommandIconKind.Add);
         CheckMenuIcon(sheetsRoot, "Juntar tabelas…", CommandIconKind.Merge);
@@ -93,10 +99,9 @@ internal static partial class DesktopTests
         CheckMenuIcon(databasesRoot, "Adicionar banco DendroLab…", CommandIconKind.Database);
         CheckMenuIcon(vectorsRoot, "Criar grupo de dados vetoriais…", CommandIconKind.Folder);
         CheckMenuIcon(basemapsRoot, "Adicionar raster TIFF ou shapefile…", CommandIconKind.Add);
-        CheckMenuIcon(basemapNode, "Adicionar raster TIFF ou shapefile…", CommandIconKind.Add);
-        Check(!ContentMenuItems(basemapsRoot.ContextMenu!).Concat(ContentMenuItems(basemapNode.ContextMenu!))
+        Check(!ContentMenuItems(basemapsRoot.ContextMenu!)
             .Any(item => item.Header?.ToString()?.Contains("Adicionar mapa base", StringComparison.OrdinalIgnoreCase) == true),
-            "o mapa base mantém uma única referência e oferece adicionar camadas raster ou vetoriais");
+            "o mapa mantém uma única referência e oferece adicionar camadas raster ou vetoriais");
         CheckMenuIcon(sourceNode, "Abrir tabela", CommandIconKind.Table);
         CheckMenuIcon(sourceNode, "Copiar para o projeto…", CommandIconKind.Copy);
         CheckMenuIcon(sourceNode, "Worksheet e cabeçalho…", CommandIconKind.Settings);

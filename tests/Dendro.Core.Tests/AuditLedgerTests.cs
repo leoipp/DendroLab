@@ -52,4 +52,19 @@ public sealed class AuditLedgerTests
             "finding-1", "run-1", "Engenharia", "Core", "Defeito", "x", "Baixo", AuditStates.Identified,
             "x", null, null, 1.5, DateTimeOffset.UtcNow)));
     }
+
+    [Fact]
+    public void CatalogRecognitionIsExplicitlyNotAProductTest()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "DendroAuditTests", Guid.NewGuid().ToString("N"), "audit.db");
+        using var ledger = new AuditLedger(path);
+
+        var run = AuditRunner.RecordCatalogRecognition(ledger, "1.4.0-test");
+
+        Assert.Contains("não testadas", run.Status, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Nenhum fluxo ou cálculo foi executado", run.Summary);
+        Assert.Equal(10, AuditCatalog.InitialFeatures.Count);
+        Assert.All(AuditCatalog.InitialFeatures, feature => Assert.Equal("Não testado", feature.Status));
+        Assert.Equal(run.Id, Assert.Single(ledger.GetRuns()).Id);
+    }
 }

@@ -31,8 +31,12 @@ internal static partial class DesktopTests
             Check(!LogicalControls<TextBlock>(screen).Any(t => t.FontSize == 11 && t.Text.Length > 72),
                 screen.GetType().Name + " não mostra parágrafos explicativos em letras miúdas");
         }
-        var toolCards = ((ListBox)window.ToolContent.Content).Items.OfType<ListBoxItem>().ToArray();
-        Check(toolCards.Select(ShellVisuals.GetIcon).Distinct().Count() == toolCards.Length, "cada ferramenta tem seu próprio ícone");
+        var toolCards = ((ListBox)window.ToolContent.Content).Items.OfType<ListBoxItem>().Where(card => card.Tag is string).ToArray();
+        var duplicateIcons = toolCards.GroupBy(ShellVisuals.GetIcon).Where(group => group.Count() > 1)
+            .Select(group => group.Key + ": " + string.Join(", ", group.Select(card => card.Tag?.ToString() ?? "?")));
+        string duplicateIconText = string.Join("; ", duplicateIcons);
+        Check(toolCards.Select(ShellVisuals.GetIcon).Distinct().Count() == toolCards.Length,
+            "cada ferramenta tem seu próprio ícone: " + duplicateIconText);
         CaptureIconAtlas(root);
         var selectedTool = Ui.Text("Ferramenta escolhida pelo usuário"); window.SetTool(selectedTool);
         var definition = new JsonObject { ["kind"] = "increments", ["path"] = "",
@@ -87,7 +91,7 @@ internal static partial class DesktopTests
         var anomalyTool = (IsolationForestView)window.ToolContent.Content;
         var featureList = LogicalControls<ListBox>(anomalyTool).Single();
         featureList.SelectedItems.Add("X"); featureList.SelectedItems.Add("Y");
-        LogicalControls<Button>(anomalyTool).Single(b => b.Content?.ToString() == "Treinar modelo e gerar gráfico")
+        Controls<Button>(anomalyTool).Single(b => b.Content?.ToString() == "Treinar e gerar gráfico")
             .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
         Check(window.Session.Meta.Arr("anomaly_models").Count == 1, "Isolation Forest treina e salva modelo pela interface");
@@ -148,7 +152,7 @@ internal static partial class DesktopTests
         var filterBody=filterWorkspace.GraphBody;
         await filterFit.RegressionDataReady;
         Check(LogicalControls<TableBrowser>(filterWorkspace.DataContent!).Any(),"regressão apresenta dados em painel encaixável com filtros e paginação");
-        var filterPlot=filterBody.Children.OfType<ScatterPlot>().Single();
+        var filterPlot=LogicalControls<ScatterPlot>(filterBody).Single();
         var dataBrowser=LogicalControls<TableBrowser>(filterWorkspace.DataContent!).Single();
         var linkedGrid=LogicalControls<DataGrid>(dataBrowser).Single();
         linkedGrid.SelectedItem=linkedGrid.Items[0];
@@ -160,7 +164,7 @@ internal static partial class DesktopTests
         filterPlot.SelectRows(filtered.Rows);
         Check(filterPlot.SelectedRows.SequenceEqual(new[]{2}) && filterFit.CurrentConfig["excluded"]?.AsArray().Count is null or 0,
             "filtro destaca linhas no gráfico e não remove antes da confirmação");
-        Check(LogicalControls<Button>(filterBody).Single(b=>b.Content?.ToString()=="Remover selecionados").IsEnabled,
+        Check(Controls<Button>(dataBrowser).Single(b=>System.Windows.Automation.AutomationProperties.GetName(b)=="Remover seleção do ajuste (Ctrl+Delete)").IsEnabled,
             "seleção por filtro habilita confirmação da remoção");
         filterPlot.ConfirmRemoval();await Until(()=>!window.IsBusy && filterFit.CurrentConfig["excluded"]?.AsArray().Count==1);
         Check(filterFit.CurrentConfig["excluded"]!.AsArray()[0]!.GetValue<int>()==2,"confirmar remove somente a seleção filtrada da regressão");
@@ -187,63 +191,28 @@ internal static partial class DesktopTests
             "botões de modelos e dados ficam disponíveis na regressão ativa");
         await Application.Current.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         Capture(window,Path.Combine(root,"modelos-inicial.png"));
-        var modelPane=window.RegressionModelsPane!;var dataPane=window.RegressionDataPane!;
-        Check(ReferenceEquals(modelPane.Root.Manager,window.DockManager) && ReferenceEquals(dataPane.Root.Manager,window.DockManager)
-            && workspace.GraphBody.RowDefinitions.Count==2,"modelos e dados usam encaixe principal do aplicativo");
-        Check(!LogicalControls<Button>(workspace).Any(b=>b.Content?.ToString()=="Mostrar modelos"),"gráfico não contém botão Mostrar modelos");
+        var auxiliaryTabs=LogicalControls<TabControl>(workspace).Single(tabs=>tabs.Items.OfType<TabItem>().Any(item=>item.Header?.ToString()=="Modelos")
+            && tabs.Items.OfType<TabItem>().Any(item=>item.Header?.ToString()=="Dados do ajuste"));
+        Check(workspace.ModelsContent!=null && workspace.DataContent!=null && auxiliaryTabs.Items.Count==2
+            && workspace.RowDefinitions.Count==3,"modelos e dados ficam em abas encaixadas no documento do gráfico");
         var comparisonTable=LogicalControls<DataGrid>(workspace.ModelsContent!).Single();
         comparisonTable.SelectedIndex=1;
         Check(comparison.CurrentConfig.N("selected_fit",-1)==1,"selecionar modelo no painel lateral atualiza curvas");
-        ((LayoutAnchorablePane)modelPane.Parent).Children.Remove(modelPane);
-        ((LayoutAnchorablePane)window.ContentsPane.Parent).Children.Add(modelPane);modelPane.IsSelected=true;
-        ((LayoutAnchorablePane)dataPane.Parent).Children.Remove(dataPane);
-        ((LayoutAnchorablePane)window.ToolsPane.Parent).Children.Add(dataPane);dataPane.IsSelected=true;
-        Check(modelPane.Parent==window.ContentsPane.Parent && dataPane.Parent==window.ToolsPane.Parent,
-            "modelos agrupam com Conteúdos e dados agrupam com Ferramentas em abas");
-        modelPane.ToggleAutoHide();window.UpdateLayout();
-        Check(modelPane.IsAutoHidden,"modelos podem ser desafixados no encaixe principal");
-        modelPane.ToggleAutoHide();modelPane.Hide();modelPane.Show();modelPane.IsSelected=true;
-        Check(!modelPane.IsHidden,"painel pode fechar e reabrir sem botão sobre o gráfico");
-        dataPane.Float();await Application.Current.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        Check(dataPane.IsFloating,"dados podem ser destacados para janela flutuante");
-        dataPane.Dock();await Application.Current.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        Check(!dataPane.IsFloating,"dados retornam ao encaixe após flutuar");
-        modelPane.ToggleAutoHide();
+        window.RegressionModelsButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Check((auxiliaryTabs.SelectedItem as TabItem)?.Header?.ToString()=="Modelos","atalho de modelos seleciona a aba interna do gráfico");
+        window.RegressionDataButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Check((auxiliaryTabs.SelectedItem as TabItem)?.Header?.ToString()=="Dados do ajuste","atalho de dados seleciona a aba interna do gráfico");
         window.Document("other-chart-test","Outro documento",Ui.Text("Outra tabela"));
         Check(!window.RegressionModelsButton.IsEnabled && !window.RegressionDataButton.IsEnabled,
             "botões de regressão ficam desabilitados em outro documento");
-        Check(modelPane.IsHidden && dataPane.IsHidden,"outro documento recolhe painéis da regressão");
         comparisonDoc.IsActive=true;window.UpdateLayout();
         Check(window.RegressionModelsButton.IsEnabled && window.RegressionDataButton.IsEnabled,
             "botões de regressão reabilitam ao voltar ao documento correspondente");
-        Check(ReferenceEquals(window.RegressionModelsPane!.Content,workspace.ModelsContent) && ReferenceEquals(window.RegressionDataPane!.Content,workspace.DataContent),
-            "voltar ao gráfico recupera os respectivos modelos e dados");
-        Check(modelPane.IsAutoHidden && !window.ContentsPane.IsHidden && !window.ToolsPane.IsHidden,
-            "trocar documentos preserva alfinete e os demais painéis agrupados");
-        modelPane.ToggleAutoHide();
-        string regressionLayout=Path.Combine(root,"regression-layout.xml");window.SaveWorkspace(regressionLayout);
-        window.LoadWorkspace(regressionLayout);
-        await comparison.Generate("fit",true);await comparison.RegressionDataReady;
-        Check(window.RegressionModelsPane!.Parent==window.ContentsPane.Parent && window.RegressionDataPane!.Parent==window.ToolsPane.Parent,
-            "layout preserva agrupamento de modelos e dados ao reabrir");
-        window.ResetWorkspace();window.UpdateLayout();
-        Check(window.DockManager.Layout.Descendents().OfType<LayoutAnchorable>().Count(p=>p.ContentId=="regression-models")==1
-            && window.DockManager.Layout.Descendents().OfType<LayoutAnchorable>().Count(p=>p.ContentId=="regression-data")==1,
-            "restaurar layout mantém um único par de painéis ligado ao gráfico");
+        Check(ReferenceEquals(auxiliaryTabs.Items.OfType<TabItem>().Single(item=>item.Header?.ToString()=="Modelos").Content,workspace.ModelsContent)
+            && ReferenceEquals(auxiliaryTabs.Items.OfType<TabItem>().Single(item=>item.Header?.ToString()=="Dados do ajuste").Content,workspace.DataContent),
+            "voltar ao gráfico recupera as duas abas do documento");
         await Application.Current.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        window.SetRibbonPinned(false);window.UpdateLayout();
-        Capture(window,Path.Combine(root,"modelos-lateral.png"));
-        window.RegressionModelsPane!.IsActive=true;
-        await Application.Current.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        var activePanel=Controls<AvalonDock.Controls.LayoutAnchorableControl>(window).Single(c=>ReferenceEquals(c.Model,window.RegressionModelsPane));
-        var activeHeader=(Border)activePanel.Template.FindName("Header",activePanel);
-        Check(activeHeader.Background is System.Windows.Media.SolidColorBrush activeBrush && activeBrush.Color==System.Windows.Media.Color.FromRgb(33,102,157),
-            "cabeçalho do painel ativo fica azul e acompanha os controles brancos do tema");
-        Capture(window,Path.Combine(root,"painel-ativo.png"));
-        window.ToolsPane.IsActive=true;
-        await Application.Current.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        Check(activeHeader.Background is System.Windows.Media.SolidColorBrush inactiveBrush && inactiveBrush.Color!=System.Windows.Media.Color.FromRgb(33,102,157),
-            "painel anterior perde destaque ao selecionar outro painel");
+        Capture(window,Path.Combine(root,"modelos-no-grafico.png"));
         var reverseChart=new JsonObject{["path"]=comparisonSource,["sheet"]="Dados",["x"]="Y",["y"]="X",["title"]="Eixos invertidos"};
         window.Session.StoreChart(reverseChart);
         var cleaner=new IntegratedCleaningView(window,window.Session);window.SetTool(cleaner);

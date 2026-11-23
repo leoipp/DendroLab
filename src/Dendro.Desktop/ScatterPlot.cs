@@ -39,6 +39,7 @@ internal sealed class ScatterPlot : FrameworkElement
     private PlotSelectionIndex index = PlotSelectionIndex.Empty();
     private CancellationTokenSource? selectionCancellation;
     internal Task SelectionCompletion { get; private set; } = Task.CompletedTask;
+    internal bool IsSceneReady => preparedScene is { } ready && ready.Generation == sceneGeneration && !scenePending;
     internal int SceneBuilds { get; private set; }
     private static void CancelSafely(CancellationTokenSource? source)
     {

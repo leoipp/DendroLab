@@ -1,5 +1,22 @@
 # Banco DLB do projeto
 
+## Proteção dos dados
+
+O formato atual `DNDRDB05` cifra catálogo e blocos com AES-256-GCM. Cada arquivo
+recebe uma chave aleatória de dados; a senha deriva uma chave de proteção com
+PBKDF2-HMAC-SHA-256 (600.000 iterações) e essa chave protege a chave de dados.
+Os blocos são cifrados em quadros autenticados de 1 MiB. A autenticação detecta
+alterações antes de entregar o conteúdo ao leitor. A senha não fica armazenada
+no arquivo. Use uma senha longa e mantenha cópia segura: não há recuperação se
+ela for perdida. Proteja também backups, exports e a conta do Windows.
+
+Projetos legados `DNDRDB02`–`DNDRDB04` continuam sendo lidos. Ao salvar um DLB
+legado no aplicativo, ele pede uma senha e converte o arquivo completo por
+streaming para `DNDRDB05`, preservando o original até a substituição atômica.
+Novos projetos já são criados cifrados. Essa proteção é do arquivo DLB; os ZIPs
+de modelos exportados e outros arquivos criados fora dele não são cifrados por
+essa camada.
+
 O formato DLB é um armazenamento autoral do DendroLab em C#/.NET. **`MeuProjeto.dlb`
 é o projeto inteiro e seu único arquivo físico**: configuração, vínculos, histórico
 de processamento, tabelas de entrada copiadas, junções, estratos e resultados
@@ -37,13 +54,15 @@ inteira, mesmo com um filtro ativo, sem remover linhas ou outras tabelas. É obr
 manter ao menos uma coluna. A proteção de versões históricas e de alterações concorrentes
 é a mesma da exclusão de linhas.
 
-## Organização binária, versão 2
+## Organização binária
 
-- Assinatura `DNDRDB02` e posição de 64 bits do catálogo final.
+- DLB legado em texto claro usa a assinatura `DNDRDB02` e posição de 64 bits do catálogo final. As versões anteriores continuam legíveis para migração.
+- DLB protegido usa a assinatura `DNDRDB05`, metadados para desbloquear a chave de dados e dois slots alternados para publicar catálogo/generation. O catálogo JSON é cifrado e autenticado com AES-256-GCM; o hash SHA-256 do slot cobre o envelope cifrado.
+- Cada segmento comprimido do bloco é cifrado em quadros AES-256-GCM de até 1 MiB, com nonce aleatório e autenticação por quadro. A leitura autentica cada quadro antes de descomprimir/entregar os dados.
 - Blocos independentes com valores organizados por coluna antes da compressão
   Brotli. Cada célula distingue nulo, número de ponto flutuante e texto UTF-8;
   texto vazio continua diferente de nulo. Datas do Excel mantêm a representação
-  numérica já usada pelo motor. NaN/infinito são armazenados como nulo.
+  numérica já usada pelo motor. NaN/infinito são armazenados como nulo. No formato protegido, a cifra envolve cada segmento Brotli.
 - Catálogo JSON versionado com ID e nome da tabela, colunas, total de linhas e
   posição, tamanho, primeira linha, quantidade de linhas e SHA-256 de cada bloco.
 - Paginação busca os blocos correspondentes sem percorrer os dados anteriores;

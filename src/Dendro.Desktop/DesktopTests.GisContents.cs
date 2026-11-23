@@ -18,19 +18,23 @@ internal static partial class DesktopTests
         foreach (var node in window.ContentsTree.Items.OfType<TreeViewItem>()) node.IsExpanded = false;
         window.ContentSearch.Text = "filtro que não corresponde às camadas";
         string shape = Path.Combine(root, "talhoes.shp"), raster = Path.Combine(root, "imagem.tif");
+        WriteSamplingSource(shape, "REF_ID", "PROJETO");
+        File.WriteAllBytes(raster, []);
         window.Session.AddFile(shape);
         window.Session.AddFile(raster);
+        window.Session.Meta["gis_basemap"] = "openstreetmap";
+        window.Session.Touch();
         window.RevealAddedContents([shape, raster]);
         await Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-        foreach (var (title, path) in new[] { ("Dados vetoriais", shape), ("Mapas base", raster) })
-        {
-            var parent = window.ContentsTree.Items.OfType<TreeViewItem>().Single(node => node.Header?.ToString() == title);
-            Check(parent.IsExpanded, title + " expandido após adicionar camada");
-            Check(parent.Items.OfType<TreeViewItem>().Any(node => node.Tag is string value && value == path), path + " registrado na árvore");
-        }
+        var mapNode = window.ContentsTree.Items.OfType<TreeViewItem>().SelectMany(node => node.Items.OfType<TreeViewItem>())
+            .Single(node => node.Header?.ToString() == "Mapa 1");
+        Check(mapNode.IsExpanded, "mapa expandido após adicionar camadas");
+        var registered = LogicalControls<TreeViewItem>(window.ContentsTree).Where(node => node.Tag is string path
+            && (path == shape || path == raster)).Select(node => node.Tag as string).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Check(registered.Contains(shape) && registered.Contains(raster),
+            "camadas vetorial e raster registradas no mapa: " + string.Join(", ", registered));
         Check(window.ContentSearch.Text.Length == 0, "filtro removido para exibir novos conteúdos");
         string second = Path.Combine(root, "outra_origem.shp"), external = Path.Combine(root, "externo.shp");
-        WriteSamplingSource(shape, "REF_ID", "PROJETO");
         WriteSamplingSource(second, "TALHAO", "FAZENDA");
         WriteSamplingSource(external, "CODIGO", "REGIONAL");
         var sampling = new ForestSamplingView(window, [shape, second], _ => Task.CompletedTask);
@@ -113,6 +117,7 @@ internal static partial class DesktopTests
         await AuditManual(window, root);
         window.Close();
         File.WriteAllText(Path.Combine(root, "self-test.log"), $"{checks} verificações aprovadas.");
+
     }
 
     private static void WriteSamplingSource(string path, string id, string project)

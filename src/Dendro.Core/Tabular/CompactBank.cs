@@ -19,45 +19,60 @@ internal static class CompactBankFormat
     internal static readonly byte[] LegacyMagic = "DNDRDB02"u8.ToArray();
     internal static readonly byte[] PreviousMagic = "DNDRDB03"u8.ToArray();
     internal static readonly byte[] Magic = "DNDRDB04"u8.ToArray();
+    internal static readonly byte[] EncryptedMagic = "DNDRDB05"u8.ToArray();
     internal const int HeaderBytes = 184;
+    internal const int EncryptedHeaderBytes = 272;
     private const int RootBytes = 88;
     private const int RootSlotsOffset = 8;
+    private const int EncryptedRootSlotsOffset = 96;
 
     internal static bool IsAppendable(string path)
     {
         if (!File.Exists(path)) return false;
         Span<byte> magic = stackalloc byte[8];
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Write | FileShare.Delete);
-        try { stream.ReadExactly(magic); return magic.SequenceEqual(PreviousMagic) || magic.SequenceEqual(Magic); }
+        try { stream.ReadExactly(magic); return magic.SequenceEqual(PreviousMagic) || magic.SequenceEqual(Magic) || magic.SequenceEqual(EncryptedMagic); }
         catch (EndOfStreamException) { return false; }
     }
 
-    internal static void WriteHeader(Stream stream)
+    internal static void WriteHeader(Stream stream, DlbEncryptionKey? key = null)
     {
-        stream.Write(Magic);
-        stream.Write(new byte[HeaderBytes - Magic.Length]);
+        if (key is null)
+        {
+            stream.Write(Magic);
+            stream.Write(new byte[HeaderBytes - Magic.Length]);
+            return;
+        }
+        stream.Write(EncryptedMagic);
+        stream.Write(key.HeaderPayload());
+        stream.Write(new byte[EncryptedRootSlotsOffset - 8 - DlbEncryptionKey.HeaderPayloadBytes]);
+        stream.Write(new byte[EncryptedHeaderBytes - EncryptedRootSlotsOffset]);
     }
 
-    internal static CompactRoot PublishCatalog(FileStream stream, long generation, CompactCatalog catalog)
+    internal static CompactRoot PublishCatalog(FileStream stream, long generation, CompactCatalog catalog, DlbEncryptionKey? key = null)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(catalog);
         if (json.Length is < 1 or > 32 * 1024 * 1024)
             throw new InvalidDataException("Catálogo acima de 32 MB.");
+        bool encrypted = IsEncrypted(stream);
+        if (encrypted && key is null) throw new InvalidDataException("A chave é necessária para atualizar o catálogo DLB criptografado.");
+        byte[] payload = encrypted ? key!.EncryptCatalog(json, generation) : json;
         long offset = stream.Length;
         stream.Position = offset;
         using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
         {
-            writer.Write(json.Length);
-            writer.Write(json);
+            writer.Write(payload.Length);
+            writer.Write(payload);
             writer.Flush();
         }
         stream.Flush(true);
-        byte[] catalogHash = SHA256.HashData(json);
-        PublishRoot(stream, generation, offset, json.Length, catalogHash);
-        return new(generation, offset, json.Length, catalogHash);
+        byte[] catalogHash = SHA256.HashData(payload);
+        long rootOffset = IsEncrypted(stream) ? EncryptedRootSlotsOffset : RootSlotsOffset;
+        PublishRoot(stream, generation, offset, payload.Length, catalogHash, rootOffset);
+        return new(generation, offset, payload.Length, catalogHash);
     }
 
-    internal static CompactRoot PublishAppend(FileStream stream, long generation, CompactCatalog catalog)
+    internal static CompactRoot PublishAppend(FileStream stream, long generation, CompactCatalog catalog, DlbEncryptionKey? key = null)
     {
         bool hasSegmentedBlocks = catalog.Tables.Any(table => table.Blocks.Any(block => block.Segments is { Length: > 0 }));
         if (hasSegmentedBlocks)
@@ -72,10 +87,10 @@ internal static class CompactBankFormat
                 stream.Flush(true);
             }
         }
-        return PublishCatalog(stream, generation, catalog);
+        return PublishCatalog(stream, generation, catalog, key);
     }
 
-    internal static void PublishRoot(FileStream stream, long generation, long offset, int catalogBytes, ReadOnlySpan<byte> catalogHash)
+    internal static void PublishRoot(FileStream stream, long generation, long offset, int catalogBytes, ReadOnlySpan<byte> catalogHash, long rootSlotsOffset = RootSlotsOffset)
     {
         if (catalogHash.Length != 32) throw new ArgumentException("SHA-256 do catálogo inválido.", nameof(catalogHash));
         byte[] root = new byte[RootBytes];
@@ -86,26 +101,35 @@ internal static class CompactBankFormat
         catalogHash.CopyTo(root.AsSpan(24, 32));
         SHA256.HashData(root.AsSpan(0, 56)).CopyTo(root.AsSpan(56, 32));
         int slot = (int)(generation & 1);
-        stream.Position = RootSlotsOffset + (long)slot * RootBytes;
+        stream.Position = rootSlotsOffset + (long)slot * RootBytes;
         stream.Write(root);
         stream.Flush(true);
     }
 
-    internal static (CompactCatalog Catalog, CompactRoot Root) ReadLatestCatalog(FileStream stream)
+    internal static (CompactCatalog Catalog, CompactRoot Root) ReadLatestCatalog(FileStream stream, DlbEncryptionKey? key = null)
     {
+        Span<byte> magic = stackalloc byte[8];
+        stream.Position = 0;
+        stream.ReadExactly(magic);
+        bool encrypted = magic.SequenceEqual(EncryptedMagic);
+        if (!encrypted && !magic.SequenceEqual(PreviousMagic) && !magic.SequenceEqual(Magic))
+            throw new InvalidDataException("Formato de banco DendroLab inválido.");
+        long headerBytes = encrypted ? EncryptedHeaderBytes : HeaderBytes;
+        long rootSlotsOffset = encrypted ? EncryptedRootSlotsOffset : RootSlotsOffset;
+        if (encrypted && key is null) throw new InvalidDataException("Este arquivo DLB é protegido por senha.");
         using var reader = new BinaryReader(stream, Encoding.UTF8, true);
         var candidates = new List<CompactRoot>(2);
         for (int slot = 0; slot < 2; slot++)
         {
             byte[] bytes = new byte[RootBytes];
-            stream.Position = RootSlotsOffset + (long)slot * RootBytes;
+            stream.Position = rootSlotsOffset + (long)slot * RootBytes;
             try { stream.ReadExactly(bytes); }
             catch (EndOfStreamException) { continue; }
             if (!SHA256.HashData(bytes.AsSpan(0, 56)).AsSpan().SequenceEqual(bytes.AsSpan(56, 32))) continue;
             long generation = BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(0, 8));
             long offset = BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(8, 8));
             int length = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(16, 4));
-            if (generation < 0 || offset < HeaderBytes || length is < 1 or > 32 * 1024 * 1024
+            if (generation < 0 || offset < headerBytes || length is < 1 or > 32 * 1024 * 1024 + 64
                 || offset > stream.Length - 4 - length) continue;
             candidates.Add(new(generation, offset, length, bytes.AsSpan(24, 32).ToArray()));
         }
@@ -119,10 +143,18 @@ internal static class CompactBankFormat
                 byte[] json = reader.ReadBytes(root.CatalogBytes);
                 if (json.Length != root.CatalogBytes) continue;
                 if (!SHA256.HashData(json).AsSpan().SequenceEqual(root.CatalogHash)) continue;
-                var catalog = JsonSerializer.Deserialize<CompactCatalog>(json);
-                if (catalog == null || catalog.Version != 2 || catalog.Tables is not { Length: > 0 }) continue;
-                CompactBankReader.ValidateCatalog(catalog, root.CatalogOffset, HeaderBytes);
-                return (catalog, root);
+                byte[] plaintext = encrypted ? key!.DecryptCatalog(json, root.Generation) : json;
+                try
+                {
+                    var catalog = JsonSerializer.Deserialize<CompactCatalog>(plaintext);
+                    if (catalog == null || catalog.Version != 2 || catalog.Tables is not { Length: > 0 }) continue;
+                    CompactBankReader.ValidateCatalog(catalog, root.CatalogOffset, headerBytes);
+                    return (catalog, root);
+                }
+                finally
+                {
+                    if (encrypted) CryptographicOperations.ZeroMemory(plaintext);
+                }
             }
             catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or ArgumentException or OverflowException or NullReferenceException)
             {
@@ -130,6 +162,14 @@ internal static class CompactBankFormat
             }
         }
         throw new InvalidDataException("O banco DendroLab não contém um índice válido recuperável.");
+    }
+
+    private static bool IsEncrypted(FileStream stream)
+    {
+        Span<byte> magic = stackalloc byte[8];
+        stream.Position = 0; stream.ReadExactly(magic);
+        stream.Position = stream.Length;
+        return magic.SequenceEqual(EncryptedMagic);
     }
 }
 
@@ -140,7 +180,8 @@ public sealed class CompactBankReader : IDisposable
     public const int MaximumBlockBytes = 320 * 1024 * 1024;
     public const long MaximumRowBytes = 256L * 1024 * 1024;
     internal static readonly byte[] Magic = CompactBankFormat.Magic;
-    private sealed record CachedCatalog(long Length, long LastWriteUtcTicks, CompactCatalog Catalog, long Generation, long EstimatedBytes, long CacheId);
+    internal static readonly byte[] EncryptedMagic = CompactBankFormat.EncryptedMagic;
+    private sealed record CachedCatalog(long Length, long LastWriteUtcTicks, CompactCatalog Catalog, long Generation, string? KeyFingerprint, long EstimatedBytes, long CacheId);
     private static readonly ConcurrentDictionary<string, CachedCatalog> CatalogCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object CatalogCacheLock = new();
     private static readonly Queue<(string Path, long CacheId)> CatalogCacheOrder = new();
@@ -149,6 +190,8 @@ public sealed class CompactBankReader : IDisposable
     private const int MaximumCachedCatalogs = 128;
     private const long MaximumCatalogCacheBytes = 256L * 1024 * 1024;
     private readonly FileStream stream;
+    private readonly DlbEncryptionKey? encryptionKey;
+    private readonly bool encrypted;
     /// <summary>Immutable catalog snapshot. Nested arrays are shared with the bounded catalog cache.</summary>
     public CompactCatalog Catalog { get; }
     internal long Generation { get; }
@@ -227,13 +270,22 @@ public sealed class CompactBankReader : IDisposable
         stream = File.Open(location.File, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Write | FileShare.Delete);
         try
         {
+            Span<byte> fileMagic = stackalloc byte[8];
+            stream.ReadExactly(fileMagic);
+            encrypted = fileMagic.SequenceEqual(CompactBankFormat.EncryptedMagic);
+            encryptionKey = encrypted ? DlbEncryptionSession.Current
+                ?? throw new InvalidDataException("Este arquivo DLB é protegido por senha.") : null;
+            stream.Position = 0;
             string catalogPath = Path.GetFullPath(location.File);
             var file = new FileInfo(catalogPath);
             long length = file.Length, lastWrite = file.LastWriteTimeUtc.Ticks;
+            string? keyFingerprint = encrypted
+                ? Convert.ToHexString(SHA256.HashData(encryptionKey!.DataKey)) : null;
             CompactCatalog? fullCatalog = null;
             long generation = 0;
             if (CatalogCache.TryGetValue(catalogPath, out var cached)
-                && cached.Length == length && cached.LastWriteUtcTicks == lastWrite)
+                && cached.Length == length && cached.LastWriteUtcTicks == lastWrite
+                && string.Equals(cached.KeyFingerprint, keyFingerprint, StringComparison.Ordinal))
             {
                 fullCatalog = cached.Catalog;
                 generation = cached.Generation;
@@ -255,9 +307,10 @@ public sealed class CompactBankReader : IDisposable
                     ValidateCatalog(fullCatalog, index, 16);
                 }
                 else if (magic.SequenceEqual(CompactBankFormat.PreviousMagic)
-                    || magic.SequenceEqual(CompactBankFormat.Magic))
+                    || magic.SequenceEqual(CompactBankFormat.Magic)
+                    || magic.SequenceEqual(CompactBankFormat.EncryptedMagic))
                 {
-                    var snapshot = CompactBankFormat.ReadLatestCatalog(stream);
+                    var snapshot = CompactBankFormat.ReadLatestCatalog(stream, encryptionKey);
                     fullCatalog = snapshot.Catalog;
                     generation = snapshot.Root.Generation;
                 }
@@ -269,7 +322,7 @@ public sealed class CompactBankReader : IDisposable
                         catalogCacheBytes -= previous.EstimatedBytes;
                     if (estimatedBytes <= MaximumCatalogCacheBytes)
                     {
-                        var entry = new CachedCatalog(length, lastWrite, fullCatalog, generation, estimatedBytes,
+                        var entry = new CachedCatalog(length, lastWrite, fullCatalog, generation, keyFingerprint, estimatedBytes,
                             ++catalogCacheSequence);
                         CatalogCache[catalogPath] = entry;
                         CatalogCacheOrder.Enqueue((catalogPath, entry.CacheId));
@@ -287,6 +340,8 @@ public sealed class CompactBankReader : IDisposable
                 }
             }
             Generation = generation;
+            if (encrypted && fullCatalog!.Tables.Any(table => table.Blocks.Any(block => block.Segments is not { Length: > 0 })))
+                throw new InvalidDataException("O DLB criptografado contém bloco sem quadros autenticados.");
             // Catalogs can contain tens of thousands of block descriptors for very large tables.
             // They are immutable after parsing, so share the cached snapshot instead of copying
             // every table, column, block, and segment each time a reader is opened.
@@ -296,6 +351,11 @@ public sealed class CompactBankReader : IDisposable
                 Catalog = Catalog with { Tables = Catalog.Tables.Where(t => t.Dataset == location.Dataset).ToArray() };
                 if (Catalog.Tables.Length == 0) throw new InvalidDataException("Tabela de origem não encontrada no banco do projeto.");
             }
+        }
+        catch (EndOfStreamException ex)
+        {
+            stream.Dispose();
+            throw new InvalidDataException("Arquivo DLB incompleto ou truncado.", ex);
         }
         catch { stream.Dispose(); throw; }
     }
@@ -379,15 +439,19 @@ public sealed class CompactBankReader : IDisposable
                 using var aggregateHash = sourceColumns.Length == table.Columns.Length
                     ? IncrementalHash.CreateHash(HashAlgorithmName.SHA256)
                     : null;
-                foreach (var segment in segments)
+                for (int segmentIndex = 0; segmentIndex < segments.Length; segmentIndex++)
                 {
+                    var segment = segments[segmentIndex];
                     bool needed = false;
                     for (int column = segment.FirstColumn; column < segment.FirstColumn + segment.ColumnCount; column++)
                         if (outputColumn[column] >= 0) { needed = true; break; }
                     if (!needed) continue;
                     stream.Position = block.Offset + segment.Offset;
                     using var segmentStream = new HashedBlockStream(stream, segment.Bytes, aggregateHash);
-                    using var segmentBrotli = new BrotliStream(segmentStream, CompressionMode.Decompress, true);
+                    using Stream payload = encrypted
+                        ? encryptionKey!.DecryptFrames(segmentStream, DlbEncryptionKey.SegmentAad(block.FirstRow, segmentIndex))
+                        : segmentStream;
+                    using var segmentBrotli = new BrotliStream(payload, CompressionMode.Decompress, true);
                     using var segmentReader = new BinaryReader(segmentBrotli, Encoding.UTF8, true);
                     int lastColumn = segment.FirstColumn + segment.ColumnCount;
                     for (int column = segment.FirstColumn; column < lastColumn; column++)
@@ -407,6 +471,7 @@ public sealed class CompactBankReader : IDisposable
                         }
                     }
                     if (segmentBrotli.ReadByte() != -1) throw new InvalidDataException("Tamanho de segmento inconsistente.");
+                    if (encrypted) payload.CopyTo(Stream.Null);
                     segmentStream.Drain();
                     if (!CryptographicOperations.FixedTimeEquals(segmentStream.Finish(), Convert.FromHexString(segment.Hash)))
                         throw new InvalidDataException("Segmento de coluna corrompido no banco do projeto.");
@@ -464,30 +529,38 @@ public sealed class CompactBankReader : IDisposable
 
 public sealed class CompactBankWriter : IDisposable
 {
-    private sealed class State(string id, string name, string[] columns)
+    private sealed class State(string id, string name, string[] columns, string dataset)
     {
         public readonly string Id = id, Name = name;
         public readonly string[] Columns = columns;
+        public readonly string Dataset = dataset;
         public long Rows;
         public readonly List<object?[]> Pending = [];
         public readonly List<CompactBlock> Blocks = [];
     }
     private readonly FileStream stream;
+    private readonly DlbEncryptionKey? encryptionKey;
     private readonly Dictionary<string, State> tables = new();
     private long pendingBytes;
     private bool complete;
     private const int ColumnsPerSegment = 8;
-    public CompactBankWriter(string path)
+    public CompactBankWriter(string path) : this(path, DlbEncryptionSession.Current) { }
+
+    public CompactBankWriter(string path, DlbEncryptionKey? key)
     {
+        encryptionKey = key;
         stream = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
-        CompactBankFormat.WriteHeader(stream);
+        CompactBankFormat.WriteHeader(stream, encryptionKey);
     }
     public string AddTable(string[] columns, string name = "Dados")
+        => AddTable(columns, name, "", null);
+
+    internal string AddTable(string[] columns, string name, string dataset, string? id)
     {
         if (complete || columns.Length is < 1 or > 65536) throw new InvalidOperationException("Tabela inválida ou banco concluído.");
-        string id = "t" + tables.Count;
-        tables.Add(id, new(id, name, columns.ToArray()));
-        return id;
+        string tableId = id ?? "t" + tables.Count;
+        tables.Add(tableId, new(tableId, name, columns.ToArray(), dataset));
+        return tableId;
     }
     public void Add(string id, object?[] row)
         => AddCore(id, row, takeOwnership: false);
@@ -561,10 +634,17 @@ public sealed class CompactBankWriter : IDisposable
                 int firstColumn = segmentIndex * ColumnsPerSegment;
                 int columnCount = Math.Min(ColumnsPerSegment, table.Columns.Length - firstColumn);
                 int segmentOffset = checked((int)(stream.Position - blockOffset));
-                stream.Write(payloads[segmentIndex]);
-                blockHash.AppendData(payloads[segmentIndex]);
-                segments.Add(new(firstColumn, columnCount, segmentOffset, payloads[segmentIndex].Length,
-                    hashes[segmentIndex]));
+                byte[] payload = payloads[segmentIndex];
+                if (encryptionKey is { } key)
+                {
+                    using var encrypted = new MemoryStream(payload.Length + payload.Length / DlbEncryptionKey.FrameBytes * 32 + 64);
+                    key.EncryptFrames(encrypted, payload, DlbEncryptionKey.SegmentAad(table.Rows - table.Pending.Count, segmentIndex));
+                    payload = encrypted.ToArray();
+                    hashes[segmentIndex] = Convert.ToHexString(SHA256.HashData(payload));
+                }
+                stream.Write(payload);
+                blockHash.AppendData(payload);
+                segments.Add(new(firstColumn, columnCount, segmentOffset, payload.Length, hashes[segmentIndex]));
             }
             int blockBytes = checked((int)(stream.Position - blockOffset));
             table.Blocks.Add(new(blockOffset, blockBytes, table.Rows - table.Pending.Count,
@@ -578,8 +658,8 @@ public sealed class CompactBankWriter : IDisposable
         if (complete || tables.Count == 0) throw new InvalidOperationException("Banco vazio ou concluído.");
         Flush();
         var catalog = new CompactCatalog(2, tables.Values.Select(t =>
-            new CompactTable(t.Id, t.Name, t.Columns, t.Rows, t.Blocks.ToArray())).ToArray());
-        CompactBankFormat.PublishCatalog(stream, 0, catalog);
+            new CompactTable(t.Id, t.Name, t.Columns, t.Rows, t.Blocks.ToArray(), t.Dataset)).ToArray());
+        CompactBankFormat.PublishCatalog(stream, 0, catalog, encryptionKey);
         complete = true;
     }
     public void Dispose() => stream.Dispose();

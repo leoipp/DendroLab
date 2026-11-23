@@ -16,7 +16,8 @@ public static class CompactBankFile
             stream.ReadExactly(magic);
             return magic.SequenceEqual(CompactBankFormat.LegacyMagic)
                 || magic.SequenceEqual(CompactBankFormat.PreviousMagic)
-                || magic.SequenceEqual(CompactBankFormat.Magic);
+                || magic.SequenceEqual(CompactBankFormat.Magic)
+                || magic.SequenceEqual(CompactBankFormat.EncryptedMagic);
         }
         catch (EndOfStreamException) { return false; }
     }
@@ -93,6 +94,81 @@ public static class CompactBankFile
         return (new FileInfo(bank).Length, activeBytes);
     }
 
+    /// <summary>Streams a legacy plaintext bank into the authenticated encrypted format before replacing it.</summary>
+    public static void EncryptInPlace(string path, DlbEncryptionKey key, CancellationToken cancellation = default,
+        Action<long, long>? progress = null)
+    {
+        string bank = Location(path).File;
+        if (!File.Exists(bank)) throw new FileNotFoundException("O arquivo DLB não foi encontrado.", bank);
+        if (DlbEncryptionKey.IsEncryptedFile(bank)) return;
+        using var lease = SharedFileLock.Acquire(bank + ".write.lock", cancellation);
+        string temporary = bank + ".encrypt-" + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            CompactTable[] tables;
+            using (var reader = new CompactBankReader(bank)) tables = reader.Catalog.Tables;
+            long total = tables.Sum(table => table.Rows), copied = 0;
+            using (var input = new CompactBankReader(bank))
+            using (var output = new CompactBankWriter(temporary, key))
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                foreach (var table in tables)
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    string id = output.AddTable(table.Columns, table.Name, table.Dataset, table.Id);
+                    foreach (var row in input.Rows(table))
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        output.AddOwned(id, row);
+                        copied++;
+                        if (watch.ElapsedMilliseconds >= 150)
+                        {
+                            progress?.Invoke(copied, total);
+                            watch.Restart();
+                        }
+                    }
+                }
+                output.Complete();
+            }
+            cancellation.ThrowIfCancellationRequested();
+            File.Move(temporary, bank, true);
+            CompactBankReader.InvalidateCatalog(bank);
+            progress?.Invoke(total, total);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    private static void RewriteEncryption(string source, string destination, DlbEncryptionKey? targetKey,
+        CancellationToken cancellation, Action<long, long>? progress)
+    {
+        CompactTable[] tables;
+        using (var reader = new CompactBankReader(source)) tables = reader.Catalog.Tables;
+        long total = tables.Sum(table => table.Rows), copied = 0;
+        using (var input = new CompactBankReader(source))
+        using (var output = new CompactBankWriter(destination, targetKey))
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            foreach (var table in tables)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                string id = output.AddTable(table.Columns, table.Name, table.Dataset, table.Id);
+                foreach (var row in input.Rows(table))
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    output.AddOwned(id, row);
+                    copied++;
+                    if (watch.ElapsedMilliseconds >= 150)
+                    {
+                        progress?.Invoke(copied, total);
+                        watch.Restart();
+                    }
+                }
+            }
+            output.Complete();
+        }
+        progress?.Invoke(total, total);
+    }
+
     /// <summary>Rewrites only live blocks into a fresh v4 bank and atomically replaces the old file.</summary>
     public static void Compact(string path, CancellationToken cancellation = default, Action<long, long>? progress = null)
     {
@@ -115,7 +191,7 @@ public static class CompactBankFile
                 FileShare.Read | FileShare.Write | FileShare.Delete))
             using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                CompactBankFormat.WriteHeader(output);
+                CompactBankFormat.WriteHeader(output, DlbEncryptionSession.Current);
                 byte[] buffer = new byte[65536];
                 var rewritten = new List<CompactTable>(tables.Length);
                 foreach (var table in tables)
@@ -151,7 +227,7 @@ public static class CompactBankFile
                     rewritten.Add(table with { Blocks = blocks.ToArray() });
                 }
                 cancellation.ThrowIfCancellationRequested();
-                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, rewritten.ToArray()));
+                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, rewritten.ToArray()), DlbEncryptionSession.Current);
             }
             cancellation.ThrowIfCancellationRequested();
             File.Move(temporary, bank, true);
@@ -221,7 +297,7 @@ public static class CompactBankFile
         {
             using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                CompactBankFormat.WriteHeader(output);
+                CompactBankFormat.WriteHeader(output, DlbEncryptionSession.Current);
                 var rewritten = new List<CompactTable>(tables.Count);
                 using var data = File.OpenRead(location.File);
                 byte[] buffer = new byte[65536];
@@ -250,7 +326,7 @@ public static class CompactBankFile
                     }
                     rewritten.Add(table with { Blocks = blocks.ToArray() });
                 }
-                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, rewritten.ToArray()));
+                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, rewritten.ToArray()), DlbEncryptionSession.Current);
             }
             File.Move(temporary, location.File, true);
             CompactBankReader.InvalidateCatalog(location.File);
@@ -299,7 +375,7 @@ public static class CompactBankFile
     private static void AppendCatalog(string path, CompactCatalog catalog, long generation)
     {
         using (var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read | FileShare.Write | FileShare.Delete))
-            CompactBankFormat.PublishAppend(stream, generation, catalog);
+            CompactBankFormat.PublishAppend(stream, generation, catalog, DlbEncryptionSession.Current);
         CompactBankReader.InvalidateCatalog(path);
         CompactIfWasteful(path);
     }
@@ -321,10 +397,43 @@ public static class CompactBankFile
 
     private static void ImportCore(string destination, IReadOnlyList<(string Source, string Dataset)> incoming, bool replace, CompactTable? replacedTable,
         CancellationToken cancellation = default, Action<long, long>? progress = null, IReadOnlyCollection<string>? removeDatasets = null, bool lockHeld = false,
-        IReadOnlyCollection<(string Dataset, string Id)>? removeTables = null)
+        IReadOnlyCollection<(string Dataset, string Id)>? removeTables = null, bool encryptionNormalized = false)
     {
         destination = Path.GetFullPath(destination);
         if (incoming.Count == 0) return;
+        bool destinationEncrypted = File.Exists(destination)
+            ? DlbEncryptionKey.IsEncryptedFile(destination) : DlbEncryptionSession.Current != null;
+        if (!encryptionNormalized && incoming.Any(item => DlbEncryptionKey.IsEncryptedFile(Location(item.Source).File) != destinationEncrypted))
+        {
+            var converted = new List<(string Source, string Dataset)>();
+            var temporaryFiles = new List<string>();
+            try
+            {
+                foreach (var item in incoming)
+                {
+                    string source = Location(item.Source).File;
+                    if (DlbEncryptionKey.IsEncryptedFile(source) == destinationEncrypted)
+                    {
+                        converted.Add(item);
+                        continue;
+                    }
+                    string normalized = Path.Combine(Path.GetTempPath(), "DendroLab-convert-" + Guid.NewGuid().ToString("N") + ".dlb");
+                    temporaryFiles.Add(normalized);
+                    RewriteEncryption(source, normalized, destinationEncrypted ? DlbEncryptionSession.Current
+                        ?? throw new InvalidDataException("A chave do projeto é necessária para importar dados ao DLB criptografado.") : null,
+                        cancellation, progress);
+                    converted.Add((normalized, item.Dataset));
+                }
+                ImportCore(destination, converted, replace, replacedTable, cancellation, progress, removeDatasets,
+                    lockHeld, removeTables, encryptionNormalized: true);
+            }
+            finally
+            {
+                foreach (string file in temporaryFiles)
+                    if (File.Exists(file)) File.Delete(file);
+            }
+            return;
+        }
         using var lease = lockHeld ? null : SharedFileLock.Acquire(destination + ".write.lock", cancellation);
         if (incoming.Any(i => (string.IsNullOrWhiteSpace(i.Dataset) && replacedTable == null) || Path.GetFileName(i.Dataset) != i.Dataset)
             || incoming.Select(i => i.Dataset).Distinct(StringComparer.Ordinal).Count() != incoming.Count)
@@ -352,7 +461,7 @@ public static class CompactBankFile
             }
             using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             {
-                CompactBankFormat.WriteHeader(output);
+                CompactBankFormat.WriteHeader(output, DlbEncryptionSession.Current);
                 var tables = new List<CompactTable>();
                 var usedIds = new HashSet<string>(StringComparer.Ordinal);
                 var removedDatasets = (removeDatasets ?? []).ToHashSet(StringComparer.Ordinal);
@@ -417,7 +526,7 @@ public static class CompactBankFile
                 if (File.Exists(destination)) Copy(destination, null);
                 foreach (var item in incoming) Copy(item.Source, item.Dataset);
                 cancellation.ThrowIfCancellationRequested();
-                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, tables.ToArray()));
+                CompactBankFormat.PublishCatalog(output, 0, new CompactCatalog(2, tables.ToArray()), DlbEncryptionSession.Current);
             }
             cancellation.ThrowIfCancellationRequested();
             File.Move(temp, destination, true);
@@ -526,7 +635,7 @@ public static class CompactBankFile
         }
         cancellation.ThrowIfCancellationRequested();
         output.Flush(true);
-        CompactBankFormat.PublishAppend(output, generation + 1, new CompactCatalog(2, tables.ToArray()));
+        CompactBankFormat.PublishAppend(output, generation + 1, new CompactCatalog(2, tables.ToArray()), DlbEncryptionSession.Current);
         output.Dispose();
         CompactBankReader.InvalidateCatalog(destination);
         progress?.Invoke(totalBytes, totalBytes);

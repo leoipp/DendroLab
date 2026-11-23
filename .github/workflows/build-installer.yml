@@ -119,7 +119,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           dotnet restore `
-            src/Dendro.Desktop/Dendro.Desktop.csproj `
+            DENDRO.slnx `
             --source https://api.nuget.org/v3/index.json `
             --packages .build/nuget-packages `
             --verbosity minimal
@@ -127,6 +127,29 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Falha no restore NuGet."
           }
+
+      - name: Run core and desktop tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          ./scripts/desktop.ps1 -Test
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Falha nos testes automatizados do núcleo ou da interface WPF. O pacote não será publicado."
+          }
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DendroLab-test-diagnostics
+          path: |
+            .build/test-results/**/*.trx
+            .build/desktop-tests/**/self-test.log
+            .build/desktop-tests/**/workflow-ui.log
+            .build/managed-desktop/self-test-error.txt
+          if-no-files-found: warn
+          retention-days: 14
 
       # 7. Gerar aplicativo e instalador
       - name: Build installer and ZIP

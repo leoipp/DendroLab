@@ -81,7 +81,7 @@ internal sealed class TaperModelsView : DockPanel
         Unloaded+=(_,_)=>session.Changed-=SessionChanged;
         RefreshCatalog();
     }
-    private async Task Initialize()
+    internal async Task Initialize()
     {
         try
         {

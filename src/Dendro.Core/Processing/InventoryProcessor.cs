@@ -218,7 +218,27 @@ public sealed class InventoryProcessor
         progress?.Invoke(10, "Lendo inventário…");
         var options = ProjectStore.ExcelOptions(cfg, inputPath);
         string selectedSheet = request.Sheet.Length > 0 ? request.Sheet : options.S("sheet");
-        NeuralModel? heightModel = useRna ? NeuralModel.Load(height.At("modelo_geral").S("caminho")) : null;
+        NeuralModel? heightModel = null;
+        if (useRna)
+        {
+            try { heightModel = NeuralModel.Load(height.At("modelo_geral").S("caminho")); }
+            catch (Exception modelError) when (modelError is IOException or InvalidDataException)
+            {
+                try
+                {
+                    ValidateParcelAreasBeforeModelError(inputPath, selectedSheet, cfg, registryPath, compact, cancellation);
+                }
+                catch (InvalidDataException areaError) when (areaError.Data[ParcelAreaValidation.DiagnosticsKey] != null)
+                {
+                    throw;
+                }
+                catch (Exception preflightError) when (preflightError is IOException or InvalidDataException or ArgumentException or KeyNotFoundException)
+                {
+                    // If preflight cannot interpret this input, preserve the original model error.
+                }
+                throw;
+            }
+        }
         ProjectedInput? projectedInput = ReadProjectedCompactInput(inputPath, selectedSheet, cfg, heightModel, registryPath, compact);
         using var projectedReader = projectedInput?.Reader;
         var input = projectedInput?.Data ?? (Dendro.Core.Tabular.TableStore.IsBank(inputPath)
@@ -1263,5 +1283,25 @@ public sealed class InventoryProcessor
             reader.Dispose();
             throw;
         }
+    }
+
+    private static void ValidateParcelAreasBeforeModelError(string inputPath, string selectedSheet,
+        JsonObject config, string registryPath, bool compact, CancellationToken cancellation)
+    {
+        ProjectedInput? projected = ReadProjectedCompactInput(inputPath, selectedSheet, config, null, registryPath, compact);
+        try
+        {
+            var options = ProjectStore.ExcelOptions(config, inputPath);
+            var input = projected?.Data ?? (Dendro.Core.Tabular.TableStore.IsBank(inputPath)
+                ? Dendro.Core.Tabular.TableStore.Read(new(inputPath, selectedSheet))
+                : SpreadsheetReader.Read(inputPath, selectedSheet, (int)options.N("header_row", 1)));
+            if (input.Count < 2) return;
+            var columns = config["arquivo_entrada"]?["colunas"];
+            int[] indices = ColumnKeys.Select((key, index) => input.Require(
+                columns?.S(key, ColumnDefaults[index]) ?? ColumnDefaults[index])).ToArray();
+            NormalizeInputUnits(input, indices[3], indices[4], config);
+            _ = ParcelAreaValidation.Compute(input, config, cancellation, retainAreas: false);
+        }
+        finally { projected?.Reader.Dispose(); }
     }
 }

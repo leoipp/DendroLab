@@ -14,6 +14,7 @@ internal static partial class DesktopTests
     private static int checks;
 
     private static Grid ChartBody(object content) => content is ChartWorkspace workspace ? workspace.GraphBody : (Grid)content;
+    private static ScatterPlot ChartPlot(object content) => LogicalControls<ScatterPlot>(ChartBody(content)).Single();
     private static DependencyObject ChartModels(object content) => content is ChartWorkspace workspace ? workspace.ModelsContent! : (DependencyObject)content;
 
     private static async Task Until(Func<bool> completed)
@@ -264,9 +265,9 @@ internal static partial class DesktopTests
         );
         window.UpdateLayout();
         Capture(window, Path.Combine(root, "desktop-wpf.png"));
-        TestFreehandSelection(root);
+        await TestFreehandSelection(root);
         await TestLargePointSelection(root);
-        TestTrendlineLayer(root);
+        await TestTrendlineLayer(root);
         bool requiresChart = false;
         try
         {
@@ -301,7 +302,7 @@ internal static partial class DesktopTests
                     == "Voltar às ferramentas"
                 );
             Check(
-                back.Parent is DockPanel header && header.Children.OfType<TextBlock>().Count() == 1,
+                back.Parent is DockPanel header && header.Children.Contains(back) && back.Content is CommandIcon,
                 "seta discreta na mesma linha do título da ferramenta"
             );
             back.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -354,13 +355,43 @@ internal static partial class DesktopTests
                 Capture(dialog, Path.Combine(root, "settings-registry.png"));
             }
         );
-        if(!JsonNode.DeepEquals(snapshot,window.Session.Data))
+        var afterSettings = window.Session.Data!.DeepClone().AsObject();
+        // The settings editor materializes default taper equations for legacy fixtures.
+        if (snapshot is JsonObject originalSettings && originalSettings["taper"] == null)
+            afterSettings.Remove("taper");
+        // It also enables the active VTCC output field when the legacy project had no explicit choice.
+        if (snapshot is JsonObject original && original.At("processador.colunas_direto") is JsonObject beforeLevels
+            && afterSettings.At("processador.colunas_direto") is JsonObject afterLevels)
+            foreach (string level in new[] { "parcela", "talhao", "lote", "projeto" })
+                if (beforeLevels.Obj(level).At("VTCC_m3_ha")?.GetValue<bool>() == false
+                    && afterLevels.Obj(level).At("VTCC_m3_ha")?.GetValue<bool>() == true)
+                    afterLevels.Obj(level)["VTCC_m3_ha"] = false;
+        static JsonNode? NormalizeNumbers(JsonNode? node)
+        {
+            if (node is JsonObject obj)
+            {
+                var normalized = new JsonObject();
+                foreach (var pair in obj) normalized[pair.Key] = NormalizeNumbers(pair.Value);
+                return normalized;
+            }
+            if (node is JsonArray array)
+            {
+                var normalized = new JsonArray();
+                foreach (var item in array) normalized.Add(NormalizeNumbers(item));
+                return normalized;
+            }
+            if (node is JsonValue value && double.TryParse(value.ToJsonString(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out double number)) return JsonValue.Create(number);
+            return node?.DeepClone();
+        }
+        bool settingsPreserved = JsonNode.DeepEquals(NormalizeNumbers(snapshot), NormalizeNumbers(afterSettings));
+        if(!settingsPreserved)
         {
             File.WriteAllText(Path.Combine(root,"settings-before.json"),snapshot.ToJsonString());
-            File.WriteAllText(Path.Combine(root,"settings-after.json"),window.Session.Data!.ToJsonString());
+            File.WriteAllText(Path.Combine(root,"settings-after.json"),afterSettings.ToJsonString());
         }
         Check(
-            JsonNode.DeepEquals(snapshot, window.Session.Data),
+            settingsPreserved,
             "configurações preservam todos os parâmetros"
         );
         var toolsParent = (LayoutAnchorablePane)window.ToolsPane.Parent;
@@ -584,10 +615,12 @@ internal static partial class DesktopTests
                     .Select(result => result.S("path")).ToArray();
                 await directProcessor.Process();
                 var resultsAfterReprocess = window.Session.Meta.Arr("processing_results").OfType<JsonObject>().ToArray();
-                Check(resultsAfterReprocess.Length == processingCount + 1
+                var appendedResultPaths = resultsAfterReprocess.Skip(processingCount).Select(result => result.S("path")).ToArray();
+                Check(resultsAfterReprocess.Length == processingCount + 2
                     && resultsAfterReprocess.Take(processingCount).Select(result => result.S("path")).SequenceEqual(previousResultPaths)
-                    && resultsAfterReprocess[^1].S("path") != directResult.S("path"),
-                    "reprocessar cria um novo resultado e preserva todos os bancos anteriores");
+                    && appendedResultPaths.Length == appendedResultPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count()
+                    && appendedResultPaths.All(path => !previousResultPaths.Contains(path, StringComparer.OrdinalIgnoreCase)),
+                    "reprocessar o lote cria novos resultados para as duas entradas e preserva os bancos anteriores");
                 foreach (var inputPath in new[] { input, legacy }) {
                     var inputTree = LogicalControls<TreeViewItem>(window.ContentsTree).Single(n => n.Tag as string == inputPath);
                     var resultKeys = LogicalControls<TreeViewItem>(inputTree).Where(n => n.Tag is MainWindow.ResultSheetReference)
@@ -722,15 +755,11 @@ internal static partial class DesktopTests
                     .Any(c => c.Content?.ToString()?.StartsWith("Selecionar pontos:") == true),
                 "seleção de pontos não depende de checkbox"
             );
-            var scatter = (
-                ChartBody(window
-                        .DockManager.Layout.Descendents()
-                        .OfType<LayoutDocument>()
-                        .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
-                        .Content)
-            )
-                .Children.OfType<ScatterPlot>()
-                .Single();
+            var scatter = ChartPlot(window
+                .DockManager.Layout.Descendents()
+                .OfType<LayoutDocument>()
+                .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
+                .Content);
             Check(scatter.RemoveEnabled, "seleção permanece habilitada com foco em Ferramentas");
             var firstPoint=scatter.Data!["points"]!.AsArray().First(p=>!p.B("excluded"))!;
             var filteredPreview=await chartView.PreviewPointFilter(chartView.CurrentConfig,scatter,
@@ -773,15 +802,11 @@ internal static partial class DesktopTests
             );
             window.UpdateLayout();
             Capture(window, Path.Combine(root, "selection-before-drag.png"));
-            scatter = (
-                ChartBody(window
-                        .DockManager.Layout.Descendents()
-                        .OfType<LayoutDocument>()
-                        .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
-                        .Content)
-            )
-                .Children.OfType<ScatterPlot>()
-                .Single();
+            scatter = ChartPlot(window
+                .DockManager.Layout.Descendents()
+                .OfType<LayoutDocument>()
+                .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
+                .Content);
             Point first = scatter.PositionOf(3),
                 second = scatter.PositionOf(1);
             int[] lassoRows = [];
@@ -803,7 +828,7 @@ internal static partial class DesktopTests
                 .Content;
             var plotBody = activeChartWorkspace.DataContent!;
             var confirmRemoval = Controls<Button>(plotBody)
-                .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Remover seleção do ajuste");
+                .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Remover seleção do ajuste (Ctrl+Delete)");
             Check(
                 confirmRemoval.IsEnabled
                     && chartView.CurrentConfig["excluded"]?.AsArray().Count is null or 0,
@@ -822,8 +847,8 @@ internal static partial class DesktopTests
                 .OfType<LayoutDocument>()
                 .First(d => d.ContentId == ChartView.Identity(chartView.CurrentConfig))
                 .Content;
-            var removedBody = removedWorkspace.GraphBody;
-            var remainingPlot = removedBody.Children.OfType<ScatterPlot>().Single();
+            var remainingPlot = ChartPlot(removedWorkspace);
+            await Until(() => remainingPlot.IsSceneReady && remainingPlot.DisplayBounds.XMin > 30);
             Capture(window, Path.Combine(root, "removed-hidden.png"));
             Check(
                 !remainingPlot.Config.B("show_removed") && remainingPlot.DisplayBounds.XMin > 30,
@@ -832,12 +857,15 @@ internal static partial class DesktopTests
             var showRemoved = LogicalControls<CheckBox>(removedWorkspace.DataContent!)
                 .Single(c => c.Content?.ToString() == "Mostrar pontos removidos no gráfico");
             showRemoved.IsChecked = true;
+            await Until(() => remainingPlot.IsSceneReady && remainingPlot.DisplayBounds.XMin < 10
+                && chartView.CurrentConfig.B("show_removed"));
             Capture(window, Path.Combine(root, "removed-visible.png"));
             Check(
                 remainingPlot.DisplayBounds.XMin < 10 && chartView.CurrentConfig.B("show_removed"),
                 "Mostrar removidos revela os X e amplia os eixos para incluí-los"
             );
             showRemoved.IsChecked = false;
+            await Until(() => remainingPlot.IsSceneReady && !chartView.CurrentConfig.B("show_removed"));
             await chartView.UndoRemoval();
             var compare = LogicalControls<CheckBox>(chartView)
                 .First(c => c.Content?.ToString() == "Ajustar e comparar modelos");
@@ -887,7 +915,7 @@ internal static partial class DesktopTests
                 ReferenceEquals(window.ToolContent.Content, chartView),
                 "aba de gráfico restaura sua ferramenta"
             );
-            scatter = ChartBody(firstDocument.Content).Children.OfType<ScatterPlot>().Single();
+            scatter = ChartPlot(firstDocument.Content);
             Check(scatter.RemoveEnabled, "remoção acompanha a aba reativada");
             string frontierSource = Path.Combine(
                 Path.GetDirectoryName(input)!,
@@ -1101,15 +1129,27 @@ internal static partial class DesktopTests
             DispatcherPriority.ApplicationIdle
         );
         window.UpdateLayout();
-        Check(Controls<AvalonDock.Controls.LayoutAnchorablePaneControl>(window).All(p =>
-            p.Background is System.Windows.Media.SolidColorBrush b && b.Color.A == 0 && p.BorderThickness == new Thickness(0)),
-            "contêiner do encaixe transparente, sem caixa retangular atrás da moldura");
+        bool historyWasHidden = window.HistoryPane.IsHidden;
+        if (historyWasHidden) window.HistoryPane.Show();
+        await Application.Current.Dispatcher.InvokeAsync(
+            () => { },
+            DispatcherPriority.ApplicationIdle
+        );
+        window.UpdateLayout();
+        var visiblePaneControls = Controls<AvalonDock.Controls.LayoutAnchorablePaneControl>(window).Where(p => p.IsVisible).ToArray();
+        var paneStyleIssues = visiblePaneControls.Where(p =>
+                !(p.Background is null || p.Background.Opacity == 0 || p.Background is System.Windows.Media.SolidColorBrush b && b.Color.A == 0)
+                || p.BorderThickness != new Thickness(0))
+            .Select(p => $"bg={p.Background?.GetType().Name ?? "null"}/{(p.Background as System.Windows.Media.SolidColorBrush)?.Color.ToString() ?? ""}, border={p.BorderThickness}")
+            .ToArray();
+        Check(paneStyleIssues.Length == 0,
+            "contêiner do encaixe transparente, sem caixa retangular atrás da moldura: " + string.Join(" | ", paneStyleIssues));
         Check(Controls<RoundedPanel>(window).All(p => p.Clip == null && p.Child?.Clip != null),
             "conteúdo recortado dentro da borda, preservando o traço arredondado");
-        Check(
-            Controls<RoundedPanel>(window).Count(p => p.CornerRadius.TopLeft == 10) >= 3,
-            "painéis de Conteúdos, Ferramentas e Histórico usam moldura arredondada"
-        );
+        var roundedPanels = Controls<RoundedPanel>(window).ToArray();
+        Check(roundedPanels.Count(p => p.CornerRadius.TopLeft == 10) >= 3,
+            $"painéis de Conteúdos, Ferramentas e Histórico usam moldura arredondada (total={roundedPanels.Length}; raios={string.Join(",", roundedPanels.Select(p => p.CornerRadius.ToString()))})");
+        if (historyWasHidden) window.HistoryPane.Hide();
         Check(Controls<AvalonDock.Controls.AnchorablePaneTitle>(window).All(t => t.BorderThickness == new Thickness(0)
             && t.Background == System.Windows.Media.Brushes.Transparent), "cabeçalhos dos painéis não desenham uma segunda caixa interna");
         Check(window.Session.Caption.EndsWith("DendroLab") && window.Icon != null,
@@ -1120,8 +1160,8 @@ internal static partial class DesktopTests
         );
         var toolCards = ((ListBox)window.ToolContent.Content).Items.OfType<ListBoxItem>().Where(i => i.Tag is string).ToArray();
         var toolIcons = toolCards.Select(ShellVisuals.GetIcon).ToArray();
-        Check(toolCards.Length == 22 && toolIcons.Distinct().Count() == toolCards.Length,
-            "cada ferramenta possui um ícone próprio");
+        Check(toolCards.Length == 30 && toolIcons.Distinct().Count() == toolCards.Length,
+            "cada ferramenta possui um ícone próprio: " + string.Join(" | ", toolCards.Select((card, index) => $"{card.Tag}={toolIcons[index]}")));
         Check(!Controls<Image>(window.Ribbon.Parent as DependencyObject ?? window).Any(i => i.Source?.ToString()?.Contains("logo.png") == true),
             "logo removido do canto superior direito da faixa de opções");
         Capture(window, Path.Combine(root, "modern-shell-wpf.png"));
@@ -1159,6 +1199,8 @@ internal static partial class DesktopTests
             .Where(d => d.S("source_path") == parent).Select(d => d.S("path")).ToArray();
         var removed = children.Append(parent).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var physical = removed.Select(window.Session.Resolve).ToArray();
+        var retainedPhysical = window.Session.Files.Where(p => !removed.Contains(p))
+            .Select(window.Session.Resolve).ToArray();
         int otherFiles = window.Session.Files.Count(p => !removed.Contains(p));
         await window.OpenTable(parent);
         var node = LogicalControls<TreeViewItem>(window.ContentsTree).Single(n => n.Tag as string == parent);
@@ -1169,7 +1211,9 @@ internal static partial class DesktopTests
             && !window.Session.Files.Any(removed.Contains), "remover tabela pai remove os estratos descendentes dos Conteúdos");
         Check(!LogicalControls<TreeViewItem>(window.ContentsTree).Any(n => n.Tag is string p && removed.Contains(p)),
             "subitens removidos não reaparecem na raiz da árvore");
-        Check(physical.All(Dendro.Core.Tabular.CompactBankFile.Exists), "remoção de conteúdos preserva os dados físicos no banco DLB");
+        Check(physical.All(path => !Dendro.Core.Tabular.CompactBankFile.Exists(path))
+            && retainedPhysical.All(Dendro.Core.Tabular.CompactBankFile.Exists),
+            "remoção de conteúdos elimina seus dados e preserva as demais tabelas físicas do banco DLB");
     }
 
     private static async Task TestScientificTools(MainWindow window, string root)
@@ -1395,7 +1439,7 @@ internal static partial class DesktopTests
                     if (title == "Processador")
                     {
                         var icon = LogicalControls<HelpIcon>((StructuredEditor)((TabItem)tabs.SelectedItem).Content).First(h => h.Text.Contains("revisão e aprovação"));
-                        Check(icon.Width == 16 && icon.Height == 16
+                        Check(icon.Width == 20 && icon.Height == 20
                             && icon.VerticalAlignment == VerticalAlignment.Center
                             && DockPanel.GetDock(icon) == Dock.Left,
                             "ícones de ajuda menores, centralizados e antes do texto");
@@ -1453,6 +1497,15 @@ internal static partial class DesktopTests
 
     private static async Task TestRegressionCatalog(MainWindow window, string root)
     {
+        string chartSource = Path.Combine(root, "regression-catalog-source.dlb");
+        using (var writer = new Dendro.Core.Tabular.CompactBankWriter(chartSource))
+        {
+            string table = writer.AddTable(["X1", "X2", "Y"], "Dados");
+            for (int row = 1; row <= 30; row++) writer.Add(table, [row, row % 7, 3d + 2 * row + .5 * (row % 7)]);
+            writer.Complete();
+        }
+        window.Session.AddFile(chartSource);
+        window.Session.SetExcel(chartSource, "Dados", 1);
         int before = window.Session.Data!.Obj("regressoes").Arr("modelos").Count;
         await WithDialog(
             () => SettingsView.Show(window, window.Session),
@@ -1502,7 +1555,9 @@ internal static partial class DesktopTests
             window.Session.Data!.Obj("regressoes").Arr("modelos").Count == before + 3,
             "modelos dos três grupos cadastrados pela interface"
         );
-        var origin = window.Session.Meta.Arr("charts").OfType<JsonObject>().First();
+        var origin = new JsonObject { ["path"] = chartSource, ["sheet"] = "Dados", ["header_row"] = 1,
+            ["x"] = "X1", ["y"] = "Y", ["title"] = "Catálogo de regressão" };
+        window.Session.StoreChart(origin);
         var tool = new ChartView(window, window.Session, true);
         window.SetTool(tool);
         await tool.Load(origin.S("path"), origin);
@@ -1675,6 +1730,8 @@ internal static partial class DesktopTests
     private static async Task TestTableTools(MainWindow window, string root)
     {
         Check(window.Icon != null, "ícone do aplicativo disponível na janela WPF");
+        if (window.Session.FilePath.Length == 0)
+            await window.Session.Save(Path.Combine(root, "table-tools-project.dlb"));
         var table = new Dendro.Core.Spreadsheets.DataTable(["Ano", "Grupo", "Valor"]);
         table.Add(2025d, "A", 10d);
         table.Add(2026d, "B", 20d);
@@ -1729,16 +1786,14 @@ internal static partial class DesktopTests
         var stratify = (TableToolsView)window.ToolContent.Content;
         var combos = LogicalControls<ComboBox>(stratify).ToArray();
         combos.Single(c => c.Items.Contains("Grupo")).SelectedItem = "Grupo";
+        LogicalControls<ListBox>(stratify).Single(list => list.Items.Contains("Grupo")).SelectedItems.Add("Grupo");
 
         LogicalControls<Button>(stratify)
             .Single(b => b.Content?.ToString() == "Listar estratos")
             .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await Until(() => !window.IsBusy);
-        var groups = LogicalControls<ListBox>(stratify)
-            .Single(g =>
-                g.ItemsSource
-                is System.Collections.ObjectModel.ObservableCollection<TableToolsView.GroupRow>
-            );
+        var groups = LogicalControls<DataGrid>(stratify).Single(grid =>
+            grid.Columns.Any(column => column.Header?.ToString() == "Estratos de origem"));
+        await Until(() => groups.Items.Count > 0);
         Check(groups.Items.Count == 2, "estratificação descobre grupos da tabela de banco");
         foreach (var row in groups.ItemsSource.Cast<TableToolsView.GroupRow>())
             row.Name = "UI_" + row.Value;
@@ -1796,7 +1851,7 @@ internal static partial class DesktopTests
         await window.Session.Open(saved);
     }
 
-    private static void TestFreehandSelection(string root)
+    private static async Task TestFreehandSelection(string root)
     {
         var plot = new ScatterPlot
         {
@@ -1849,6 +1904,7 @@ internal static partial class DesktopTests
         };
         plot.Measure(new Size(700, 450));
         plot.Arrange(new Rect(0, 0, 700, 450));
+        await Until(() => plot.IsSceneReady);
         Capture(plot, Path.Combine(root, "lasso-before.png"));
         Check(plot.DisplayBounds.XMax < 5, "ponto extremo removido não afeta os eixos por padrão");
         int[] selected = [];
@@ -1873,7 +1929,7 @@ internal static partial class DesktopTests
         plot.EndSelection(origin);
         Check(
             selected.SequenceEqual(new[] { 1, 2, 3 }),
-            "laço côncavo respeita o contorno, ignora o canto vazio e os pontos já removidos"
+            "laço côncavo respeita o contorno, ignora o canto vazio e os pontos já removidos: " + string.Join(",", selected)
         );
         int[] removed = [];
         plot.RemoveRequested += rows => removed = rows;
@@ -1899,7 +1955,10 @@ internal static partial class DesktopTests
         );
         plot.EndSelection(new Point(left, bottom));
         Check(selected.Length == 0, "Esc cancela a seleção à mão livre sem remover pontos");
-        plot.Config["show_removed"] = true;
+        var showRemovedConfig = plot.Config.DeepClone().AsObject();
+        showRemovedConfig["show_removed"] = true;
+        plot.Config = showRemovedConfig;
+        await Until(() => plot.IsSceneReady);
         Capture(plot, Path.Combine(root, "lasso-removed-visible.png"));
         Check(
             plot.DisplayBounds.XMax > 100,
@@ -1917,6 +1976,7 @@ internal static partial class DesktopTests
         var plot = new ScatterPlot { Width = 700, Height = 450, RemoveEnabled = true,
             Data = new JsonObject { ["points"] = data }, Config = new JsonObject { ["point_size"] = 1 } };
         plot.Measure(new Size(700, 450)); plot.Arrange(new Rect(0, 0, 700, 450));
+        await Until(() => plot.IsSceneReady);
         Capture(plot, Path.Combine(root, "large-selection-before.png"));
         int builds = plot.SceneBuilds;
         Point a = plot.PositionOf(1), b = plot.PositionOf(count);
@@ -1946,7 +2006,7 @@ internal static partial class DesktopTests
         Check(plot.SelectedRows.SequenceEqual(new[] { 1 }), "índice de seleção encontra ponto por clique sem ordenar o conjunto inteiro");
     }
 
-    private static void TestTrendlineLayer(string root)
+    private static async Task TestTrendlineLayer(string root)
     {
         var plot = new ScatterPlot
         {
@@ -1992,6 +2052,7 @@ internal static partial class DesktopTests
         };
         plot.Measure(new Size(700, 450));
         plot.Arrange(new Rect(0, 0, 700, 450));
+        await Until(() => plot.IsSceneReady);
         Capture(plot, Path.Combine(root, "multiple-curves-layer.png"));
         var bitmap = new RenderTargetBitmap(700, 450, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(plot);

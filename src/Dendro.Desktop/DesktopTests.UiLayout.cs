@@ -12,6 +12,10 @@ internal static partial class DesktopTests
     {
         Directory.CreateDirectory(root);
         var shell = new MainWindow { WorkspacePath = Path.Combine(root, "layout.xml"), CloseConfirmation = () => Task.FromResult(true) };
+        var simulatedSmallScreen = MainWindow.MinimumSizeForWorkArea(new Size(1050, 680), new Size(1024, 640));
+        Check(simulatedSmallScreen == new Size(1024, 640), "mínimos da janela cabem numa área útil menor");
+        Check(System.Windows.Automation.AutomationProperties.GetName(shell.ToolCategoryFilter) == "Filtrar ferramentas por área",
+            "filtro de categoria tem nome acessível");
         await shell.Session.New("UI/UX");
         shell.Show();
         Check(!shell.DockManager.Layout.Descendents().OfType<AvalonDock.Layout.LayoutDocument>().Any(),

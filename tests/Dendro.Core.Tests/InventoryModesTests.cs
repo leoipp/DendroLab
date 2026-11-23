@@ -239,20 +239,20 @@ public sealed class InventoryModesTests : IDisposable
         foreach (string level in DirectInventorySummary.Levels) cfg.Obj("processador").Obj("saidas")[level] = level == "projeto";
         string path = Path.Combine(folder, "weighted.dlb");
         using (var summary = new DirectInventorySummary(path, cfg)) {
-            summary.Add("A", "1", "L", 2024, 2, 10, 2, true, 100, 10, "", "");
-            summary.Add("B", "1", "L", 2024, 3, 10, 4, true, 100, 30, "", "");
-            summary.Add("A", "1", "L", 2025, 4, 11, 3, true, 100, double.NaN, "Sim", "01/06/2010");
+            summary.Add("A", "1", "L", 2024, 2, 10, 2, true, 100, 10, "", "", vtcc: 2);
+            summary.Add("B", "1", "L", 2024, 3, 10, 4, true, 100, 30, "", "", vtcc: 4);
+            summary.Add("A", "1", "L", 2025, 4, 11, 3, true, 100, double.NaN, "Sim", "01/06/2010", vtcc: 3);
             summary.Complete();
         }
         Assert.Equal(new[] { "DIRETO - PROJETO", "INFORMACOES" }, TableStore.Tables(path));
         var table = TableStore.Read(new(path, "DIRETO - PROJETO"));
         Assert.Equal(3, table.Count);
         Assert.Equal(6, table.Number(1, table.Require("Volume_amostrado_m3")));
-        Assert.Equal(350, table.Number(1, table.Require("Volume_m3_ha")));
+        Assert.Equal(350, table.Number(1, table.Require("VTCC_m3_ha")));
         Assert.Equal(14000, table.Number(1, table.Require("Volume_total_m3")));
         Assert.Equal(3.5, table.Number(1, table.Require("VMI_m3_fuste")));
         Assert.True(double.IsNaN(table.Number(2, table.Require("Volume_total_m3"))));
-        Assert.True(double.IsNaN(table.Number(2, table.Require("Volume_m3_ha"))));
+        Assert.True(double.IsNaN(table.Number(2, table.Require("VTCC_m3_ha"))));
         cfg.Obj("processador").Obj("saidas")["projeto"] = false;
         Assert.Throws<InvalidDataException>(() => DirectInventorySummary.Validate(cfg["processador"]));
     }

@@ -1,5 +1,6 @@
 using Dendro.Core.Tabular;
 using Dendro.Core.Spreadsheets;
+using System.Security.Cryptography;
 
 namespace Dendro.Core.Tests;
 
@@ -29,6 +30,48 @@ public class CompactBankTests : IDisposable
         using var cursor = new TableCursor(new(path, "Resumo"));
         Assert.Null(cursor.Rows().Single()[1]);
         Assert.Equal(1, TableStore.Page(new(path, "Medições"), 6000).Data.Count);
+    }
+
+    [Fact]
+    public void EncryptedDlbAuthenticatesCatalogAndFramesAndKeepsLegacyMigrationStreaming()
+    {
+        string path = Path.Combine(folder, "protegido.dlb");
+        using (var legacy = new CompactBankWriter(path))
+        {
+            string table = legacy.AddTable(["ID", "Segredo"], "Dados");
+            for (int row = 0; row < 5000; row++) legacy.Add(table, [row, "informação confidencial"]);
+            legacy.Complete();
+        }
+        using var key = DlbEncryptionKey.Create("senha de teste longa");
+        CompactBankFile.EncryptInPlace(path, key);
+        Assert.True(DlbEncryptionKey.IsEncryptedFile(path));
+        Assert.DoesNotContain("informação confidencial", System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(path)));
+        Assert.Throws<CryptographicException>(() => DlbEncryptionKey.UnlockFile(path, "senha incorreta".AsSpan()));
+
+        DlbEncryptionSession.Current = DlbEncryptionKey.UnlockFile(path, "senha de teste longa".AsSpan());
+        try
+        {
+            long dataOffset;
+            using (var reader = new CompactBankReader(path))
+            {
+                var table = reader.Table("Dados");
+                Assert.Equal(5000, reader.Rows(table).Count());
+                dataOffset = table.Blocks[0].Offset;
+            }
+            DlbEncryptionSession.Clear();
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                file.Position = dataOffset + 20;
+                int original = file.ReadByte();
+                file.Position = dataOffset + 20;
+                file.WriteByte((byte)(original ^ 1));
+            }
+            DlbEncryptionSession.Current = DlbEncryptionKey.UnlockFile(path, "senha de teste longa".AsSpan());
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(1));
+            using var changed = new CompactBankReader(path);
+            Assert.Throws<InvalidDataException>(() => changed.Rows(changed.Table("Dados")).First());
+        }
+        finally { DlbEncryptionSession.Clear(); }
     }
 
     [Fact]

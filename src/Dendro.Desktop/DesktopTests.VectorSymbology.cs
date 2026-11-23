@@ -24,16 +24,19 @@ internal static partial class DesktopTests
             new NetTopologySuite.Features.AttributesTable { { "CLASSE", new[] { "A", "B", "", "A" }[i] } })).ToArray();
         NetTopologySuite.IO.Esri.Shapefile.WriteAllFeatures(features, path);
         shell.Session.AddFile(path);
+        await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
         var node = LogicalControls<TreeViewItem>(shell.ContentsTree).Single(item => item.Tag as string == path);
         Check(node.ContextMenu!.Items.OfType<MenuItem>().Any(item => item.Header as string == "Simbologia…"), "simbologia no menu vetorial");
         for (var parent = ItemsControl.ItemsControlFromItemContainer(node) as TreeViewItem; parent != null;
             parent = ItemsControl.ItemsControlFromItemContainer(parent) as TreeViewItem) parent.IsExpanded = true;
-        node.IsSelected = true; node.Focus(); node.BringIntoView();
+        node.IsSelected = true; node.Focus(); node.BringIntoView(); shell.UpdateLayout();
+        node.ApplyTemplate();
         await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
         var label = Controls<TextBlock>(node).Single(text => text.Name == "ContentLabel");
         var selection = Controls<Border>(node).Single(border => border.Name == "SelectionBackground");
         Check(((SolidColorBrush)selection.Background).Color == Color.FromRgb(33, 102, 157)
-            && ((SolidColorBrush)label.Foreground).Color == Colors.White, "seleção ativa usa azul escuro com texto branco");
+            && ((SolidColorBrush)label.Foreground).Color == Colors.White,
+            $"seleção ativa usa azul escuro com texto branco (fundo {selection.Background}, texto {label.Foreground})");
         Capture(shell, Path.Combine(root, "conteudo-selecionado.png"));
         shell.ContentSearch.Focus();
         await shell.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);

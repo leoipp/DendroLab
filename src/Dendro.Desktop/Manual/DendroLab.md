@@ -179,7 +179,7 @@ A tabela original é preservada e as previsões vão para uma nova tabela. Antes
 
 ## Ajustar rede neural
 ### Entradas e ambiente
-Selecione a tabela, Y numérico, as variáveis explicativas e a validação. O treinamento desta ferramenta usa a integração existente com o ambiente local do IFPC; a pasta e o ambiente de treinamento precisam estar disponíveis. O planejamento de amostragem e GRTS executa em C#.
+Selecione a tabela, Y numérico, as variáveis explicativas e a validação. O treinamento executa localmente em C#, dentro do DendroLab, sem Python, IFPC ou exportação dos dados para CSV. Para tabelas acima de 250 mil linhas, o aplicativo faz uma amostra aleatória uniforme de até 250 mil linhas após percorrer a tabela; o pacote do modelo registra o tamanho total lido e o tamanho da amostra. Linhas incompletas nas colunas selecionadas são descartadas.
 ### Parâmetros
 Camadas ocultas definem quantos neurônios existem em cada camada. Ativação determina a transformação não linear. Épocas limitam passagens pelos dados; lote define quantas observações participam de cada atualização. Taxa de aprendizado controla o passo de ajuste e paciência define a parada antecipada.
 ### Validação e dados
@@ -189,7 +189,7 @@ O ZIP final guarda o modelo e seus metadados para aplicação no Processador. Ma
 
 ## Ajustar Random Forest
 ### Finalidade
-Treina um conjunto de árvores de regressão que combina previsões para reduzir a instabilidade de uma árvore individual. Usa o ambiente de treinamento integrado ao IFPC, com seleção de Y, preditoras e validação da ferramenta.
+Treina um conjunto de árvores de regressão que combina previsões para reduzir a instabilidade de uma árvore individual, usando a implementação C# do DendroLab, com seleção de Y, preditoras e validação da ferramenta.
 ### Parâmetros
 Número de árvores controla a quantidade de estimadores. Profundidade máxima limita a complexidade de cada árvore. Mínimo de amostras para divisão impede partições apoiadas em poucos registros. max_features controla as variáveis consideradas no crescimento das árvores.
 ### Como usar

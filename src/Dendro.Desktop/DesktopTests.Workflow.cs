@@ -173,7 +173,7 @@ internal static partial class DesktopTests
         var fieldGroup = (StackPanel)helpPanel.Children[0];
         var helpRow = (DockPanel)fieldGroup.Children[0];
         var helpIcon = helpRow.Children.OfType<HelpIcon>().Single();
-        Check(helpIcon.Width == 16 && helpIcon.Height == 16
+        Check(helpIcon.Width == 20 && helpIcon.Height == 20
             && helpIcon.VerticalAlignment == VerticalAlignment.Center
             && DockPanel.GetDock(helpIcon) == Dock.Left
             && ReferenceEquals(helpRow.Children[0], helpIcon)
@@ -290,7 +290,11 @@ internal static partial class DesktopTests
             Check(LogicalControls<ScatterPlot>(view).Any(), sheet + " tem gráfico próprio");
         }
         await CheckNative(original.S("path"), "ESTATISTICAS INV", "inventory-native");
-        await CheckNative(Path.Combine(AppContext.BaseDirectory, "..", "..", "tests", "Fixtures", "Reference", "rna_report.xlsx"), "H Ajuste", "height-native");
+        DirectoryInfo? repository = new(AppContext.BaseDirectory);
+        while (repository != null && !Directory.Exists(Path.Combine(repository.FullName, "tests", "Fixtures", "Reference")))
+            repository = repository.Parent;
+        if (repository == null) throw new DirectoryNotFoundException("Fixtures de referência não encontrados na raiz do repositório.");
+        await CheckNative(Path.Combine(repository.FullName, "tests", "Fixtures", "Reference", "rna_report.xlsx"), "H Ajuste", "height-native");
         string legacyAdjusted = Path.Combine(root, "legacy-adjusted.dlb");
         using (var writer = new CompactBankWriter(legacyAdjusted))
         {
@@ -306,7 +310,7 @@ internal static partial class DesktopTests
             "AJUSTADO legado recupera colunas da entrada completa congelada");
         var historicalBrowser = (TableBrowser)adjustedDocument.Content;
         var historicalGrid = LogicalControls<DataGrid>(historicalBrowser).Single(); historicalGrid.SelectedItem = historicalGrid.Items[0];
-        Check(!LogicalControls<Button>(historicalBrowser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir selecionadas…").IsEnabled, "exclusão não modifica versões preservadas do histórico");
+        Check(!historicalBrowser.DeleteSelectedButton.IsEnabled, "exclusão não modifica versões preservadas do histórico");
         var currentOriginal = window.Session.Meta.Arr("processing_results").OfType<JsonObject>().Single(r => r.S("id") == original.S("id"));
         currentOriginal.Arr("sheets").Add("Graficos"); window.Session.Touch();
         Check(!LogicalControls<TreeViewItem>(window.ContentsTree).Any(n => n.Tag is MainWindow.ResultSheetReference r && r.Sheet == "Graficos"), "tabela Gráficos legada fica fora dos Conteúdos");
@@ -314,11 +318,12 @@ internal static partial class DesktopTests
         string secondSource = SaveTable("input-second", input);
         window.Session.AddFile(secondSource); window.Session.SetExcel(secondSource, "Dados", 1);
         window.Session.Meta.Arr("content_names").Add(new JsonObject { ["path"] = secondSource, ["kind"] = "file", ["name"] = "Inventário 2026" });
-        var merge = new TableToolsView(window, window.Session, false); window.SetTool(merge);
+        var merge = new TableToolsView(window, window.Session, false); window.SetTool(merge); await merge.Initialize();
         foreach (var row in LogicalControls<DataGrid>(merge).First().ItemsSource.Cast<TableToolsView.InputRow>())
             row.Selected = row.Path == source || row.Path == secondSource;
         LogicalControls<TextBox>(merge).First().Text = "Fontes_UI";
         LogicalControls<Button>(merge).Single(b => b.Content?.ToString() == "Juntar tabelas").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await Until(() => window.Session.Files.Any(p => Path.GetFileName(p) == "Fontes_UI.dlb"));
         await Until(() => !window.IsBusy);
         string mergedPath = window.Session.Files.Single(p => Path.GetFileName(p) == "Fontes_UI.dlb");
         var mergedData = TableStore.Read(new(window.Session.Resolve(mergedPath)));
@@ -328,25 +333,39 @@ internal static partial class DesktopTests
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         var filterDocument = window.DockManager.Layout.Descendents().OfType<LayoutDocument>().Single(d => d.ContentId == "table:" + mergedPath);
         var browser = (TableBrowser)filterDocument.Content;
-        var columnFilter = LogicalControls<ComboBox>(browser).Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "TableFilter.Column");
-        var operationFilter = LogicalControls<ComboBox>(browser).Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "TableFilter.Operator");
-        var valueFilter = LogicalControls<TextBox>(browser).Single(c => System.Windows.Automation.AutomationProperties.GetAutomationId(c) == "TableFilter.Value");
-        Controls<Button>(browser).First(b => b.ToolTip?.ToString() == "Filtrar DAP").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Check(columnFilter.SelectedItem?.ToString() == "DAP" && LogicalControls<Expander>(browser).Single().IsExpanded, "seta do cabeçalho abre filtro da coluna escolhida");
-        valueFilter.Text = "999";
-        LogicalControls<Button>(browser).Single(b => b.Content?.ToString() == "Aplicar filtro").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await Until(() => !window.IsBusy);
+        async Task Filter(string columnName, string condition, string filterValue, bool clear = false)
+        {
+            await WithDialog(() =>
+            {
+                Controls<Button>(browser).Single(button => System.Windows.Automation.AutomationProperties.GetName(button).StartsWith("Filtrar", StringComparison.Ordinal))
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                return Task.CompletedTask;
+            }, "Aplicar", inspect: dialog =>
+            {
+                var combos = LogicalControls<ComboBox>(dialog).ToArray();
+                if (clear)
+                {
+                    LogicalControls<Button>(dialog).Single(button => button.Content?.ToString() == "Limpar condições")
+                        .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    return;
+                }
+                combos[0].SelectedItem = columnName;
+                combos[1].SelectedItem = condition;
+                LogicalControls<TextBox>(dialog).Single().Text = filterValue;
+                LogicalControls<Button>(dialog).Single(button => button.Content?.ToString() == "Adicionar condição")
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            });
+            await Until(() => !window.IsBusy);
+        }
+        await Filter("DAP", "Igual a", "999");
         Check(browser.Total == 2, "filtro numérico seleciona linhas em toda a tabela");
-        columnFilter.SelectedItem = "Fonte"; operationFilter.SelectedItem = "Contém"; valueFilter.Text = "2026";
-        LogicalControls<Button>(browser).Single(b => b.Content?.ToString() == "Aplicar filtro").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await Until(() => !window.IsBusy);
-        Check(browser.Total == 1 && LogicalControls<Button>(browser).Any(b => b.Content?.ToString() == "Exportar resultado filtrado…"), "filtros de colunas diferentes são combinados e identificam exportação filtrada");
+        await Filter("Fonte", "Contém", "2026");
+        Check(browser.Total == 1 && Controls<Button>(browser).Any(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Exportar resultado filtrado…"), "filtros de colunas diferentes são combinados e identificam exportação filtrada");
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         Capture(browser, Path.Combine(root, "table-filters.png"));
         window.ResetWorkspace(); await browser.Load();
         Check(browser.Total == 1, "prévia filtrada permanece disponível após restaurar layout");
-        LogicalControls<Button>(browser).Single(b => b.Content?.ToString() == "Limpar filtros").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await Until(() => !window.IsBusy);
+        await Filter("", "Igual a", "", clear: true);
         Check(browser.Total == 8, "limpar filtros restaura tabela completa sem alterar os dados");
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         var dateColumn = LogicalControls<DataGrid>(browser).Single().Columns.OfType<DataGridTextColumn>().Single(c => c.Header?.ToString() == "Data");
@@ -362,17 +381,15 @@ internal static partial class DesktopTests
         deletionGrid.SelectedItem = deletionGrid.Items[0];
         long confirmedRows = 0;
         browser.DeleteConfirmation = count => { confirmedRows = count; return Task.FromResult(false); };
-        LogicalControls<Button>(browser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir selecionadas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        browser.DeleteSelectedButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
         Check(confirmedRows == 1 && browser.Total == 8, "cancelar confirmação preserva linhas selecionadas");
         browser.DeleteConfirmation = count => { confirmedRows = count; return Task.FromResult(true); };
-        LogicalControls<Button>(browser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir selecionadas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        browser.DeleteSelectedButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
         Check(browser.Total == 7 && TableStore.Page(new(window.Session.Resolve(mergedPath))).Total == 7, "exclusão de seleção sem filtro é gravada na própria tabela");
-        columnFilter.SelectedItem = "DAP"; operationFilter.SelectedItem = "Igual a"; valueFilter.Text = "999";
-        LogicalControls<Button>(browser).Single(b => b.Content?.ToString() == "Aplicar filtro").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await Until(() => !window.IsBusy);
-        LogicalControls<Button>(browser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir filtradas…").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await Filter("DAP", "Igual a", "999");
+        browser.DeleteFilteredButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Until(() => !window.IsBusy);
         Check(confirmedRows == 2 && browser.Total == 5 && TableStore.Page(new(window.Session.Resolve(mergedPath))).Total == 5, "exclusão do filtro confirma quantidade total e limpa a prévia antiga");
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
@@ -392,7 +409,7 @@ internal static partial class DesktopTests
         Check(issueBrowser.Total == 2 && window.Session.Meta.Arr("processing_results").Count == publishedBefore,
             "falha abre todas as pendências sem publicar processamento parcial");
         var issueGrid = LogicalControls<DataGrid>(issueBrowser).Single(); issueGrid.SelectedItem = issueGrid.Items[0];
-        Check(!LogicalControls<Button>(issueBrowser).Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Excluir selecionadas…").IsEnabled,
+        Check(!issueBrowser.DeleteSelectedButton.IsEnabled,
             "relatório de pendências orienta correção na origem e é somente leitura");
         Check(ReferenceEquals(window.ToolContent.Content, failingProcessor), "abrir pendências preserva a ferramenta do processamento");
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
@@ -406,12 +423,18 @@ internal static partial class DesktopTests
         window.Session.Data!.Obj("ajuste_altura").Obj("modelo_geral")["caminho"] = Path.Combine(root, "modelo-inexistente.zip");
         var areaProcessor = new ProcessorView(window, window.Session); window.SetTool(areaProcessor);
         await window.Execute(areaProcessor.Process);
-        var areaDocument = window.DockManager.Layout.Descendents().OfType<LayoutDocument>().Single(d => d.ContentId == "area-issues:" + areaSource);
+        var areaDocuments = window.DockManager.Layout.Descendents().OfType<LayoutDocument>().Where(d => d.ContentId == "area-issues:" + areaSource).ToArray();
+        if (areaDocuments.Length != 1)
+            throw new InvalidOperationException($"Pendências de área esperadas: {areaDocuments.Length}; histórico={window.HistoryText.Text}; resultados={window.Session.Meta.Arr("processing_results").Count}; saída={window.StatusText.Text}");
+        var areaDocument = areaDocuments[0];
         var areaBrowser = (TableBrowser)areaDocument.Content;
         Check(areaBrowser.Total == 3 && window.Session.Meta.Arr("processing_results").Count == publishedBefore,
             "áreas inválidas são agrupadas antes de carregar RNA e não geram processamento parcial");
-        Check(window.HistoryText.Text.Contains("Compr='0'") && LogicalControls<DataGrid>(areaBrowser).Single().Columns.Any(c => c.Header?.ToString() == "Comprimento original"),
-            "diagnóstico de área identifica valores e colunas de origem");
+        var areaGrid = LogicalControls<DataGrid>(areaBrowser).Single();
+        await Until(() => areaGrid.Columns.Count > 0);
+        var areaHeaders = areaGrid.Columns.Select(c => c.Header?.ToString()).ToArray();
+        Check(window.HistoryText.Text.Contains("Compr='0'") && areaHeaders.Contains("Comprimento original"),
+            $"diagnóstico de área identifica valores e colunas de origem (log={window.HistoryText.Text}; colunas={string.Join(" | ", areaHeaders)})");
         await window.OpenTable(mergedPath);
         await Application.Current.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         var columnDocument = window.DockManager.Layout.Descendents().OfType<LayoutDocument>().Single(d => d.ContentId == "table:" + mergedPath);
@@ -483,7 +506,7 @@ internal static partial class DesktopTests
         Check(LogicalControls<ComboBox>(auditTool).Single(c=>System.Windows.Automation.AutomationProperties.GetAutomationId(c)=="Audit.Result").SelectedItem?.ToString()?.Contains("DIRETO - PARCELAS")==true,
             "auditoria seleciona processamento recente pela data, mesmo com histórico fora de ordem");
         var originSheet=LogicalControls<ComboBox>(auditTool).Single(c=>System.Windows.Automation.AutomationProperties.GetAutomationId(c)=="Audit.OriginSheet");
-        Check(originSheet.SelectedItem?.ToString()=="Dados" && ((FrameworkElement)originSheet.Parent).Visibility==Visibility.Collapsed,
+        Check(originSheet.SelectedItem?.ToString()=="Dados" && !originSheet.IsVisible,
             "origem lógica é usada diretamente e não exige escolher tabela interna Dados");
         LogicalControls<TextBox>(auditTool).Single(t=>System.Windows.Automation.AutomationProperties.GetAutomationId(t)=="Audit.Volume").Text="10";
         await window.Execute(auditTool.Run);
@@ -517,7 +540,8 @@ internal static partial class DesktopTests
         await window.Execute(asset.Run);
         string assetPath=window.Session.Files.Single(p=>Path.GetFileName(p)=="Ativo_biologico.dlb");
         var assetTable=TableStore.Read(new(window.Session.Resolve(assetPath),"Ativo biológico"));
-        Check(assetTable.Count==input.Count && assetTable.Text(1,assetTable.Require("AB_Vinculo"))=="Vinculado" && assetTable.Number(1,assetTable.Require("INV_Volume_m3_ha"))==200,
+        Check(assetTable.Count==input.Count && assetTable.Text(1,assetTable.Require("AB_Vinculo"))=="Vinculado"
+            && assetTable.Number(1,assetTable.Require("INV_VTCC_m3_ha"))==200,
             "ativo biológico preserva linhas da base e traz volume da medição mais recente da chave");
         File.WriteAllText(Path.Combine(root, "workflow-ui.log"), $"{checks} verificações do fluxo completo passaram.");
         window.Close();

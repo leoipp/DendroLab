@@ -1,11 +1,8 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using Dendro.Core.NeuralNetworks;
 using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
@@ -17,7 +14,6 @@ internal sealed class MachineLearningView : ToolFormView
     private readonly MainWindow owner;
     private readonly ProjectSession session;
     private readonly string fixedModelType;
-    private readonly TextBox ifpcRoot = Ui.Input();
     private readonly ComboBox source = Ui.Combo([]), target = Ui.Combo([]), validation = Ui.Combo(["Divisão treino/teste (80/20)", "Validação cruzada K-Fold", "Treinar com toda a base"]);
     private readonly TextBox folds = Ui.Input("5");
     private readonly ListBox features = new() { SelectionMode = SelectionMode.Multiple, MinHeight = 120, MaxHeight = 250 };
@@ -41,18 +37,14 @@ internal sealed class MachineLearningView : ToolFormView
         form.Children.Add(owner.ToolHeader(toolName));
         Ui.AddHelp(form, "Ajuste o modelo com dados do projeto. A saída é um único arquivo ZIP que pode ser selecionado diretamente no Processador.");
 
-        Ui.Section(form, "Ambiente de treinamento");
-        Ui.Field(form, "Pasta do projeto IFPC", ifpcRoot);
-        var rootActions = new WrapPanel();
-        rootActions.Children.Add(Ui.Button("Localizar IFPC…", ChooseIfpcRoot));
-        form.Children.Add(rootActions);
-        Ui.AddHelp(form, "O ambiente Python local fornece o motor de treinamento. O aplicativo salva apenas o ZIP final do modelo.");
+        Ui.Section(form, "Treinamento local em C#");
+        Ui.AddHelp(form, "O modelo é ajustado dentro do DendroLab. Os dados não são exportados para CSV nem enviados a outro projeto.");
 
         Ui.Section(form, "Dados de treinamento");
         Ui.Field(form, "Tabela de origem", source);
         Ui.Field(form, "Variável resposta (Y numérico)", target);
         Ui.Field(form, "Variáveis explicativas (numéricas e categóricas)", features);
-        Ui.AddHelp(form, "Selecione Y e uma ou mais preditoras. Variáveis categóricas são codificadas com OneHotEncoder, e o mesmo encoder é salvo para aplicação futura. Valores ausentes são descartados pelo fluxo legado de treinamento.");
+        Ui.AddHelp(form, "Selecione Y e uma ou mais preditoras. Variáveis categóricas são codificadas e salvas com o modelo. Linhas com valores ausentes nas colunas escolhidas são descartadas.");
         Ui.Field(form, "Estratificar e treinar um modelo por grupo (opcional)", strata);
 
         Ui.Section(form, "Validação");
@@ -84,7 +76,6 @@ internal sealed class MachineLearningView : ToolFormView
         SetPrimaryAction(Ui.AsyncButton("Ajustar e salvar ZIP para o Processador", () => owner.Execute(Train)));
         form.Children.Add(status);
 
-        ifpcRoot.Text = DetectIfpcRoot() ?? "";
         source.SelectionChanged += async (_, _) => { if (!loading) await owner.Execute(LoadColumns); };
         target.SelectionChanged += (_, _) => UpdateFeatureChoices();
     }
@@ -105,23 +96,6 @@ internal sealed class MachineLearningView : ToolFormView
         UpdateParameters();
         if (source.SelectedIndex >= 0) await LoadColumns();
         else status.Text = "Adicione uma tabela ao projeto para começar.";
-    }
-
-    private static string? DetectIfpcRoot()
-    {
-        foreach (string candidate in new[]
-        {
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "IFPC")),
-            @"G:\PycharmProjects\IFPC",
-        })
-            if (File.Exists(Path.Combine(candidate, "cli", "ModelFitter.py"))) return candidate;
-        return null;
-    }
-
-    private void ChooseIfpcRoot()
-    {
-        string? folder = Ui.PickFolder();
-        if (folder != null) ifpcRoot.Text = folder;
     }
 
     private SourceChoice[] BuildSources()
@@ -189,7 +163,7 @@ internal sealed class MachineLearningView : ToolFormView
     private void UpdateParameters()
     {
         string type = ModelType();
-        bool neural = type == "neural_net", forest = type == "random_forest", boosting = type is "gradient_boosting" or "xgboost", svr = type == "svr";
+        bool neural = type == "neural_net", forest = type == "random_forest", boosting = type == "gradient_boosting", svr = type == "svr";
         SetVisible(layers, neural); SetVisible(activation, neural); SetVisible(epochs, neural); SetVisible(batchSize, neural);
         SetVisible(patience, neural); SetVisible(learningRate, neural || boosting);
         SetVisible(trees, !neural && !svr); SetVisible(depth, forest || boosting);
@@ -206,7 +180,6 @@ internal sealed class MachineLearningView : ToolFormView
 
     private async Task Train()
     {
-        string root = ValidateIfpcRoot();
         if (string.IsNullOrWhiteSpace(session.FilePath)) throw new InvalidOperationException("Salve o projeto antes de ajustar modelos.");
         if (source.SelectedIndex < 0 || source.SelectedIndex >= sources.Length) throw new InvalidOperationException("Selecione uma tabela para treinamento.");
         string response = target.SelectedItem?.ToString() ?? throw new InvalidOperationException("Selecione a variável resposta Y.");
@@ -215,115 +188,51 @@ internal sealed class MachineLearningView : ToolFormView
         string type = ModelType();
         string method = validation.SelectedIndex switch { 1 => "kfold", 2 => "full", _ => "split" };
         int k = method == "kfold" ? ParseInt(folds.Text, "Número de partições K-Fold") : 5;
-        var config = new Dictionary<string, object>
-        {
-            ["model_type"] = type, ["metodo_validacao"] = method, ["k_folds"] = k,
-            ["seed"] = 42,
-        };
+        int estimatorCount = 200, maxDepth = 0, minSplit = 2;
+        int[] hiddenLayers = [16, 16, 8];
+        string activationName = activation.SelectedItem?.ToString() ?? "relu";
+        double rate = .001, subsampleRate = .8, c = 1, epsilonValue = .1;
+        string maxFeaturesValue = "1.0", kernelName = kernel.SelectedItem?.ToString() ?? "rbf";
+        int epochsCount = 300, batchCount = 32, patienceCount = 30, degreeValue = 3;
         if (type == "neural_net")
         {
             int[] hidden = layers.Text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
                 .Select(value => int.TryParse(value, out int parsed) && parsed is > 0 and <= 4096 ? parsed : throw new InvalidOperationException("Informe camadas como 16,16,8, com tamanhos entre 1 e 4096.")).ToArray();
             if (hidden.Length is < 1 or > 16) throw new InvalidOperationException("Informe de 1 a 16 camadas ocultas.");
-            config["camadas"] = hidden; config["ativacao"] = activation.SelectedItem?.ToString() ?? "relu";
-            config["epochs"] = ParseInt(epochs.Text, "Épocas"); config["batch_size"] = ParseInt(batchSize.Text, "Tamanho do lote");
-            config["patience"] = ParseInt(patience.Text, "Paciência"); config["learning_rate"] = Number(learningRate.Text, "Taxa de aprendizado");
+            hiddenLayers = hidden; epochsCount = ParseInt(epochs.Text, "Épocas"); batchCount = ParseInt(batchSize.Text, "Tamanho do lote");
+            patienceCount = ParseInt(patience.Text, "Paciência"); rate = Number(learningRate.Text, "Taxa de aprendizado");
         }
         else if (type == "random_forest")
         {
-            config["n_estimators"] = ParseInt(trees.Text, "Número de árvores"); config["max_depth"] = OptionalInt(depth.Text);
-            config["min_samples_split"] = ParseInt(minSamples.Text, "Mínimo de amostras para divisão"); config["max_features"] = ParseMaxFeatures(maxFeatures.Text);
+            estimatorCount = ParseInt(trees.Text, "Número de árvores"); maxDepth = OptionalInt(depth.Text);
+            minSplit = ParseInt(minSamples.Text, "Mínimo de amostras para divisão"); maxFeaturesValue = ParseMaxFeatures(maxFeatures.Text);
         }
-        else if (type is "gradient_boosting" or "xgboost")
+        else if (type == "gradient_boosting")
         {
-            config["n_estimators"] = ParseInt(trees.Text, "Número de estimadores"); config["max_depth"] = ParseInt(depth.Text, "Profundidade máxima");
-            config["learning_rate"] = Number(learningRate.Text, "Taxa de aprendizado"); config["subsample"] = Number(subsample.Text, "Subamostragem");
-            if (type == "xgboost") config["colsample_bytree"] = .8;
+            estimatorCount = ParseInt(trees.Text, "Número de estimadores"); maxDepth = ParseInt(depth.Text, "Profundidade máxima");
+            rate = Number(learningRate.Text, "Taxa de aprendizado"); subsampleRate = Number(subsample.Text, "Subamostragem");
         }
         else
         {
-            config["kernel"] = kernel.SelectedItem?.ToString() ?? "rbf"; config["C"] = Number(cValue.Text, "C do SVR");
-            config["epsilon"] = Number(epsilon.Text, "Épsilon do SVR");
-            if (config["kernel"].ToString() == "poly") config["degree"] = ParseInt(degree.Text, "Grau do kernel");
+            kernelName = kernel.SelectedItem?.ToString() ?? "rbf"; c = Number(cValue.Text, "C do SVR");
+            epsilonValue = Number(epsilon.Text, "Épsilon do SVR");
+            if (kernelName == "poly") degreeValue = ParseInt(degree.Text, "Grau do kernel");
         }
         var selected = sources[source.SelectedIndex];
         string[] stratifiers = strata.SelectedItems.Cast<string>().ToArray();
-        string job = Path.Combine(Path.GetTempPath(), "DendroLab-ModelFitter-" + Guid.NewGuid().ToString("N"));
         string modelDirectory = Path.Combine(Path.GetDirectoryName(session.FilePath)!, Path.GetFileNameWithoutExtension(session.FilePath) + "_modelos");
-        Directory.CreateDirectory(job);
+        var options = new NativeModelTrainingOptions(type, method, k, Seed: 42,
+            HiddenLayers: hiddenLayers, Activation: activationName, Epochs: epochsCount, BatchSize: batchCount,
+            Patience: patienceCount, LearningRate: rate, Estimators: estimatorCount, MaxDepth: maxDepth,
+            MinSamplesSplit: minSplit, MaxFeatures: maxFeaturesValue, Subsample: subsampleRate,
+            Kernel: kernelName, C: c, Epsilon: epsilonValue, Degree: degreeValue);
         Directory.CreateDirectory(modelDirectory);
-        try
-        {
-            string csv = Path.Combine(job, "input.csv"), requestPath = Path.Combine(job, "request.json"), responsePath = Path.Combine(job, "response.json");
-            await Task.Run(() => WriteCsv(selected.Table, csv));
-            var request = new JsonObject
-            {
-                ["mode"] = "train", ["ifpc_root"] = root, ["input_csv"] = csv,
-                ["output_directory"] = modelDirectory,
-                ["response_json"] = responsePath, ["target"] = response,
-                ["features"] = new JsonArray(predictors.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
-                ["stratifiers"] = new JsonArray(stratifiers.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
-                ["config"] = JsonSerializer.SerializeToNode(config),
-            };
-            await File.WriteAllTextAsync(requestPath, request.ToJsonString());
-            status.Text = "Treinando pelo motor do IFPC…";
-            var result = await RunBridge(root, requestPath, responsePath, owner.OperationCancellation);
-            string[] names = result["models"]!.AsArray().Select(item => Path.GetFileName(item!["bundle"]!.GetValue<string>())).ToArray();
-            status.Text = $"Treinamento concluído · ZIP salvo em {modelDirectory}: {string.Join(", ", names)}. Selecione-o no Processador.";
-            owner.Log(status.Text);
-        }
-        finally { try { Directory.Delete(job, true); } catch (IOException) { } }
-    }
-
-    private string ValidateIfpcRoot()
-    {
-        string root = Path.GetFullPath(ifpcRoot.Text.Trim());
-        if (!File.Exists(Path.Combine(root, "cli", "ModelFitter.py"))) throw new InvalidOperationException("Selecione a pasta do projeto IFPC que contém cli/ModelFitter.py.");
-        string python = Path.Combine(root, ".venv", "Scripts", "python.exe");
-        if (!File.Exists(python)) throw new InvalidOperationException($"Ambiente Python do IFPC não encontrado: {python}. Crie/ative o .venv do IFPC antes de usar esta ferramenta.");
-        if (!File.Exists(BridgePath())) throw new FileNotFoundException("Script de integração do ModelFitter ausente.", BridgePath());
-        return root;
-    }
-
-    private static string BridgePath() => Path.Combine(AppContext.BaseDirectory, "Scripts", "model_fitter_bridge.py");
-
-    private static async Task<JsonObject> RunBridge(string root, string requestPath, string responsePath, CancellationToken cancellation)
-    {
-        string python = Path.Combine(root, ".venv", "Scripts", "python.exe");
-        var start = new ProcessStartInfo
-        {
-            FileName = python,
-            WorkingDirectory = root,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        start.ArgumentList.Add(BridgePath()); start.ArgumentList.Add(root); start.ArgumentList.Add(requestPath);
-        start.Environment["TF_CPP_MIN_LOG_LEVEL"] = "2";
-        using var process = new Process { StartInfo = start };
-        process.Start();
-        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-        Task<string> stderr = process.StandardError.ReadToEndAsync();
-        using var registration = cancellation.Register(() => { try { process.Kill(true); } catch { } });
-        try { await process.WaitForExitAsync(cancellation); }
-        catch (OperationCanceledException) { throw; }
-        string output = await stdout, error = await stderr;
-        if (!File.Exists(responsePath)) throw new InvalidOperationException("O motor Python do IFPC terminou sem resposta. " + FirstText(error, output));
-        var response = JsonNode.Parse(await File.ReadAllTextAsync(responsePath))?.AsObject() ?? throw new InvalidDataException("Resposta inválida do ModelFitter.");
-        if (process.ExitCode != 0 || !response.B("ok")) throw new InvalidOperationException(response.S("error", FirstText(error, output)));
-        return response;
-    }
-
-    private static string FirstText(string first, string second) => !string.IsNullOrWhiteSpace(first) ? first.Trim() : second.Trim();
-
-    private static void WriteCsv(TableSource source, string path)
-    {
-        using var cursor = new TableCursor(source);
-        using var writer = new StreamWriter(path, false, new UTF8Encoding(true));
-        writer.WriteLine(string.Join(";", cursor.Columns.Select(Csv)));
-        foreach (var row in cursor.Rows()) writer.WriteLine(string.Join(";", row.Select(value => Csv(TableCursor.Text(value)))));
-        static string Csv(string value) => "\"" + value.Replace("\"", "\"\"") + "\"";
+        status.Text = "Treinando localmente em C#…";
+        var bundles = await Task.Run(() => NativeModelTrainer.Train(selected.Table, response, predictors,
+            stratifiers, modelDirectory, options, owner.OperationCancellation,
+            message => owner.Dispatcher.Invoke(() => status.Text = message)));
+        status.Text = $"Treinamento concluído · {bundles.Length} modelo(s) salvo(s) em {modelDirectory}. Selecione um ZIP no Processador.";
+        owner.Log(status.Text);
     }
 
     private static int ParseInt(string text, string label)
@@ -335,10 +244,13 @@ internal sealed class MachineLearningView : ToolFormView
 
     private static int OptionalInt(string text) => string.IsNullOrWhiteSpace(text) ? 0 : ParseInt(text, "profundidade máxima");
 
-    private static object ParseMaxFeatures(string text)
+    private static string ParseMaxFeatures(string text)
     {
-        if (string.IsNullOrWhiteSpace(text)) return 1.0;
-        return double.TryParse(text.Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out double value) ? value : text.Trim();
+        if (string.IsNullOrWhiteSpace(text)) return "1.0";
+        string value = text.Trim().Replace(',', '.');
+        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _)) return value;
+        if (value is "sqrt" or "log2") return value;
+        throw new InvalidOperationException("max_features deve ser uma fração entre 0 e 1, sqrt ou log2.");
     }
 
     private static double Number(string text, string label)

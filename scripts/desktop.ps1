@@ -24,6 +24,14 @@ try {
         if(-not $qa.WaitForExit(60000)){Stop-Process -Id $qa.Id;throw ('Tempo excedido nos testes WPF: '+$testRoot)}
         if($qa.ExitCode -ne 0){if(Test-Path -LiteralPath $failure){Get-Content -LiteralPath $failure};throw 'Falha nos testes WPF'}
         Get-Content -LiteralPath (Join-Path $testRoot 'self-test.log')
+        $workflowRoot=Join-Path $root ('.build/desktop-tests/workflow-'+[guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force $workflowRoot | Out-Null
+        if(Test-Path -LiteralPath $failure){Remove-Item -LiteralPath $failure}
+        $workflowArguments=@('--self-test-workflow',('"'+$workflowRoot+'"'))
+        $workflowTest=Start-Process -FilePath (Join-Path $staging 'DendroLab.exe') -ArgumentList $workflowArguments -WindowStyle Hidden -PassThru
+        if(-not $workflowTest.WaitForExit(60000)){Stop-Process -Id $workflowTest.Id;throw ('Tempo excedido no teste de workflow WPF: '+$workflowRoot)}
+        if($workflowTest.ExitCode -ne 0){if(Test-Path -LiteralPath $failure){Get-Content -LiteralPath $failure};throw 'Falha no teste WPF do fluxo de processamento'}
+        Get-Content -LiteralPath (Join-Path $workflowRoot 'workflow-ui.log')
         $duplicateRoot=Join-Path $root ('.build/desktop-tests/duplicates-'+[guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Force $duplicateRoot | Out-Null
         if(Test-Path -LiteralPath $failure){Remove-Item -LiteralPath $failure}
@@ -61,13 +69,6 @@ try {
             if((Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath (Join-Path $candidate $file.Name)).Hash){throw ('Arquivo publicado divergente: '+$file.Name)}
         }
         foreach($culture in Get-ChildItem -LiteralPath $staging -Directory){Copy-Item -LiteralPath $culture.FullName -Destination $candidate -Recurse}
-        $bridge=Join-Path $staging 'Scripts/model_fitter_bridge.py'
-        if(Test-Path -LiteralPath $bridge){
-            $scriptFolder=Join-Path $candidate 'Scripts'
-            New-Item -ItemType Directory -Force $scriptFolder | Out-Null
-            Copy-Item -LiteralPath $bridge -Destination $scriptFolder
-            if((Get-FileHash -LiteralPath $bridge).Hash -ne (Get-FileHash -LiteralPath (Join-Path $scriptFolder 'model_fitter_bridge.py')).Hash){throw 'Script de integração ModelFitter divergente'}
-        }
         $licenses=Join-Path $candidate 'licenses'
         New-Item -ItemType Directory -Force $licenses | Out-Null
         Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $candidate 'LICENSE')

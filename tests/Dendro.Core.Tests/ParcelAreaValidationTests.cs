@@ -26,7 +26,7 @@ public sealed class ParcelAreaValidationTests
         Assert.Equal(0, issues.Number(1, issues.Require("Comprimento original")));
         Assert.Equal("inválido", issues.Text(2, issues.Require("Declinação comprimento original")));
         Assert.Contains("não numérico", issues.Text(2, issues.Require("Motivo")));
-        Assert.Contains("declinações", issues.Text(3, issues.Require("Motivo")));
+        Assert.Contains("comprimento", issues.Text(3, issues.Require("Motivo")));
         Assert.Equal(before, input.ToJson().ToJsonString());
     }
 

@@ -20,8 +20,8 @@ public sealed class DirectOutputColumnsTests
             string output=Path.Combine(folder,"columns.dlb");
             using(var summary=new DirectInventorySummary(output,cfg))
             {
-                summary.Add("T","1","L",2025,2,10,2,true,100,10,"","",200,300,measurement:"2025-01-01");
-                summary.Add("T","1","L",2025,3,10,3,true,100,10,"","",250,350,measurement:"2025-01-01");
+                summary.Add("T","1","L",2025,2,10,2,true,100,10,"","",200,300,measurement:"2025-01-01",vtcc:2);
+                summary.Add("T","1","L",2025,3,10,3,true,100,10,"","",250,350,measurement:"2025-01-01",vtcc:3);
                 Assert.Equal(5,summary.Complete().Volume);
             }
             foreach(var (level,column,sheet) in omitted)
@@ -30,7 +30,7 @@ public sealed class DirectOutputColumnsTests
                 Assert.Equal(DirectOutputColumns.Headers(level).Where(c=>(c!="IS" || cfg["processador"].B("calcular_is")) && DirectOutputColumns.Enabled(cfg["processador"],level,c)),table.Rows[0].Select(v=>v!.ToString()));
                 Assert.Equal(2,table.Count-(level=="arvore"?1:0));
             }
-            var plots=TableStore.Read(new(output,"DIRETO - PARCELAS"));Assert.Equal(500,plots.Number(1,plots.Require("Volume_m3_ha")));
+            var plots=TableStore.Read(new(output,"DIRETO - PARCELAS"));Assert.Equal(500,plots.Number(1,plots.Require("VTCC_m3_ha")));
             Assert.True(plots.Column("Parcela_ID")>=0);Assert.True(plots.Column("Data_Medicao")>=0);
             cfg.Obj("processador").Obj("colunas_direto").Obj("parcela")["Parcela_ID"]=false;
             Assert.Throws<InvalidDataException>(()=>DirectInventorySummary.Validate(cfg["processador"]));

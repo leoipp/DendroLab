@@ -112,7 +112,7 @@ public sealed class InventoryIdentityTests : IDisposable
         Assert.Equal(3, plots.Count);
         var baseline = Process(ConfigDirect(), unique, "baseline");
         var expected = TableStore.Read(new(baseline.Path, "DIRETO - PARCELAS"));
-        foreach (string column in new[] { "Volume_m3_ha", "Fustes_ha", "DAP_medio" })
+        foreach (string column in new[] { "VTCC_m3_ha", "Fustes_ha", "DAP_medio" })
             for (int row = 1; row < plots.Count; row++)
                 Assert.Equal(expected.Number(row, expected.Require(column)), plots.Number(row, plots.Require(column)), 10);
         var info = TableStore.Read(new(path, "INFORMACOES"));
@@ -160,8 +160,8 @@ public sealed class InventoryIdentityTests : IDisposable
         var expected = Process(cfg, expectedInput, "edited-direct-expected");
         var actualPlots = TableStore.Read(new(output, "DIRETO - PARCELAS"));
         var expectedPlots = TableStore.Read(new(expected.Path, "DIRETO - PARCELAS"));
-        Assert.Equal(expectedPlots.Number(1, expectedPlots.Require("Volume_m3_ha")),
-            actualPlots.Number(1, actualPlots.Require("Volume_m3_ha")), 10);
+        Assert.Equal(expectedPlots.Number(1, expectedPlots.Require("VTCC_m3_ha")),
+            actualPlots.Number(1, actualPlots.Require("VTCC_m3_ha")), 10);
     }
 
     [Fact]

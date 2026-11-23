@@ -84,11 +84,12 @@ public sealed class NeuralModel
             return File.ReadAllBytes(info.FullName);
         }
         var meta = JsonNode.Parse(Part("_metadata.json", 1048576))!;
-        if (meta.S("model_type") != "neural_net")
-            throw new InvalidDataException("Metadados inválidos: esperado neural_net.");
+        string modelType = meta.S("model_type");
+        if (modelType is not ("neural_net" or "random_forest" or "gradient_boosting" or "svr"))
+            throw new InvalidDataException("Tipo de modelo não suportado pelo Processador.");
         var m = new NeuralModel
         {
-            ModelType = meta.S("model_type", "neural_net"),
+            ModelType = modelType,
             Numerical = (meta["cols_numericas"] ?? meta["features"])!
                 .AsArray()
                 .Select(n => n!.GetValue<string>())
@@ -97,6 +98,29 @@ public sealed class NeuralModel
                 .Select(n => n!.GetValue<string>())
                 .ToArray(),
         };
+        if (meta.S("model_format") == "dendro-native-v1")
+        {
+            var preprocessing = JsonNode.Parse(Part("_preprocessing.json", 16 * 1024 * 1024))!;
+            if (!preprocessing["numerical"]!.AsArray().Select(n => n!.GetValue<string>()).SequenceEqual(m.Numerical)
+                || !preprocessing["categorical"]!.AsArray().Select(n => n!.GetValue<string>()).SequenceEqual(m.Categorical))
+                throw new InvalidDataException("Pré-processamento nativo não corresponde às colunas do modelo.");
+            m.Categories = preprocessing["categories"]!.AsArray()
+                .Select(items => items!.AsArray().Select(value => value!.GetValue<string>()).ToArray()).ToArray();
+            m.Mean = preprocessing["mean"]!.AsArray().Select(value => value!.GetValue<double>()).ToArray();
+            m.Scale = preprocessing["scale"]!.AsArray().Select(value => value!.GetValue<double>()).ToArray();
+            m.OutputMean = preprocessing.N("output_mean");
+            m.OutputScale = preprocessing.N("output_scale", 1);
+            m.Inputs = m.Numerical.Length + m.Categories.Sum(items => items.Length);
+            if (m.Categories.Length != m.Categorical.Length || m.Mean.Length != m.Inputs || m.Scale.Length != m.Inputs
+                || m.Mean.Any(value => !double.IsFinite(value)) || m.Scale.Any(value => !double.IsFinite(value) || value <= 0)
+                || !double.IsFinite(m.OutputMean) || !double.IsFinite(m.OutputScale) || m.OutputScale <= 0)
+                throw new InvalidDataException("Dimensões ou escalas do modelo nativo inválidas.");
+            m.BuildCategoryIndexes();
+            var payload = JsonNode.Parse(Part("_model.json", 128 * 1024 * 1024))!;
+            if (m.ModelType == "neural_net") m.LoadNativeNetwork(payload);
+            else m.LoadEstimator(payload);
+            return m;
+        }
         if (m.ModelType != "neural_net")
         {
             var payload = JsonNode.Parse(Part("_model.json", 128 * 1024 * 1024))!;
@@ -408,6 +432,30 @@ public sealed class NeuralModel
             return;
         }
         throw new InvalidDataException($"Tipo de modelo ainda não suportado pelo Processador: {ModelType}.");
+    }
+
+    private void LoadNativeNetwork(JsonNode payload)
+    {
+        if (payload.S("kind") != "neural_net") throw new InvalidDataException("Payload da rede neural incompatível.");
+        var nodes = payload["layers"]?.AsArray() ?? throw new InvalidDataException("Modelo nativo sem camadas.");
+        if (nodes.Count is < 1 or > 32) throw new InvalidDataException("Quantidade de camadas da rede inválida.");
+        int previous = Inputs;
+        foreach (var node in nodes)
+        {
+            var layerNode = node ?? throw new InvalidDataException("Camada nativa ausente.");
+            int inputs = (int)layerNode.N("inputs"), outputs = (int)layerNode.N("outputs");
+            string activation = layerNode.S("activation");
+            float[] weights = layerNode["weights"]!.AsArray().Select(value => value!.GetValue<double>()).Select(value => (float)value).ToArray();
+            float[] bias = layerNode["bias"]!.AsArray().Select(value => value!.GetValue<double>()).Select(value => (float)value).ToArray();
+            if (inputs != previous || outputs is < 1 or > 4096 || (long)inputs * outputs > 16_777_216
+                || weights.Length != inputs * outputs || bias.Length != outputs
+                || weights.Any(value => !float.IsFinite(value)) || bias.Any(value => !float.IsFinite(value)))
+                throw new InvalidDataException("Dimensões ou pesos da rede nativa inválidos.");
+            _ = Activate(0, activation);
+            Layers.Add(new(inputs, outputs, weights, bias, activation));
+            previous = outputs;
+        }
+        if (previous != 1) throw new InvalidDataException("A rede neural precisa terminar com uma saída.");
     }
 
     private static Tree ParseTree(JsonNode node)

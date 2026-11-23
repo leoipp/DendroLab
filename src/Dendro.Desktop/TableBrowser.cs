@@ -48,6 +48,8 @@ internal sealed class TableBrowser : DockPanel, IDisposable
     private CompactTable? version;
     private FilteredPage? displayedPage;
     private readonly Button deleteSelected, deleteFiltered;
+    internal Button DeleteSelectedButton => deleteSelected;
+    internal Button DeleteFilteredButton => deleteFiltered;
     private readonly TextBlock selectionCaption = Ui.Text("");
     private readonly Button filterAction;
     internal Func<long, Task<bool>>? DeleteConfirmation { get; set; }

@@ -43,7 +43,7 @@ public class VolumeTypeTests
             Assert.Contains("DIRETO - PARCELAS", TableStore.Tables(output));
             var plots = TableStore.Read(new(output, "DIRETO - PARCELAS"));
             for (int row = 1; row < plots.Count; row++)
-                Assert.Equal(plots.Number(row, plots.Require("Volume_m3_ha")) * .5,
+                Assert.Equal(plots.Number(row, plots.Require("VTCC_m3_ha")) * .5,
                     plots.Number(row, plots.Require("VCCC_m3_ha")), 10);
         }
         finally { Directory.Delete(folder, true); }

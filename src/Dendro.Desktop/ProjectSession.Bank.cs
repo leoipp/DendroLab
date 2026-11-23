@@ -290,6 +290,8 @@ internal sealed partial class ProjectSession
     {
         await RefreshHistory(true);
         path = Path.ChangeExtension(Path.GetFullPath(path), ".dlb");
+        if (!App.IsSelfTest && DlbEncryptionSession.Current == null)
+            throw new InvalidOperationException("Proteja o projeto com uma senha antes de salvar. Use Salvar para converter projetos DLB antigos.");
         var copy = Data!.DeepClone().AsObject();
         string original = FilePath;
         if (File.Exists(path) && !string.Equals(path, original, StringComparison.OrdinalIgnoreCase))

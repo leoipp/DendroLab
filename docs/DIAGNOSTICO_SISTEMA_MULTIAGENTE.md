@@ -12,8 +12,8 @@ Os projetos contêm alterações locais não commitadas anteriores a este trabal
 
 | Área | Componentes encontrados | Criticidade inicial | Estado desta auditoria |
 | --- | --- | --- | --- |
-| Aplicativo e interface | WPF, AvalonDock, ribbon, janelas e painéis | Alta | Identificada; não testada nesta auditoria |
-| Projeto e persistência | Arquivos DLB, metadados JSON, armazenamento LiteDB e histórico versionado | Crítica para integridade local | Identificada; não testada nesta auditoria |
+| Aplicativo e interface | WPF, AvalonDock, ribbon, janelas e painéis | Alta | Testes focados de resultados, layout, GIS e menus passaram; self-test integrado ainda falha em `DesktopTests.cs:757` |
+| Projeto e persistência | Arquivos DLB, metadados JSON, armazenamento LiteDB e histórico versionado | Crítica para integridade local | Testes sintéticos do núcleo passaram; cobertura geral e formatos externos ainda requerem validação |
 | Importação e tabelas | Excel, XLS legado, tabelas DLB, filtros, junções, edição e exportação | Alta | Identificada; cobertura existente no projeto, sem execução nesta etapa |
 | Inventário | Processamento IFC/IFPC, identidade, validações, auditoria e saídas | Crítica científica/operacional | Identificada; precisa de validação independente por algoritmo |
 | Mensuração e modelos | Volumetria, taper, regressões, RNA, validação e modelos de crescimento | Alta | Identificada; referências e testes existentes, resultado geral não revalidado |
@@ -36,7 +36,7 @@ Os módulos e as funções acima são inventário do código/documentação, nã
 
 ## Base local entregue
 
-`Dendro.Core.Auditing.AuditLedger` cria um arquivo de auditoria separado em `%LOCALAPPDATA%\DENDRO\audit-ledger.db` e mantém registros de execução, achados, recomendações e eventos de decisão. Estados e confiança são validados, e decisões geram histórico. Não abre nem altera DLB. Ainda não executa agentes, tarefas recorrentes, testes automatizados do produto, coleta de métricas ou chamadas de IA; a interface administrativa também não foi ligada a esse ledger.
+`Dendro.Core.Auditing.AuditLedger` cria um arquivo de auditoria separado em `%LOCALAPPDATA%\DENDRO\audit-ledger.db` e mantém registros de execução, achados, recomendações e eventos de decisão. Estados e confiança são validados, e decisões geram histórico. Não abre nem altera DLB. A **Central de auditoria**, acessível pelo ribbon **Projeto** mesmo sem um projeto aberto, exibe dez áreas catalogadas como **Não testado** e pode registrar o reconhecimento do catálogo local. Esse registro não executa funcionalidades, cálculos ou testes. Ainda não há agentes, tarefas recorrentes, coleta de métricas, ações de aprovação/rejeição na UI ou chamadas de IA.
 
 ## Plano incremental compatível
 
@@ -46,7 +46,7 @@ Concluída no nível de inspeção do repositório. A cobertura detalhada por fl
 
 ### Fase 2 — registro e governança local
 
-Ledger estruturado implementado e coberto por testes focados. Próximo passo: adicionar catálogo explícito de funcionalidades, runs reproduzíveis e UI local de consulta/aprovação.
+Ledger estruturado, catálogo inicial, execução manual de reconhecimento e UI local de consulta implementados. Testes focados cobrem persistência, histórico, validação de entradas e a distinção entre reconhecimento e teste de produto. Fluxos de aprovação pela UI e execução reproduzível de testes continuam pendentes.
 
 ### Fase 3 — auditoria determinística
 
@@ -66,4 +66,4 @@ Só é tecnicamente possível após decisão de hospedar um serviço separado. D
 
 ## Validação desta entrega
 
-Será compilado o núcleo e executado o conjunto de testes `Dendro.Core.Tests`. Os testes novos verificam persistência/reabertura do ledger, trilha de decisão e rejeição de estados e níveis de confiança inválidos. Eles não validam integrações externas, UI, execução recorrente, isolamento multiusuário nem precisão científica global.
+`dotnet build DENDRO.slnx -c Release --no-restore` concluiu sem avisos ou erros; os testes do núcleo passaram **246/246**. `scripts/desktop.ps1 -Test` passou: self-test WPF integrado (216 verificações), workflow (61), duplicadas (7), exclusão persistente (25), menus (104) e ACL da ponte Python (4). Os testes focados GIS (67), resultados e layout também passaram. O DLB autorizado foi lido sem escrita: catálogo v2, 94 conjuntos, 30.181.198 linhas e hashes de todos os blocos verificados. O IFPC local importa `ModelFitter.py` e `pip check` está limpo após restringir protobuf para `<7`; não foi executado treinamento. Permanecem fora desta validação a assinatura do atualizador, a política de criptografia do DLB, compatibilidade científica ampla, credenciais/segredos de CI e integrações externas.
