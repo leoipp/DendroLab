@@ -2,10 +2,12 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.IO;
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
@@ -125,7 +127,11 @@ internal sealed class GisView : DockPanel, IDisposable
         }).ToArray());
         var loadedRasters = await Task.Run(() => rasterPaths.Select(path =>
         {
-            try { return (Layer: GeoTiffReader.Read(session.Resolve(path), session.ContentName(path)), Error: (string?)null); }
+            try
+            {
+                int epsg = session.Meta.Obj("gis_layer_epsg")[path]?.GetValue<int>() ?? 0;
+                return (Layer: GeoTiffReader.Read(session.Resolve(path), session.ContentName(path), epsg), Error: (string?)null);
+            }
             catch (System.Runtime.InteropServices.ExternalException)
             { return (Layer: (GisRasterLayer?)null, Error: $"{session.ContentName(path)}: o TIFF não pôde ser decodificado e foi ignorado. Remova a camada antiga e gere novamente a imagem de satélite."); }
             catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or NotSupportedException
@@ -171,6 +177,7 @@ internal sealed class GisView : DockPanel, IDisposable
     private static bool IsSupportedRaster(string path) => Path.GetExtension(path) is string extension
         && (extension.Equals(".tif", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".tiff", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".asc", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
                 && File.Exists(Path.ChangeExtension(path, ".pgw"))
                 && File.Exists(Path.ChangeExtension(path, ".prj")));
@@ -637,8 +644,10 @@ internal static class GeoTiffReader
     private const double Flattening = 1d / 298.257223563d;
     private const double Scale = 0.9996d;
 
-    internal static GisRasterLayer Read(string path, string name)
+    internal static GisRasterLayer Read(string path, string name, int epsgOverride = 0)
     {
+        if (Path.GetExtension(path).Equals(".asc", StringComparison.OrdinalIgnoreCase))
+            return AsciiGridGeoTiff.ReadLayer(path, name, epsgOverride);
         BitmapSource image;
         double[] pixelScale, tiepoint;
         int epsg;
@@ -669,7 +678,9 @@ internal static class GeoTiffReader
             uint imageHeight = UInts(tags, 257).FirstOrDefault();
             if (imageWidth < 1 || imageHeight < 1 || (ulong)imageWidth * imageHeight > 180_000_000)
                 throw new InvalidDataException("A imagem raster excede o limite de 180 megapixels ou não informa dimensões válidas.");
-            image = DecodeUncompressedRgba(path, tags, (int)imageWidth, (int)imageHeight) ?? DecodeWithWpf(path);
+            image = DecodeUncompressedRgba(path, tags, (int)imageWidth, (int)imageHeight)
+                ?? DecodeFloatGray(path, tags, (int)imageWidth, (int)imageHeight)
+                ?? DecodeWithWpf(path);
             pixelScale = Doubles(tags, 33550);
             tiepoint = Doubles(tags, 33922);
             if (pixelScale.Length < 2 || tiepoint.Length < 6)
@@ -691,6 +702,155 @@ internal static class GeoTiffReader
         if (!double.IsFinite(extent.Width) || !double.IsFinite(extent.Height) || extent.Width <= 0 || extent.Height <= 0)
             throw new InvalidDataException("A extensão geográfica do raster é inválida.");
         return new GisRasterLayer(path, name, image, extent);
+    }
+
+    internal static (AsciiGrid Grid, int Epsg) ReadNumericRaster(string path, int epsgOverride = 0)
+    {
+        if (Path.GetExtension(path).Equals(".asc", StringComparison.OrdinalIgnoreCase))
+            return (AsciiGridGeoTiff.Read(path), epsgOverride > 0 ? epsgOverride : throw new InvalidDataException("O raster ASCII não informa EPSG."));
+        var tags = ReadTags(path);
+        int width = checked((int)UInts(tags, 256).FirstOrDefault()), height = checked((int)UInts(tags, 257).FirstOrDefault());
+        if (width < 1 || height < 1 || (long)width * height > 40_000_000)
+            throw new InvalidDataException("O recorte aceita GeoTIFFs de até 40 milhões de células.");
+        int bands = checked((int)UInts(tags, 277).FirstOrDefault());
+        uint photometric = UInts(tags, 262).FirstOrDefault();
+        if ((long)width * height * bands > 40_000_000)
+            throw new InvalidDataException("O recorte aceita até 40 milhões de amostras raster.");
+        ushort[] bits = Shorts(tags, 258), sampleFormat = Shorts(tags, 339);
+        uint compression = UInts(tags, 259).FirstOrDefault();
+        if (compression is not (1 or 5 or 8 or 32946 or 32773) || UInts(tags, 284).FirstOrDefault() != 1
+            || bands is not (1 or 3 or 4) || bits.Length != bands
+            || (bands == 1 ? photometric != 1 : photometric != 2))
+            throw new NotSupportedException("O recorte aceita GeoTIFF sem compressão, em tons de cinza ou RGB/RGBA.");
+        bool float32 = bits.All(value => value == 32) && sampleFormat.Length == bands && sampleFormat.All(value => value == 3);
+        bool byteRgb = bits.All(value => value == 8) && (sampleFormat.Length == 0 || sampleFormat.Length == bands && sampleFormat.All(value => value == 1));
+        if (!float32 && !byteRgb) throw new NotSupportedException("O recorte aceita amostras float32 ou RGB/RGBA de 8 bits, sem compressão.");
+        uint predictor = UInts(tags, 317).FirstOrDefault(1u);
+        if (float32 && predictor != 1 || byteRgb && predictor is not (1 or 2))
+            throw new NotSupportedException("O Predictor deste GeoTIFF ainda não é suportado.");
+        double[] scale = Doubles(tags, 33550), tie = Doubles(tags, 33922);
+        if (scale.Length < 2 || tie.Length < 6 || tie[0] != 0 || tie[1] != 0 || scale[0] <= 0 || scale[1] <= 0)
+            throw new NotSupportedException("O GeoTIFF precisa usar grade norte-sul regular com georreferenciamento PixelScale/Tiepoint.");
+        int epsg = GeoEpsg(Shorts(tags, 34735).Select(value => (double)value).ToArray());
+        if (epsg == 0) epsg = epsgOverride;
+        if (epsg == 0) throw new NotSupportedException("O GeoTIFF não informa um EPSG reconhecido.");
+        float nodata = float.NaN;
+        if (tags.TryGetValue(42113, out var noDataTag) && noDataTag.Type == 2
+            && float.TryParse(Encoding.ASCII.GetString(noDataTag.Data).TrimEnd('\0'), NumberStyles.Float, CultureInfo.InvariantCulture, out float parsed)) nodata = parsed;
+        uint rows = UInts(tags, 278).FirstOrDefault(); uint[] offsets = UInts(tags, 273), counts = UInts(tags, 279);
+        if (rows == 0 || offsets.Length == 0 || offsets.Length != counts.Length) throw new InvalidDataException("O GeoTIFF não contém faixas raster válidas.");
+        var values = new float[checked(width * height * bands)];
+        using var stream = File.OpenRead(path); int row = 0;
+        for (int strip = 0; row < height; strip++)
+        {
+            if (strip >= offsets.Length) throw new InvalidDataException("O GeoTIFF terminou antes da última faixa.");
+            int bytesPerSample = float32 ? sizeof(float) : 1;
+            int stripRows = (int)Math.Min(rows, (uint)(height - row)), length = checked(stripRows * width * bands * bytesPerSample);
+            if ((ulong)offsets[strip] + counts[strip] > (ulong)stream.Length || counts[strip] > int.MaxValue) throw new InvalidDataException("Faixa GeoTIFF truncada.");
+            byte[] encoded = new byte[(int)counts[strip]]; stream.Position = offsets[strip]; stream.ReadExactly(encoded);
+            byte[] bytes = compression switch
+            {
+                1 => encoded,
+                5 => DecodeTiffLzw(encoded, length),
+                8 => InflateTiffStrip(encoded, length, zlib: true),
+                32946 => InflateTiffStrip(encoded, length, zlib: false),
+                32773 => DecodePackBits(encoded, length),
+                _ => throw new NotSupportedException("Compressão GeoTIFF não suportada."),
+            };
+            if (bytes.Length != length) throw new InvalidDataException("O tamanho descompactado da faixa GeoTIFF é inválido.");
+            if (byteRgb && predictor == 2)
+                for (int scan = 0; scan < stripRows; scan++)
+                for (int pixel = 1; pixel < width; pixel++)
+                    for (int band = 0; band < bands; band++)
+                    {
+                        int current = scan * width * bands + pixel * bands + band;
+                        bytes[current] = unchecked((byte)(bytes[current] + bytes[current - bands]));
+                    }
+            if (float32)
+                for (int i = 0; i < length / sizeof(float); i++) values[row * width * bands + i] = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(i * sizeof(float))));
+            else
+                for (int i = 0; i < length; i++) values[row * width * bands + i] = bytes[i];
+            row += stripRows;
+        }
+        double xMin = tie[3], yTop = tie[4];
+        return (new AsciiGrid(width, height, xMin, yTop - height * scale[1], scale[0], scale[1], nodata, values, bands), epsg);
+    }
+
+    private static byte[] InflateTiffStrip(byte[] compressed, int expectedLength, bool zlib)
+    {
+        using var input = new MemoryStream(compressed, writable: false);
+        using Stream decoder = zlib ? new ZLibStream(input, CompressionMode.Decompress) : new DeflateStream(input, CompressionMode.Decompress);
+        byte[] output = new byte[expectedLength]; int offset = 0;
+        while (offset < expectedLength)
+        {
+            int read = decoder.Read(output, offset, expectedLength - offset);
+            if (read == 0) break;
+            offset += read;
+        }
+        if (offset != expectedLength || decoder.ReadByte() != -1) throw new InvalidDataException("A faixa Deflate GeoTIFF tem tamanho inesperado.");
+        return output;
+    }
+
+    private static byte[] DecodePackBits(byte[] input, int expectedLength)
+    {
+        var output = new byte[expectedLength]; int source = 0, target = 0;
+        while (source < input.Length && target < expectedLength)
+        {
+            sbyte control = unchecked((sbyte)input[source++]);
+            if (control >= 0)
+            {
+                int count = control + 1;
+                if (source + count > input.Length || target + count > expectedLength) throw new InvalidDataException("Faixa PackBits GeoTIFF inválida.");
+                Array.Copy(input, source, output, target, count); source += count; target += count;
+            }
+            else if (control != -128)
+            {
+                int count = 1 - control;
+                if (source >= input.Length || target + count > expectedLength) throw new InvalidDataException("Faixa PackBits GeoTIFF inválida.");
+                Array.Fill(output, input[source++], target, count); target += count;
+            }
+        }
+        if (target != expectedLength) throw new InvalidDataException("Faixa PackBits GeoTIFF truncada.");
+        return output;
+    }
+
+    private static byte[] DecodeTiffLzw(byte[] input, int expectedLength)
+    {
+        var output = new byte[expectedLength];
+        var table = new byte[4096][];
+        for (int i = 0; i < 256; i++) table[i] = [(byte)i];
+        int bit = 0, codeSize = 9, next = 258, written = 0;
+        byte[]? previous = null;
+        int ReadCode()
+        {
+            if (bit + codeSize > input.Length * 8) return -1;
+            int value = 0;
+            for (int i = 0; i < codeSize; i++) value = (value << 1) | ((input[bit >> 3] >> (7 - (bit & 7))) & 1);
+            bit += codeSize; return value;
+        }
+        while (true)
+        {
+            int code = ReadCode(); if (code < 0 || code == 257) break;
+            if (code == 256)
+            {
+                for (int i = 258; i < table.Length; i++) table[i] = null!;
+                codeSize = 9; next = 258; previous = null; continue;
+            }
+            byte[] current;
+            if (code < next && code >= 0 && table[code] != null) current = table[code];
+            else if (code == next && previous != null) current = [.. previous, previous[0]];
+            else throw new InvalidDataException("Código LZW inválido no GeoTIFF.");
+            if (written + current.Length > expectedLength) throw new InvalidDataException("Faixa LZW GeoTIFF excede as dimensões raster.");
+            current.CopyTo(output, written); written += current.Length;
+            if (previous != null && next < 4096)
+            {
+                byte[] entry = new byte[previous.Length + 1]; previous.CopyTo(entry, 0); entry[^1] = current[0]; table[next++] = entry;
+                if (codeSize < 12 && next == (1 << codeSize) - 1) codeSize++;
+            }
+            previous = current;
+        }
+        if (written != expectedLength) throw new InvalidDataException("Faixa LZW GeoTIFF truncada.");
+        return output;
     }
 
     private static Dictionary<ushort, Tag> ReadTags(string path)
@@ -715,8 +875,8 @@ internal static class GeoTiffReader
             if (entry.Length != 12) throw new InvalidDataException("Diretório TIFF incompleto.");
             ushort id = U16(entry.AsSpan(0, 2)), type = U16(entry.AsSpan(2, 2));
             uint count = U32(entry.AsSpan(4, 4));
-            if (id is not (256 or 257 or 258 or 259 or 262 or 273 or 277 or 278 or 279 or 284 or 338 or 33550 or 33922 or 34735)) continue;
-            int size = type switch { 3 => 2, 4 => 4, 12 => 8, _ => throw new NotSupportedException($"Tipo de tag GeoTIFF não suportado ({type}).") };
+            if (id is not (256 or 257 or 258 or 259 or 262 or 273 or 277 or 278 or 279 or 284 or 317 or 338 or 339 or 33550 or 33922 or 34735 or 42113)) continue;
+            int size = type switch { 2 or 1 => 1, 3 => 2, 4 => 4, 12 => 8, _ => throw new NotSupportedException($"Tipo de tag GeoTIFF não suportado ({type}).") };
             long length = (long)count * size;
             if (length <= 0 || length > 1_000_000) throw new InvalidDataException("Tag GeoTIFF excede o limite permitido.");
             byte[] data;
@@ -789,6 +949,17 @@ internal static class GeoTiffReader
         return image;
     }
 
+    private static BitmapSource? DecodeFloatGray(string path, Dictionary<ushort, Tag> tags, int width, int height)
+    {
+        if ((long)width * height > 40_000_000) return null;
+        int bands = checked((int)UInts(tags, 277).FirstOrDefault());
+        ushort[] bits = Shorts(tags, 258), sampleFormat = Shorts(tags, 339);
+        if (UInts(tags, 259).FirstOrDefault() != 1 || UInts(tags, 284).FirstOrDefault() != 1
+            || bands is not (1 or 3 or 4) || bits.Length != bands || bits.Any(value => value != 32)
+            || sampleFormat.Length != bands || sampleFormat.Any(value => value != 3)) return null;
+        return AsciiGridGeoTiff.Render(ReadNumericRaster(path).Grid);
+    }
+
     private static double[] Doubles(Dictionary<ushort, Tag> tags, ushort id)
     {
         if (!tags.TryGetValue(id, out var tag) || tag.Type != 12) return [];
@@ -834,12 +1005,35 @@ internal static class GeoTiffReader
         return projected != 0 ? projected : geographic;
     }
 
-    private static Point ToWorld(Point coordinate, int epsg)
+    internal static Point ToWorld(Point coordinate, int epsg)
     {
         if (epsg == 3857 || epsg == 102100) return coordinate;
         Point lonLat = epsg == 4326 ? coordinate : IsUtm(epsg) ? UTMToLonLat(coordinate, epsg) : throw new NotSupportedException($"Sistema de coordenadas EPSG:{epsg} não suportado. Use EPSG:4326, EPSG:3857 ou UTM WGS84.");
         double lon = Math.Clamp(lonLat.X, -180, 180), lat = Math.Clamp(lonLat.Y, -85.05112878, 85.05112878) * Math.PI / 180;
         return new Point(SemiMajor * lon * Math.PI / 180, SemiMajor * Math.Log(Math.Tan(Math.PI / 4 + lat / 2)));
+    }
+
+    internal static Point FromWorld(Point world, int epsg)
+    {
+        if (epsg == 3857 || epsg == 102100) return world;
+        double lon = world.X / SemiMajor * 180 / Math.PI;
+        double lat = (2 * Math.Atan(Math.Exp(world.Y / SemiMajor)) - Math.PI / 2) * 180 / Math.PI;
+        if (epsg == 4326) return new Point(lon, lat);
+        if (!IsUtm(epsg)) throw new NotSupportedException($"Sistema de coordenadas EPSG:{epsg} não suportado para recorte.");
+        double phi = lat * Math.PI / 180, lambda = lon * Math.PI / 180;
+        int zone = epsg % 100; double lambda0 = (zone * 6 - 183) * Math.PI / 180;
+        double e2 = Flattening * (2 - Flattening), ep2 = e2 / (1 - e2), sin = Math.Sin(phi), cos = Math.Cos(phi), tan = Math.Tan(phi);
+        double n = SemiMajor / Math.Sqrt(1 - e2 * sin * sin), t = tan * tan, c = ep2 * cos * cos, a = cos * (lambda - lambda0);
+        double m = SemiMajor * ((1 - e2 / 4 - 3 * e2 * e2 / 64 - 5 * e2 * e2 * e2 / 256) * phi
+            - (3 * e2 / 8 + 3 * e2 * e2 / 32 + 45 * e2 * e2 * e2 / 1024) * Math.Sin(2 * phi)
+            + (15 * e2 * e2 / 256 + 45 * e2 * e2 * e2 / 1024) * Math.Sin(4 * phi)
+            - 35 * e2 * e2 * e2 / 3072 * Math.Sin(6 * phi));
+        double x = 500000 + Scale * n * (a + (1 - t + c) * Math.Pow(a, 3) / 6
+            + (5 - 18 * t + t * t + 72 * c - 58 * ep2) * Math.Pow(a, 5) / 120);
+        double y = Scale * (m + n * tan * (a * a / 2 + (5 - t + 9 * c + 4 * c * c) * Math.Pow(a, 4) / 24
+            + (61 - 58 * t + t * t + 600 * c - 330 * ep2) * Math.Pow(a, 6) / 720));
+        if (epsg >= 32700) y += 10000000;
+        return new Point(x, y);
     }
 
     private static bool IsUtm(int epsg) => epsg is >= 32601 and <= 32660 or >= 32701 and <= 32760;

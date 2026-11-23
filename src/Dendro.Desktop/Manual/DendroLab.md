@@ -335,7 +335,7 @@ Coeficientes redundantes ou uma base sem variação suficiente podem tornar o aj
 # Planejamento de campo e GIS
 ## GIS: mapa e camadas
 ### Entradas
-O mapa lê shapefiles e rasteres GeoTIFF do projeto. Um shapefile usa o conjunto de arquivos SHP, SHX, DBF e PRJ; o DBF guarda os atributos. O PRJ descreve o sistema de coordenadas. Um TIFF sem georreferenciamento adequado pode não ter posição válida no mapa.
+O mapa lê shapefiles, rasteres GeoTIFF e grades ASCII ESRI (`.asc`) do projeto. Ao adicionar uma grade ASCII, informe o EPSG porque esse formato não guarda o sistema de coordenadas. No menu de contexto do arquivo ASCII, use **Salvar como GeoTIFF…** para exportar os valores float32 e o georreferenciamento. Em rasters, **Recortar por shapefile…** cria um GeoTIFF para cada polígono, com nomes vindos de um campo do DBF; oferece recorte pela extensão, inclusão de pixels tocados pela borda, prefixo, sufixo e NoData. O recorte aceita ASCII e GeoTIFF float32 ou RGB/RGBA de 8 bits; lê rasters GeoTIFF sem compressão, LZW, Deflate ou PackBits. Os GeoTIFFs de saída são gravados sem compressão.
 ### Navegação e visibilidade
 Adicione camadas em Conteúdos, arraste para mover e use a roda para aproximar ou afastar. O checkbox da camada controla sua exibição. Duplo clique em um vetor ou raster abre o mapa e enquadra sua extensão. O mapa base usa OpenStreetMap e pode precisar de rede para carregar regiões ainda não disponíveis no cache.
 ### Projeções

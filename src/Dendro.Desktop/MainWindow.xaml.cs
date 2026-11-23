@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -454,6 +455,7 @@ public partial class MainWindow : Window
     private static bool IsRasterPath(string path) => Path.GetExtension(path) is string extension
         && (extension.Equals(".tif", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".tiff", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".asc", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
                 && File.Exists(Path.ChangeExtension(path, ".pgw"))
                 && File.Exists(Path.ChangeExtension(path, ".prj")));
@@ -808,7 +810,7 @@ public partial class MainWindow : Window
             mapNode.Tag = new GisMapReference(id);
             mapNode.ToolTip = "Mapa com fonte base e camadas raster e vetoriais próprias.";
             mapNode.ContextMenu = new ContextMenu();
-            Menu(mapNode, "Adicionar raster TIFF ou shapefile…", CommandIconKind.Add, () => AddGISLayerFiles(id));
+            Menu(mapNode, "Adicionar raster ASCII, TIFF ou shapefile…", CommandIconKind.Add, () => AddGISLayerFiles(id));
             Menu(mapNode, "Abrir mapa", CommandIconKind.Map, () => OpenGIS(id));
             gisRoot.Items.Add(mapNode);
             mapNodes[id] = mapNode;
@@ -972,7 +974,13 @@ public partial class MainWindow : Window
             if (!missingSource && Session.Meta.Arr("sampling_results").Any(result => result.S("path") == path))
                 Menu(item, "Exportar amostragem…", CommandIconKind.SaveAs, () => ExportSamplingContent(path));
             if (IsRasterPath(path) && !missingSource)
+            {
                 Menu(item, "Abrir no mapa", CommandIconKind.Map, () => OpenGISForLayer(path));
+                if (Path.GetExtension(path).Equals(".asc", StringComparison.OrdinalIgnoreCase))
+                    Menu(item, "Salvar como GeoTIFF…", CommandIconKind.SaveAs, () => ExportAsciiGeoTiff(path));
+                if (Path.GetExtension(path) is string ext && (ext.Equals(".asc", StringComparison.OrdinalIgnoreCase) || ext.Equals(".tif", StringComparison.OrdinalIgnoreCase) || ext.Equals(".tiff", StringComparison.OrdinalIgnoreCase)))
+                    Menu(item, "Recortar por shapefile…", CommandIconKind.SaveAs, () => ClipRasterByShape(path));
+            }
             if ((itemGroupType is "spreadsheet" or "vector") && !processingOutput) AddMoveToGroupMenu(item, path, itemGroupType);
             item.ContextMenu.Items.Add(new Separator());
             Menu(item, "Renomear…", CommandIconKind.Rename, () => RenameContent(path));
@@ -1389,7 +1397,7 @@ public partial class MainWindow : Window
         var picker = new Microsoft.Win32.OpenFileDialog
         {
             Title = vectorOnly ? "Adicionar shapefile ao mapa" : "Adicionar camadas ao mapa",
-            Filter = vectorOnly ? "Shapefile vetorial|*.shp" : "Raster GeoTIFF ou PNG|*.tif;*.tiff;*.png|Shapefile vetorial|*.shp|Todos os formatos aceitos|*.tif;*.tiff;*.png;*.shp",
+            Filter = vectorOnly ? "Shapefile vetorial|*.shp" : "Raster ASCII, GeoTIFF ou PNG|*.asc;*.tif;*.tiff;*.png|Shapefile vetorial|*.shp|Todos os formatos aceitos|*.asc;*.tif;*.tiff;*.png;*.shp",
             Multiselect = true,
             CheckFileExists = true,
         };
@@ -1398,7 +1406,26 @@ public partial class MainWindow : Window
         foreach (string path in selected)
             if (vectorOnly ? !Path.GetExtension(path).Equals(".shp", StringComparison.OrdinalIgnoreCase)
                 : !IsGisLayer(path))
-                throw new InvalidDataException("Selecione um raster TIFF ou um shapefile (.shp).");
+                throw new InvalidDataException("Selecione um raster ASCII (.asc), TIFF ou um shapefile (.shp).");
+        foreach (string path in selected.Where(path => Path.GetExtension(path).Equals(".asc", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (Session.Meta.Obj("gis_layer_epsg")[path] is JsonValue saved && saved.TryGetValue<int>(out _)) continue;
+            var epsgInput = Ui.Input();
+            var panel = new StackPanel { Margin = new Thickness(18) };
+            panel.Children.Add(Ui.Text($"O arquivo {Path.GetFileName(path)} não informa o sistema de coordenadas. Informe o código EPSG para posicionar o raster no mapa e gravar o GeoTIFF."));
+            panel.Children.Add(Ui.Text("Código EPSG (por exemplo, 4326, 3857 ou UTM WGS84):"));
+            panel.Children.Add(epsgInput);
+            var dialog = Ui.Dialog("Sistema de coordenadas do ASCII", panel, 520, 250);
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+            buttons.Children.Add(Ui.Button("Cancelar", () => dialog.DialogResult = false));
+            buttons.Children.Add(Ui.Button("Continuar", () => dialog.DialogResult = true, Ui.ActionEmphasis.Primary));
+            panel.Children.Add(buttons);
+            if (dialog.ShowDialog() != true) return;
+            if (!int.TryParse(epsgInput.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int epsg)
+                || !(epsg == 4326 || epsg == 3857 || epsg is >= 32601 and <= 32660 or >= 32701 and <= 32760))
+                throw new InvalidDataException("EPSG inválido. Use EPSG:4326, EPSG:3857 ou UTM WGS84 (32601–32660/32701–32760).");
+            Session.Meta.Obj("gis_layer_epsg")[path] = epsg;
+        }
         var map = FindGisMap(mapId)!;
         var contents = Session.Meta.Arr("files");
         foreach (string path in selected)
@@ -1412,6 +1439,72 @@ public partial class MainWindow : Window
         RevealAddedContents(selected);
         await OpenGIS(mapId, selected.LastOrDefault());
         Log($"{selected.Length:N0} camada(s) adicionada(s) a {map.S("name")}.");
+    }
+
+    private async Task ExportAsciiGeoTiff(string path)
+    {
+        int epsg = Session.Meta.Obj("gis_layer_epsg")[path]?.GetValue<int>()
+            ?? throw new InvalidOperationException("Adicione o ASCII a um mapa e informe seu EPSG antes de exportar.");
+        string? output = Ui.SaveFile("GeoTIFF (*.tif)|*.tif", Path.GetFileNameWithoutExtension(path) + ".tif");
+        if (output == null) return;
+        if (!Path.GetExtension(output).Equals(".tif", StringComparison.OrdinalIgnoreCase)) output += ".tif";
+        await Task.Run(() => AsciiGridGeoTiff.Write(Session.Resolve(path), output, epsg));
+        string? mapId = GisMapForLayer(path);
+        if (mapId != null && FindGisMap(mapId) is JsonObject map)
+        {
+            if (!Session.Files.Contains(output, StringComparer.OrdinalIgnoreCase)) Session.Meta.Arr("files").Add(JsonValue.Create(output));
+            if (!map.Arr("layers").Any(layer => string.Equals(layer?.GetValue<string>(), output, StringComparison.OrdinalIgnoreCase)))
+                map.Arr("layers").Add(JsonValue.Create(output));
+            Session.Touch();
+            RevealAddedContents([output]);
+            await OpenGIS(mapId, output);
+        }
+        Ui.Alert("GeoTIFF", "GeoTIFF salvo com os valores originais do raster.", Ui.MessageTone.Information);
+        Log($"GeoTIFF exportado: {output}");
+    }
+
+    private async Task ClipRasterByShape(string rasterPath)
+    {
+        string? shapePath = Ui.PickFile("Shapefile (*.shp)|*.shp");
+        if (shapePath == null) return;
+        shapePath = Path.GetFullPath(shapePath);
+        string resolvedRaster = Session.Resolve(rasterPath);
+        int epsgOverride = Session.Meta.Obj("gis_layer_epsg")[rasterPath]?.GetValue<int>() ?? 0;
+        var input = await Task.Run(() =>
+        {
+            var raster = GeoTiffReader.ReadNumericRaster(resolvedRaster, epsgOverride);
+            var dbf = DbfTable.Read(Path.ChangeExtension(shapePath, ".dbf"));
+            var shapes = ShapefileReader.Read(shapePath, Path.GetFileNameWithoutExtension(shapePath));
+            return (raster, dbf, shapes);
+        });
+        if (input.dbf.Fields.Count == 0) throw new InvalidDataException("O DBF do shapefile não contém campos para nomear os arquivos.");
+        string defaultFolder = Path.Combine(Path.GetDirectoryName(resolvedRaster) ?? Environment.CurrentDirectory,
+            Path.GetFileNameWithoutExtension(resolvedRaster) + "_recortes");
+        var options = RasterShapeClipDialog.Show(this, rasterPath,
+            input.dbf.Fields.Select(field => field.Name).ToArray(), shapePath, defaultFolder);
+        if (options == null) return;
+        var outputs = await Task.Run(() => RasterShapeClipper.Clip(input.raster.Grid, input.raster.Epsg,
+            input.shapes, input.dbf, options.FieldIndex, options.OutputFolder, options.Crop, options.AllTouched,
+            options.Prefix, options.Suffix, options.NoData));
+        if (outputs.Count == 0)
+        {
+            Ui.Alert("Recorte sem resultados", "Nenhuma feição intersecta o raster com pixels válidos.", Ui.MessageTone.Warning);
+            return;
+        }
+        string? mapId = GisMapForLayer(rasterPath);
+        if (mapId == null) mapId = EnsureGisMapForLayer(rasterPath);
+        var map = FindGisMap(mapId);
+        foreach (var output in outputs)
+        {
+            if (!Session.Files.Contains(output.Path, StringComparer.OrdinalIgnoreCase)) Session.Meta.Arr("files").Add(JsonValue.Create(output.Path));
+            if (map != null && !map.Arr("layers").Any(layer => string.Equals(layer?.GetValue<string>(), output.Path, StringComparison.OrdinalIgnoreCase)))
+                map.Arr("layers").Add(JsonValue.Create(output.Path));
+        }
+        Session.Touch();
+        RevealAddedContents(outputs.Select(output => output.Path).ToArray());
+        if (mapId != null) await OpenGIS(mapId, outputs[^1].Path);
+        Ui.Alert("Recorte concluído", $"Criados {outputs.Count:N0} GeoTIFF(s) em {options.OutputFolder}.", Ui.MessageTone.Information);
+        Log($"Recorte raster concluído: {outputs.Count:N0} feições exportadas.");
     }
 
     private async Task RelinkContent(string oldPath)
