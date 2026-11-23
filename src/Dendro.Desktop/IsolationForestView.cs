@@ -19,7 +19,7 @@ internal sealed class IsolationForestView : ToolFormView
     private readonly ComboBox source = Ui.Combo([]), sheet = Ui.Combo([]), x = Ui.Combo([]), y = Ui.Combo([]), models = Ui.Combo([]);
     private readonly ListBox features = new() { SelectionMode = SelectionMode.Multiple, MinHeight = 110, MaxHeight = 210 };
     private readonly TextBox name = Ui.Input("IF_anomalias"), trees = Ui.Input("100"), samples = Ui.Input("256"),
-        depth = Ui.Input("0"), maxFeatures = Ui.Input("0"), contamination = Ui.Input("2"), threshold = Ui.Input(), seed = Ui.Input("42"), trainingLimit = Ui.Input("50000");
+        depth = Ui.Input("0"), maxFeatures = Ui.Input("0"), contamination = Ui.Input("2"), threshold = Ui.Input(), seed = Ui.Input("42"), trainingLimit = Ui.Input("0");
     private readonly TextBlock trainingEstimate = Ui.Text("");
 
     public IsolationForestView(MainWindow owner, ProjectSession session)
@@ -40,10 +40,10 @@ internal sealed class IsolationForestView : ToolFormView
         Ui.Field(panel, "Variáveis sorteadas por árvore (0 = todas)", maxFeatures);
         Ui.Field(panel, "Contaminação de referência (%) — acima de 0 até 50", contamination);
         Ui.Field(panel, "Limiar manual do escore (opcional, 0 a 1; substitui o quantil)", threshold);
-        Ui.Field(panel, "Máximo de linhas na amostra de treinamento (2 a 500.000)", trainingLimit);
+        Ui.Field(panel, "Máximo de linhas candidatas (0 = todas)", trainingLimit);
         panel.Children.Add(trainingEstimate);
         Ui.Field(panel, "Semente aleatória", seed);
-        Ui.AddHelp(panel, "O limite de treinamento usa amostragem uniforme de linhas completas. Até 250.000 amostras somadas entre árvores. O escore varia de 0 a 1 e não é probabilidade de erro. Empates no limiar não são classificados como anomalia.");
+        Ui.AddHelp(panel, "A tabela completa é percorrida. O limite define o conjunto de linhas completas candidatas às árvores e não tem teto fixo no aplicativo; use o tamanho que a memória do computador comportar. Cada árvore usa a amostra indicada acima conforme o algoritmo Isolation Forest. O escore varia de 0 a 1 e não é probabilidade de erro. Empates no limiar não são classificados como anomalia.");
         Ui.Section(panel,"Gráfico de diagnóstico");
         Ui.Field(panel, "Eixo X do gráfico", x); Ui.Field(panel, "Eixo Y do gráfico", y);
         Ui.AddHelp(panel, "O modelo usa todas as variáveis selecionadas. O gráfico é uma projeção em dois eixos: azul = normal; vermelho = anomalia. O relatório mantém todas as linhas e acrescenta IF_Score e IF_Classificacao.");
@@ -143,16 +143,16 @@ internal sealed class IsolationForestView : ToolFormView
 
     private void UpdateTrainingEstimate()
     {
-        if (!int.TryParse(trainingLimit.Text, out int rows) || rows < 0) { trainingEstimate.Text = "Informe o máximo de linhas para estimar a memória da amostra."; return; }
+        if (!int.TryParse(trainingLimit.Text, out int rows) || rows < 0) { trainingEstimate.Text = "Informe 0 para usar todas as linhas ou um tamanho de amostra positivo."; return; }
+        if (rows == 0) { trainingEstimate.Text = "Sem teto fixo de linhas; será usada toda a tabela completa até o limite de memória disponível."; return; }
         int dimensions = features.SelectedItems.Count;
         long bytes;
         try { bytes = IsolationForest.EstimateTrainingPoolBytes(rows, dimensions); }
         catch (OverflowException) { trainingEstimate.Text = "A estimativa ultrapassa o limite numérico."; return; }
         string size = bytes >= 1024L * 1024 * 1024 ? $"{bytes / (1024d * 1024 * 1024):N1} GB" : $"{bytes / (1024d * 1024):N0} MB";
-        bool overBudget = bytes > IsolationForest.TrainingPoolMemoryBudgetBytes;
-        trainingEstimate.Text = $"Memória estimada para a amostra de valores: {size} de 512 MB." +
-            (dimensions == 0 ? " Selecione as variáveis para completar a estimativa." : " A leitura completa da tabela e a geração do relatório também usam memória.");
-        trainingEstimate.Foreground = overBudget ? System.Windows.Media.Brushes.Firebrick : System.Windows.Media.Brushes.DimGray;
+        trainingEstimate.Text = $"Memória estimada para a amostra de valores: {size}." +
+            (dimensions == 0 ? " Selecione as variáveis para completar a estimativa." : " A leitura da tabela, as árvores e o relatório também usam memória; o limite prático depende do computador.");
+        trainingEstimate.Foreground = System.Windows.Media.Brushes.DimGray;
     }
 
     private async Task Run(bool train)
@@ -165,9 +165,11 @@ internal sealed class IsolationForestView : ToolFormView
         IsolationForestOptions? options = null;
         if (train)
         {
+            int candidateLimit = Integer(trainingLimit);
+            if (candidateLimit < 0) throw new InvalidOperationException("Use 0 para todas as linhas ou informe uma quantidade positiva.");
+            if (candidateLimit == 0) candidateLimit = int.MaxValue;
             options = new IsolationForestOptions(Integer(trees), Integer(samples), Integer(depth), Integer(maxFeatures), Ui.Number(contamination.Text) / 100,
-                string.IsNullOrWhiteSpace(threshold.Text) ? null : Ui.Number(threshold.Text), Integer(seed), Integer(trainingLimit));
-            IsolationForest.ValidateTrainingFootprint(options.TrainingLimit, selected.Length);
+                string.IsNullOrWhiteSpace(threshold.Text) ? null : Ui.Number(threshold.Text), Integer(seed), candidateLimit);
         }
         var progress = owner.StartTableOperation("Lendo tabela para Isolation Forest…");
         var cancellation = owner.OperationCancellation;

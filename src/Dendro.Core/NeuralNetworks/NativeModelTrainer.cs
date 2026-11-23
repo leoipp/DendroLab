@@ -32,12 +32,11 @@ public sealed record NativeModelBundle(string Path, string Stratum, int Rows, do
 /// <summary>In-process C# regression training and a portable model format consumed by NeuralModel.</summary>
 public static class NativeModelTrainer
 {
-    private const int MaximumRowsPerStratum = 250_000;
     private const int MaximumEncodedFeatures = 512;
     private const int MaximumSupportVectors = 256;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    private sealed record RawRow(object?[] Cells, int RowNumber);
+    private sealed record RawRow(object?[] Cells);
     private sealed record Sample(double[] Numeric, string[] Categorical, double[] Encoded, double Target, string Stratum);
     private sealed record Metrics(double R2, double Rmse, double Mae);
     private sealed record Tree(int[] Left, int[] Right, int[] Feature, double[] Threshold, double[] Value);
@@ -61,21 +60,15 @@ public static class NativeModelTrainer
         int[] featureIndexes = Enumerable.Range(1, features.Length).ToArray();
         int[] strataIndexes = Enumerable.Range(1 + features.Length, stratifiers.Length).ToArray();
         var raw = new List<RawRow>();
-        int rowNumber = 0;
-        var sampler = new Random(options.Seed);
+        long rowNumber = 0;
         foreach (var row in cursor.Rows())
         {
             cancellation.ThrowIfCancellationRequested();
             rowNumber++;
             object?[] selected = projection.Select(index => row[index]).ToArray();
-            if (raw.Count < MaximumRowsPerStratum) raw.Add(new(selected, rowNumber));
-            else
-            {
-                long slot = sampler.NextInt64(rowNumber);
-                if (slot < MaximumRowsPerStratum) raw[(int)slot] = new(selected, rowNumber);
-            }
+            raw.Add(new(selected));
             if (rowNumber % 100_000 == 0)
-                progress?.Invoke($"Lendo tabela · {rowNumber:N0} linhas verificadas; amostra de até {MaximumRowsPerStratum:N0}.");
+                progress?.Invoke($"Lendo tabela · {rowNumber:N0} linhas carregadas para treinamento.");
         }
         if (raw.Count < 10) throw new InvalidDataException("São necessárias pelo menos 10 linhas para treinar um modelo.");
 
@@ -133,7 +126,7 @@ public static class NativeModelTrainer
             if (!strata.TryGetValue(stratum, out var group)) strata[stratum] = group = [];
             group.Add(new(numericValues, categoricalValues, x[..(numericValues.Length + categorySets.Sum(values => values.Length))], y, stratum));
         }
-        progress?.Invoke($"Dados preparados · {raw.Count - excluded:N0} linhas válidas na amostra de {raw.Count:N0} de {rowNumber:N0} lidas.");
+        progress?.Invoke($"Dados preparados · {raw.Count - excluded:N0} linhas válidas de {rowNumber:N0} lidas.");
         if (strata.Count == 0) throw new InvalidDataException("Não restaram linhas completas para treinamento.");
 
         Directory.CreateDirectory(outputDirectory);

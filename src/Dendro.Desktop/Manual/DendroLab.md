@@ -179,7 +179,7 @@ A tabela original é preservada e as previsões vão para uma nova tabela. Antes
 
 ## Ajustar rede neural
 ### Entradas e ambiente
-Selecione a tabela, Y numérico, as variáveis explicativas e a validação. O treinamento executa localmente em C#, dentro do DendroLab, sem Python, IFPC ou exportação dos dados para CSV. Para tabelas acima de 250 mil linhas, o aplicativo faz uma amostra aleatória uniforme de até 250 mil linhas após percorrer a tabela; o pacote do modelo registra o tamanho total lido e o tamanho da amostra. Linhas incompletas nas colunas selecionadas são descartadas.
+Selecione a tabela, Y numérico, as variáveis explicativas e a validação. O treinamento executa localmente em C#, dentro do DendroLab, sem Python, IFPC ou exportação dos dados para CSV. Todas as linhas da tabela são consideradas; linhas incompletas nas colunas selecionadas são descartadas. O pacote do modelo registra o total lido e a quantidade válida usada no ajuste. O consumo de memória e o tempo crescem com a quantidade de dados e dependem dos recursos disponíveis no computador.
 ### Parâmetros
 Camadas ocultas definem quantos neurônios existem em cada camada. Ativação determina a transformação não linear. Épocas limitam passagens pelos dados; lote define quantas observações participam de cada atualização. Taxa de aprendizado controla o passo de ajuste e paciência define a parada antecipada.
 ### Validação e dados

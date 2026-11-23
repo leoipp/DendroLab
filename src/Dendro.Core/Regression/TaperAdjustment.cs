@@ -85,7 +85,6 @@ public static class TaperAdjustment
         foreach (var row in cursor.Rows())
         {
             cancellation.ThrowIfCancellationRequested();
-            if (rows.Count >= 500000) throw new InvalidDataException("O ajuste aceita até 500.000 medições por execução. Divida a base em estratos ou tabelas menores.");
             rows.Add(new(row, TableCursor.Text(row[tree]), strat < 0 ? "Global" : TableCursor.Text(row[strat]), Number(row[dap]), Number(row[total]), Number(row[h]), Number(row[d])));
         }
         if (!rows.Any(r => r.Valid)) throw new InvalidDataException("Não há medições válidas: confira ID, DAP > 0, H > 1,3 m, 0 ≤ h < H e d > 0.");

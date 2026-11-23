@@ -20,7 +20,7 @@ Para ajustar, são válidas as observações com ID preenchido, números finitos
 
 Não são aplicadas correções artificiais de monotonicidade ou positividade às curvas além da raiz truncada de Kozak/Garcia e dos limites de parâmetros definidos na referência. Ajustes insuficientes ou sem convergência são identificados no relatório. R² fica vazio quando não há variação nos diâmetros observados. Se nenhum modelo convergir, não é registrado um resultado parcial.
 
-O cancelamento antes da importação impede o registro de resultados. A ferramenta aceita até 500.000 medições e 1.000 estratos por execução. Não realiza aplicação volumétrica, integração do fuste nem validação independente: as estatísticas descrevem o ajuste aos próprios dados de cubagem.
+O cancelamento antes da importação impede o registro de resultados. O ajuste percorre todas as medições da tabela, sem teto fixo de linhas. Não realiza aplicação volumétrica, integração do fuste nem validação independente: as estatísticas descrevem o ajuste aos próprios dados de cubagem.
 
 ## Verificação
 

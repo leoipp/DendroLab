@@ -1474,6 +1474,29 @@ public partial class MainWindow : Window
         Log($"GeoTIFF exportado: {output}");
     }
 
+    private async Task ChooseRasterAndClip()
+    {
+        string[] rasters = Session.Files.Where(path =>
+            Path.GetExtension(path).Equals(".asc", StringComparison.OrdinalIgnoreCase)
+            || Path.GetExtension(path).Equals(".tif", StringComparison.OrdinalIgnoreCase)
+            || Path.GetExtension(path).Equals(".tiff", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (rasters.Length == 0)
+            throw new InvalidOperationException("Adicione primeiro um raster ASCII ou GeoTIFF ao projeto.");
+
+        string[] labels = rasters.Select(path => $"{Session.ContentName(path)} — {path}").ToArray();
+        var selection = Ui.Combo(labels, labels[0]);
+        var panel = new StackPanel { Margin = new Thickness(18) };
+        panel.Children.Add(Ui.Text("Escolha o raster que será recortado por cada polígono do shapefile."));
+        Ui.Field(panel, "Raster do projeto", selection);
+        var dialog = Ui.Dialog("Recortar raster por shapefile", panel, 650, 220);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(Ui.Button("Cancelar", () => dialog.DialogResult = false));
+        buttons.Children.Add(Ui.Button("Continuar", () => dialog.DialogResult = true, Ui.ActionEmphasis.Primary));
+        panel.Children.Add(buttons);
+        if (dialog.ShowDialog() == true && selection.SelectedIndex >= 0)
+            await ClipRasterByShape(rasters[selection.SelectedIndex]);
+    }
+
     private async Task ClipRasterByShape(string rasterPath)
     {
         string? shapePath = Ui.PickFile("Shapefile (*.shp)|*.shp");
@@ -2246,7 +2269,7 @@ public partial class MainWindow : Window
             ("Gráficos e modelos", ["Gráficos", "Ajuste de regressão", "Ajuste de taper", "Aplicar taper", "Aplicar regressões", "Ajustar rede neural", "Ajustar Random Forest", "Ajustar Gradient Boosting", "Ajustar SVR", "Fronteira de eficiência"]),
             ("Comparar e validar", ["Comparar curvas de produção", "ICA e IMA", "Testes estatísticos", "Validação de modelos", "Isolation Forest", "K-means"]),
             ("Planejamento de campo", ["Amostragem"]),
-            ("Mapa e satélite", ["Imagens NOAA", "Imagens Sentinel-2", "Catálogo temporal Sentinel-2", "Série de pixels Sentinel-2", "Explorar série temporal Sentinel-2"]),
+            ("Mapa e satélite", ["Recortar raster por shapefile", "Imagens NOAA", "Imagens Sentinel-2", "Catálogo temporal Sentinel-2", "Série de pixels Sentinel-2", "Explorar série temporal Sentinel-2"]),
         };
         foreach (var (groupTitle, groupTools) in toolGroups)
         {
@@ -2290,6 +2313,7 @@ public partial class MainWindow : Window
                         "K-means" => "Agrupe observações numéricas e compare o número de grupos com elbow (inertia) e silhouette.",
                         "Imagens NOAA" => "Baixe imagens NOAA em RGB natural ou NDVI no mapa do projeto.",
                         "Imagens Sentinel-2" => "Busque cenas Copernicus e gere RGB natural, falso colorido ou índices espectrais com máscara de nuvens.",
+                        "Recortar raster por shapefile" => "Recorte um raster por cada polígono de um shapefile e salve GeoTIFFs nomeados pelo DBF.",
                         _ => null,
                     },
                     IsEnabled = tool switch
@@ -2336,6 +2360,7 @@ public partial class MainWindow : Window
                     "Isolation Forest" => CommandIconKind.Anomaly,
                     "K-means" => CommandIconKind.KMeans,
                     "Imagens NOAA" => CommandIconKind.Satellite,
+                    "Recortar raster por shapefile" => CommandIconKind.SaveAs,
                     "Imagens Sentinel-2" => CommandIconKind.Multispectral,
                     "Catálogo temporal Sentinel-2" => CommandIconKind.TemporalCatalog,
                     "Série de pixels Sentinel-2" => CommandIconKind.PixelSeries,
@@ -2384,6 +2409,8 @@ public partial class MainWindow : Window
                 return;
             if ((string)i.Tag == "Imagens NOAA")
                 SetTool(new NoaaNdviView(this, Session));
+            else if ((string)i.Tag == "Recortar raster por shapefile")
+                await Execute(ChooseRasterAndClip);
             else if ((string)i.Tag == "Imagens Sentinel-2")
                 SetTool(new Sentinel2NdviView(this, Session));
             else if ((string)i.Tag == "Explorar série temporal Sentinel-2")

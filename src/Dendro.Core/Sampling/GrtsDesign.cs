@@ -21,7 +21,7 @@ public static partial class ForestSampler
             throw new ArgumentException("Informe confiança entre 0 e 100%, erro relativo e CV positivos.");
         double z = MathNet.Numerics.Distributions.Normal.InvCDF(0, 1, 0.5 + confidencePercent / 200);
         double size = Math.Ceiling(Math.Pow(z * cvPercent / relativeErrorPercent, 2));
-        if (size > 100_000) throw new ArgumentException("O dimensionamento excede 100 mil parcelas por estrato. Revise erro e CV.");
+        if (!double.IsFinite(size) || size > int.MaxValue) throw new ArgumentException("O dimensionamento excede a capacidade numérica de parcelas por estrato.");
         return Math.Max(2, (int)size);
     }
 
@@ -60,10 +60,9 @@ public static partial class ForestSampler
                 GrtsSampleSizeMode.Precision => PlanGrtsSampleSize(o.GrtsConfidencePercent, o.GrtsRelativeErrorPercent, o.GrtsCvPercent),
                 _ => group.Sum(stand => stand.Required)
             };
-            if (n is < 1 or > 100_000) throw new ArgumentException($"Estrato '{group.Key}': informe entre 1 e 100 mil parcelas de base.");
+            if (n < 1) throw new ArgumentException($"Estrato '{group.Key}': informe ao menos uma parcela de base.");
             int total = checked(n + o.GrtsReplacementCount);
             int target = checked(total * o.GrtsPointDensity);
-            if (target > 1_000_000) throw new ArgumentException($"Estrato '{group.Key}': reduza a densidade ou a quantidade; o limite é um milhão de candidatos.");
             var shapes = group.Select(stand => (Stand: stand, Shape: SafeBuffer(stand.Shape, o.EdgeBufferMeters))).ToArray();
             double sumArea = shapes.Sum(item => item.Shape.Area);
             Geometry union = NetTopologySuite.Operation.Union.UnaryUnionOp.Union(shapes.Select(item => item.Shape).ToArray());
@@ -85,8 +84,8 @@ public static partial class ForestSampler
                 double unitHa = shape.Area / 10_000d / candidates.Count;
                 frame.AddRange(candidates.Select(point => new GrtsPoint(stand, point, unitHa, auxiliary, category)));
             }
-            if (frame.Count > 1_000_000 || total > frame.Count)
-                throw new ArgumentException($"Estrato '{group.Key}': quadro de candidatos insuficiente ou acima do limite. Revise a densidade.");
+            if (total > frame.Count)
+                throw new ArgumentException($"Estrato '{group.Key}': quadro de candidatos insuficiente. Revise a densidade.");
             double[] basePi = GrtsProbabilities(frame, n, n, group.Key, o);
             double[] drawPi = GrtsProbabilities(frame, total, n, group.Key, o);
             int[]? best = null;
