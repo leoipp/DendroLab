@@ -1,5 +1,6 @@
 using System.Text;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Dendro.Core.Mathematics;
@@ -40,10 +41,21 @@ public sealed record ChartResult(
 
 public sealed class RegressionEngine
 {
+    private static readonly ConcurrentDictionary<string, bool> NestedFormulaCache = new(StringComparer.Ordinal);
     private readonly IReadOnlyList<RegressionFamily> families;
+    private readonly IReadOnlyList<RegressionFamily> warmFamilies;
 
-    public RegressionEngine(IReadOnlyList<RegressionFamily>? families = null) =>
+    public RegressionEngine(IReadOnlyList<RegressionFamily>? families = null)
+        : this(families, families) { }
+
+    public RegressionEngine(
+        IReadOnlyList<RegressionFamily>? families,
+        IReadOnlyList<RegressionFamily>? warmFamilies
+    )
+    {
         this.families = families ?? Models;
+        this.warmFamilies = warmFamilies ?? this.families;
+    }
 
     public static readonly RegressionFamily[] Models =
     [
@@ -240,23 +252,52 @@ public sealed class RegressionEngine
                     }
                     if (model == -2)
                     {
-                        foreach (var definition in comparisonFamilies)
-                            fits.Add(Fit(data, definition, side));
+                        var completed = new List<(RegressionFamily Family, JsonObject Fit)>();
+                        foreach (var definition in comparisonFamilies
+                            .OrderBy(f => f.Predictors)
+                            .ThenBy(f => f.Parameters)
+                            .ThenBy(f => f.Id, StringComparer.Ordinal))
+                        {
+                            var warmStarts = new List<double[]>();
+                            foreach (var previous in completed)
+                                if (TryNestedStart(previous.Family, previous.Fit, definition, out var start))
+                                {
+                                    warmStarts.Add(start);
+                                    foreach (double multiplier in new[] { .5, 2d })
+                                    {
+                                        var ratePerturbation = (double[])start.Clone();
+                                        ratePerturbation[1] *= multiplier;
+                                        warmStarts.Add(ratePerturbation);
+                                    }
+                                    AddWarmStartPerturbations(start, previous.Family.Parameters, definition, data, warmStarts);
+                                }
+                            var fit = Fit(data, definition, side, warmStarts);
+                            completed.Add((definition, fit));
+                            fits.Add(fit);
+                        }
                         if (custom)
                             fits.Add(Fit(data, new("Personalizado", chart.S("formula"), k), side));
                     }
                     else
                     {
                         int index = model.Value;
-                        fits.Add(
-                            Fit(
-                                data,
-                                index < 0
-                                    ? new RegressionFamily("Personalizado", chart.S("formula"), k)
-                                    : families[index],
-                                side
-                            )
-                        );
+                        var definition = index < 0
+                            ? new RegressionFamily("Personalizado", chart.S("formula"), k,
+                                Predictors: (int)chart.N("predictor_count", 1))
+                            : families[index];
+                        var warmStarts = new List<double[]>();
+                        foreach (var parent in warmFamilies
+                            .Where(f => f.Predictors < definition.Predictors)
+                            .Where(f => FormulasNestAtZero(f, definition)))
+                        {
+                            var parentFit = Fit(data, parent, side);
+                            if (TryNestedStart(parent, parentFit, definition, out var start))
+                            {
+                                warmStarts.Add(start);
+                                AddWarmStartPerturbations(start, parent.Parameters, definition, data, warmStarts);
+                            }
+                        }
+                        fits.Add(Fit(data, definition, side, warmStarts));
                     }
                 }
             }
@@ -363,8 +404,167 @@ public sealed class RegressionEngine
         }
     }
 
-    private static JsonObject Fit(ChartPoint[] points, RegressionFamily definition, int side)
+    private static bool TryNestedStart(
+        RegressionFamily parent,
+        JsonObject parentFit,
+        RegressionFamily child,
+        out double[] start
+    )
     {
+        start = new double[4];
+        if (!parentFit.B("converged") || parent.Predictors >= child.Predictors
+            || parent.Parameters > child.Parameters || parent.Parameters is < 1 or > 4
+            || child.Parameters is < 1 or > 4)
+            return false;
+
+        string cacheKey = string.Join("\0", parent.Predictors, parent.Parameters, parent.Formula,
+            child.Predictors, child.Parameters, child.Formula);
+        if (!NestedFormulaCache.GetOrAdd(cacheKey, _ => FormulasNestAtZero(parent, child)))
+            return false;
+
+        for (int i = 0; i < parent.Parameters; i++)
+            start[i] = parentFit.N("b" + i);
+        return true;
+    }
+
+    private static bool FormulasNestAtZero(RegressionFamily parent, RegressionFamily child)
+    {
+        var parentFormula = new Formula(parent.Formula, FormulaSymbols(parent.Parameters));
+        var childFormula = new Formula(child.Formula, FormulaSymbols(child.Parameters));
+        double[] x1 = [.4, 1.7, 8.9, 37.2],
+            x2 = [-2.3, .25, 7.8, 41.6],
+            x3 = [.15, 1.4, 9.1, 30.7];
+        for (int probe = 0; probe < x1.Length; probe++)
+        {
+            var coefficients = new double[4];
+            coefficients[0] = 1.3 + .7 * probe;
+            coefficients[1] = .07 + .11 * probe;
+            coefficients[2] = .55 + .35 * probe;
+            coefficients[3] = 0;
+            double oldValue,
+                newValue;
+            try
+            {
+                oldValue = Evaluate(parentFormula, coefficients, x1[probe], x2[probe], x3[probe]);
+                newValue = Evaluate(childFormula, coefficients, x1[probe], x2[probe], x3[probe]);
+            }
+            catch (Exception ex) when (ex is ArithmeticException or InvalidDataException)
+            {
+                return false;
+            }
+            if (!double.IsFinite(oldValue) || !double.IsFinite(newValue)
+                || Math.Abs(oldValue - newValue) > 1e-10 * Math.Max(1, Math.Abs(oldValue)))
+                return false;
+        }
+        return true;
+    }
+
+    private static string[] FormulaSymbols(int parameters) =>
+        [.. Enumerable.Range(0, parameters).Select(i => "b" + i), "x", "x1", "x2", "x3", "t"];
+
+    private static double Evaluate(Formula formula, double[] b, double x1, double x2, double x3) =>
+        formula.Evaluate(symbol => symbol switch
+        {
+            "x" or "x1" or "t" => x1,
+            "x2" => x2,
+            "x3" => x3,
+            _ => b[symbol[1] - '0'],
+        });
+
+    private static void AddWarmStartPerturbations(
+        double[] start,
+        int parentParameters,
+        RegressionFamily child,
+        ChartPoint[] points,
+        List<double[]> starts
+    )
+    {
+        double scale = 0;
+        for (int predictor = 1; predictor < child.Predictors; predictor++)
+            foreach (var point in points)
+                scale = Math.Max(scale, Math.Abs(point.Input(predictor)));
+        scale = scale > 0 && double.IsFinite(scale) ? 1 / scale : 1;
+        for (int parameter = parentParameters; parameter < child.Parameters; parameter++)
+        {
+            foreach (double sign in new[] { -1d, 1d })
+            {
+                var perturbed = (double[])start.Clone();
+                perturbed[parameter] = sign * scale;
+                starts.Add(perturbed);
+            }
+        }
+    }
+
+    private static double[][] StartingPoints(
+        int model,
+        int parameters,
+        double xmin,
+        double xmax,
+        double ymin,
+        double ymax,
+        double mean,
+        IReadOnlyList<double[]>? warmStarts
+    )
+    {
+        var starts = new List<double[]>();
+        void Add(double[] values)
+        {
+            if (values.Length == 4 && values.All(double.IsFinite)
+                && !starts.Any(existing => existing.SequenceEqual(values)))
+                starts.Add((double[])values.Clone());
+        }
+
+        double scale = Math.Max(Math.Abs(xmax), 1);
+        for (int seed = 0; seed < 5; seed++)
+        {
+            double[] b = [mean, (ymax - ymin) / (xmax - xmin), .01, 0];
+            switch (model)
+            {
+                case 3:
+                    b[0] = Math.Max(mean, .001);
+                    b[1] = .1 / scale;
+                    break;
+                case 4:
+                    b[0] = Math.Max(mean, .001) / Math.Pow(Math.Max(xmax, 1), .5);
+                    b[1] = .5;
+                    break;
+                case 6:
+                    b[0] = Math.Log(Math.Max(mean, .001));
+                    b[1] = -scale * .3;
+                    break;
+                case 7:
+                    b[0] = Math.Max(ymax, .001);
+                    b[1] = -scale * .3;
+                    break;
+                case 8:
+                case 9:
+                    b[0] = Math.Max(ymax, 1) * 1.2;
+                    b[1] = 1;
+                    b[2] = 2 / scale;
+                    break;
+                case 10:
+                case 11:
+                    b[0] = Math.Max(ymax, 1) * 1.2;
+                    b[1] = 1 / scale;
+                    b[2] = 1.5;
+                    break;
+            }
+            double multiplier = seed switch { 0 => 1, 1 => .1, 2 => 10, 3 => -1, _ => 2 };
+            for (int j = 0; j < parameters; j++) b[j] *= multiplier;
+            Add(b);
+        }
+
+        foreach (var warm in warmStarts ?? [])
+        {
+            if (warm.Length != 4 || warm.Any(value => !double.IsFinite(value))) continue;
+            Add(warm);
+        }
+        return starts.ToArray();
+    }
+
+    private static JsonObject Fit(ChartPoint[] points, RegressionFamily definition, int side, IReadOnlyList<double[]>? warmStarts = null)
+    {
+        var timer = System.Diagnostics.Stopwatch.StartNew();
         string text = definition.Formula;
         int k = definition.Parameters;
         int model = Array.FindIndex(
@@ -383,6 +583,19 @@ public sealed class RegressionEngine
             ["frontier"] = side,
             ["converged"] = false,
             ["status"] = "Sem convergência",
+            ["diagnostic_status"] = "NÃO CONVERGENTE",
+            ["algorithm"] = model is >= 0 and <= 2 ? "QR polinomial" : "Levenberg–Marquardt escalado",
+            ["termination_reason"] = "sem solução válida",
+            ["optimizer_converged"] = false,
+            ["starts_attempted"] = 0,
+            ["iterations"] = 0,
+            ["function_evaluations"] = 0,
+            ["objective_evaluations"] = 0,
+            ["initial_parameters"] = null,
+            ["initial_objective"] = null,
+            ["objective"] = null,
+            ["elapsed_ms"] = 0,
+            ["diagnostics"] = new JsonArray(),
         };
         foreach (string key in new[] { "r2", "rmse", "aic", "bic", "adj" })
             result[key] = null;
@@ -391,6 +604,10 @@ public sealed class RegressionEngine
         if (n <= k)
         {
             result["status"] = "Observações insuficientes";
+            result["diagnostic_status"] = "OBSERVAÇÕES INSUFICIENTES";
+            result["termination_reason"] = "n <= parâmetros";
+            timer.Stop();
+            result["elapsed_ms"] = timer.ElapsedMilliseconds;
             return result;
         }
         double xmin = points.Min(p => p.X),
@@ -414,19 +631,32 @@ public sealed class RegressionEngine
         if (!(xmax > xmin))
         {
             result["status"] = "X sem variação";
+            result["diagnostic_status"] = "PREDITOR SEM VARIAÇÃO";
+            result["termination_reason"] = "x1 sem variação";
+            timer.Stop();
+            result["elapsed_ms"] = timer.ElapsedMilliseconds;
             return result;
         }
         var formula = new Formula(text, ["b0", "b1", "b2", "b3", "x", "x1", "x2", "x3", "t"]);
-        double Predict(double[] b, ChartPoint point) =>
-            formula.Evaluate(s => s switch
+        long functionEvaluations = 0,
+            objectiveEvaluations = 0,
+            iterations = 0;
+        double initialObjective = double.PositiveInfinity;
+        double[]? initialParameters = null;
+        double Predict(double[] b, ChartPoint point)
+        {
+            functionEvaluations++;
+            return formula.Evaluate(s => s switch
             {
                 "x" or "x1" or "t" => point.X,
                 "x2" => point.Input(1),
                 "x3" => point.Input(2),
                 _ => b[s[1] - '0'],
             });
+        }
         double Score(double[] b)
         {
+            objectiveEvaluations++;
             double sum = 0;
             foreach (var p in points)
             {
@@ -436,11 +666,13 @@ public sealed class RegressionEngine
                     return double.PositiveInfinity;
                 sum += r * r;
             }
-            return sum;
+            return double.IsFinite(sum) ? sum : double.PositiveInfinity;
         }
         double best = double.PositiveInfinity;
         double[] bestB = new double[4];
-        bool success = false;
+        bool success = false,
+            optimizerConverged = false,
+            preservedNestedStart = false;
         if (model is >= 0 and <= 2)
         {
             double center = xmin + (xmax - xmin) / 2,
@@ -508,59 +740,46 @@ public sealed class RegressionEngine
                         coef[j] * binom[j, h] * Math.Pow(-center, j - h) / Math.Pow(span, j);
                 best = Score(bestB);
                 success = double.IsFinite(best);
+                optimizerConverged = success;
+                result["termination_reason"] = success ? "solução polinomial por QR" : "decomposição QR inválida";
             }
         }
         else
-            for (int seed = 0; seed < 5; seed++)
+        {
+            foreach (var warm in warmStarts ?? [])
             {
-                double scale = Math.Max(Math.Abs(xmax), 1);
-                double[] b = [mean, (ymax - ymin) / (xmax - xmin), .01, 0];
-                switch (model)
+                double candidate = Score(warm);
+                if (candidate < initialObjective)
                 {
-                    case 3:
-                        b[0] = Math.Max(mean, .001);
-                        b[1] = .1 / scale;
-                        break;
-                    case 4:
-                        b[0] = Math.Max(mean, .001) / Math.Pow(Math.Max(xmax, 1), .5);
-                        b[1] = .5;
-                        break;
-                    case 6:
-                        b[0] = Math.Log(Math.Max(mean, .001));
-                        b[1] = -scale * .3;
-                        break;
-                    case 7:
-                        b[0] = Math.Max(ymax, .001);
-                        b[1] = -scale * .3;
-                        break;
-                    case 8:
-                    case 9:
-                        b[0] = Math.Max(ymax, 1) * 1.2;
-                        b[1] = 1;
-                        b[2] = 2 / scale;
-                        break;
-                    case 10:
-                    case 11:
-                        b[0] = Math.Max(ymax, 1) * 1.2;
-                        b[1] = 1 / scale;
-                        b[2] = 1.5;
-                        break;
+                    initialObjective = candidate;
+                    initialParameters = (double[])warm.Clone();
                 }
-                double multiplier = seed switch
+                if (double.IsFinite(candidate) && candidate < best)
                 {
-                    0 => 1,
-                    1 => .1,
-                    2 => 10,
-                    3 => -1,
-                    _ => 2,
-                };
-                for (int j = 0; j < k; j++)
-                    b[j] *= multiplier;
+                    best = candidate;
+                    bestB = (double[])warm.Clone();
+                    success = true;
+                    preservedNestedStart = true;
+                }
+            }
+            string bestTerminationReason = preservedNestedStart ? "candidato aninhado disponível" : "sem convergência";
+            var starts = StartingPoints(model, k, xmin, xmax, ymin, ymax, mean, warmStarts);
+            result["starts_attempted"] = starts.Length;
+            foreach (var startingPoint in starts)
+            {
+                double[] b = (double[])startingPoint.Clone();
                 double score = Score(b),
                     lambda = .001;
+                if (score < initialObjective)
+                {
+                    initialObjective = score;
+                    initialParameters = (double[])b.Clone();
+                }
                 bool converged = false;
+                string terminationReason = "limite de iterações";
                 for (int iteration = 0; iteration < 100 && double.IsFinite(score); iteration++)
                 {
+                    iterations++;
                     var a = new double[k, k];
                     var rhs = new double[k];
                     bool valid = true;
@@ -595,33 +814,50 @@ public sealed class RegressionEngine
                         }
                     }
                     if (!valid)
+                    {
+                        terminationReason = "jacobiana não finita";
                         break;
+                    }
+                    var columnScale = new double[k];
                     double gradient = 0;
                     for (int j = 0; j < k; j++)
                     {
-                        gradient = Math.Max(gradient, Math.Abs(rhs[j]));
-                        a[j, j] += lambda * Math.Max(a[j, j], 1);
+                        columnScale[j] = double.IsFinite(a[j, j]) && a[j, j] > 1e-24
+                            ? Math.Sqrt(a[j, j]) : 1;
+                        gradient = Math.Max(gradient, Math.Abs(rhs[j] / columnScale[j]));
                     }
-                    if (gradient < 1e-9)
+                    for (int j = 0; j < k; j++)
+                    {
+                        rhs[j] /= columnScale[j];
+                        for (int h = 0; h < k; h++)
+                            a[j, h] /= columnScale[j] * columnScale[h];
+                        a[j, j] += lambda;
+                    }
+                    if (gradient < 1e-8 * Math.Max(1, Math.Sqrt(score)))
                     {
                         converged = true;
+                        terminationReason = "tolerância de gradiente escalado";
                         break;
                     }
                     if (!InventoryMath.Solve(a, rhs, out var step))
                     {
                         lambda *= 10;
                         if (lambda > 1e15)
+                        {
+                            terminationReason = "sistema normal singular ou mal condicionado";
                             break;
+                        }
                         continue;
                     }
                     var trial = (double[])b.Clone();
                     double relative = 0;
                     for (int j = 0; j < k; j++)
                     {
-                        trial[j] += step[j];
+                        double parameterStep = step[j] / columnScale[j];
+                        trial[j] += parameterStep;
                         relative = Math.Max(
                             relative,
-                            Math.Abs(step[j]) / Math.Max(1, Math.Abs(b[j]))
+                            Math.Abs(step[j]) / Math.Max(1, Math.Abs(b[j] * columnScale[j]))
                         );
                     }
                     double next = Score(trial);
@@ -634,6 +870,7 @@ public sealed class RegressionEngine
                         if (relative < 1e-8 || improvement < 1e-12 * Math.Max(1, score))
                         {
                             converged = true;
+                            terminationReason = relative < 1e-8 ? "tolerância de passo" : "tolerância de melhoria";
                             break;
                         }
                     }
@@ -643,10 +880,14 @@ public sealed class RegressionEngine
                         if (relative < 1e-10)
                         {
                             converged = true;
+                            terminationReason = "passo pequeno sem melhoria";
                             break;
                         }
                         if (lambda > 1e15)
+                        {
+                            terminationReason = "amortecimento máximo";
                             break;
+                        }
                     }
                 }
                 if (converged && score < best)
@@ -654,12 +895,30 @@ public sealed class RegressionEngine
                     best = score;
                     bestB = b;
                     success = true;
+                    optimizerConverged = true;
+                    preservedNestedStart = false;
+                    bestTerminationReason = terminationReason;
                 }
             }
+            result["termination_reason"] = optimizerConverged ? bestTerminationReason
+                : preservedNestedStart ? "candidato aninhado preservado; refinamento não melhorou o objetivo"
+                : bestTerminationReason;
+        }
+        result["optimizer_converged"] = optimizerConverged;
+        result["iterations"] = iterations;
+        result["function_evaluations"] = functionEvaluations;
+        result["objective_evaluations"] = objectiveEvaluations;
+        result["initial_parameters"] = initialParameters == null ? null
+            : new JsonArray(initialParameters.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
+        result["initial_objective"] = double.IsFinite(initialObjective) ? initialObjective : null;
+        result["objective"] = double.IsFinite(best) ? best : null;
+        result["elapsed_ms"] = timer.ElapsedMilliseconds;
+        if (!double.IsFinite(initialObjective) && double.IsFinite(best))
+            result["initial_objective"] = best;
         if (success)
         {
             result["converged"] = true;
-            result["status"] = "OK";
+            result["status"] = optimizerConverged ? "OK" : "Candidato aninhado preservado";
             for (int i = 0; i < 4; i++)
                 result["b" + i] = bestB[i];
             result["rmse"] = Math.Sqrt(best / n);
@@ -670,7 +929,37 @@ public sealed class RegressionEngine
             double ll = n * Math.Log(Math.Max(best / n, 2.2250738585072014e-308));
             result["aic"] = ll + 2 * k;
             result["bic"] = ll + k * Math.Log(n);
+            double predictedMean = 0,
+                predictedSst = 0,
+                predictedMin = double.PositiveInfinity,
+                predictedMax = double.NegativeInfinity;
+            int predictedCount = 0;
+            foreach (var point in points)
+            {
+                double predicted = Predict(bestB, point);
+                predictedMin = Math.Min(predictedMin, predicted);
+                predictedMax = Math.Max(predictedMax, predicted);
+                double delta = predicted - predictedMean;
+                predictedMean += delta / ++predictedCount;
+                predictedSst += delta * (predicted - predictedMean);
+            }
+            bool degenerate = sst > 0 && predictedCount > 0
+                && Math.Sqrt(predictedSst / predictedCount) <= Math.Sqrt(sst / n) * 1e-6
+                && predictedMax - predictedMin <= Math.Sqrt(sst / n) * 1e-5;
+            var diagnosticMessages = new JsonArray();
+            if (preservedNestedStart)
+                diagnosticMessages.Add("Uma solução aninhada válida foi preservada; as tentativas não a melhoraram.");
+            if (degenerate)
+                diagnosticMessages.Add("As predições são praticamente constantes em relação à variação observada.");
+            result["diagnostics"] = diagnosticMessages;
+            result["diagnostic_status"] = degenerate ? "SOLUÇÃO DEGENERADA"
+                : preservedNestedStart ? "SOLUÇÃO ANINHADA PRESERVADA"
+                : optimizerConverged ? "CONVERGENTE" : "CONVERGÊNCIA SUSPEITA";
+            if (degenerate)
+                result["termination_reason"] = "predições praticamente constantes";
         }
+        timer.Stop();
+        result["elapsed_ms"] = timer.ElapsedMilliseconds;
         return result;
     }
 

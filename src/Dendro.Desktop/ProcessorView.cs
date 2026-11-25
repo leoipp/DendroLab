@@ -133,8 +133,7 @@ internal sealed class ProcessorView : DockPanel
         validation.Visibility = Visibility.Collapsed;
         form.Children.Add(validation);
         var execute = Ui.AsyncButton("Executar", () => owner.Execute(Process), Ui.ActionEmphasis.Primary);
-        execute.MinWidth = 100;
-        var footer = Ui.ActionFooter(execute);
+        var footer = Ui.IconActionFooter(execute);
         DockPanel.SetDock(footer, Dock.Bottom);
         Children.Add(footer);
         Children.Add(Ui.Scroll(form));

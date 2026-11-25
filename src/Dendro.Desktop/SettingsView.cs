@@ -114,7 +114,12 @@ internal static class SettingsView
         var apply = Ui.Button("Aplicar configurações", () => { });
         var cursorSnap = new CursorSnapPreferences.Editor();
         tabs.Items.Add(new TabItem { Header = "Cursor dos gráficos", Content = Ui.Scroll(cursorSnap) });
-        var window = Ui.Dialog("Configurações do projeto", Ui.WithToolbar(tabs, apply), 1100, 780);
+        var layout = new DockPanel { Background = System.Windows.Media.Brushes.White };
+        var footer = Ui.IconActionFooter(apply);
+        DockPanel.SetDock(footer, Dock.Bottom);
+        layout.Children.Add(footer);
+        layout.Children.Add(tabs);
+        var window = Ui.Dialog("Configurações do projeto", layout, 1100, 780);
         apply.Click += async (_, _) =>
         {
             apply.IsEnabled = false;

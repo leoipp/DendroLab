@@ -144,12 +144,11 @@ internal static class WorkspaceOperations
                 bool exportAllSourceColumns = request.S("op") == "export" && request.N("format") == 2;
                 DataTable? source = exportAllSourceColumns ? Read(config) : null;
                 bool compareAllPredictorCounts = request.S("op") == "fit" && request.N("model") == -2;
-                var engine = new RegressionEngine(
-                    project == null ? null : RegressionCatalog.Families(
-                        project,
-                        compareAllPredictorCounts ? 0 : (int)config.N("predictor_count", 1)
-                    )
-                );
+                var availableFamilies = project == null ? null : RegressionCatalog.Families(project, 0);
+                var selectedFamilies = availableFamilies == null ? null : compareAllPredictorCounts
+                    ? availableFamilies
+                    : availableFamilies.Where(f => f.Predictors == (int)config.N("predictor_count", 1)).ToArray();
+                var engine = new RegressionEngine(selectedFamilies, availableFamilies);
                 ChartResult chart;
                 if (source != null)
                     chart = engine.Generate(source, config,

@@ -91,9 +91,9 @@ Informe o nome e grave a nova tabela no projeto. Ao unir IFC2025 e IFC2026, os r
 
 ## Parear medições
 ### Finalidade
-Relaciona medições da mesma árvore ou parcela ao longo do tempo. Requer uma coluna de ano ou data e os campos numéricos que serão comparados.
+Relaciona medições da mesma árvore, parcela, talhão, lote ou projeto ao longo do tempo. Requer uma coluna de ano ou data e os campos que serão comparados.
 ### Identificação
-As chaves vêm de Configurações → Identificação. A data é retirada da identidade para encontrar a mesma unidade em ocasiões distintas. O modo Ambos gera resultados separados para árvores e parcelas.
+Árvore e parcela usam as chaves de Configurações → Identificação. Talhão e lote usam as colunas correspondentes disponíveis na origem, e projeto usa Contexto_ID ou Grupo quando houver. A data é retirada da identidade para encontrar a mesma unidade em ocasiões distintas. Selecione um ou mais níveis; cada nível gera uma tabela própria. Confira as chaves exibidas antes de executar para garantir que unidades de bases diferentes não sejam misturadas nem separadas indevidamente.
 ### Como usar
 Escolha a tabela, a coluna temporal, as variáveis e o nível de pareamento. Selecione o formato de saída e a regra para registros repetidos. A opção que exige valor único interrompe a operação ao detectar duplicatas; uma agregação deve representar uma decisão metodológica consciente.
 ### Conferência
@@ -160,20 +160,39 @@ Gráficos salvos registram a origem e a configuração no projeto. A geração e
 ## Ajuste de regressão
 ### Entradas e execução
 Parta de um gráfico, escolha a família da equação e mapeie Y e os preditores. Ajustes podem usar mais de um preditor conforme a família. Confira o número de coeficientes, as condições de domínio e as observações selecionadas.
-### Regra técnica
-O ajuste procura coeficientes que reduzam o erro entre observado e previsto, respeitando a formulação do modelo. Transformações logarítmicas e expressões não lineares possuem restrições: logaritmo de número não positivo, divisão por zero ou potência fora do domínio impedem avaliações válidas.
-### Diagnóstico
-Leia convergência, quantidade de pares válidos e resíduos, além das métricas. Um R² elevado não prova independência, ausência de viés ou capacidade de extrapolar. Examine resíduos por idade, tamanho e grupo, e use dados externos para avaliar predição.
+### Como ocorre o ajuste
+O DendroLab usa os pontos mantidos no gráfico e tenta encontrar os coeficientes (`b0` a `b3`) que minimizam a soma dos quadrados dos resíduos, isto é, das diferenças entre Y observado e Y previsto pela equação. Linhas excluídas no gráfico não entram no ajuste. Linhas sem valores numéricos válidos nos eixos ou preditores necessários, e avaliações que geram valores indefinidos, não podem contribuir para aquele modelo. **N** informa quantos pares foram usados; confira esse número ao comparar modelos.
+
+Modelos polinomiais são calculados por decomposição QR. Os demais modelos não lineares usam Levenberg–Marquardt, um método iterativo: calcula como pequenas mudanças em cada coeficiente alteram as previsões, propõe uma atualização e a mantém quando reduz o erro. O amortecimento e o reescalonamento dos coeficientes ajudam quando os parâmetros têm escalas diferentes. O motor testa diferentes valores iniciais e, quando reconhece que um modelo mais simples está contido em outro, também tenta iniciar pelo ajuste simples. Cada tentativa tem um limite de iterações; portanto, convergir significa que uma condição numérica de parada foi atingida, não que se provou encontrar o melhor ajuste possível.
+
+Transformações logarítmicas e expressões não lineares têm restrições: logaritmo de número não positivo, divisão por zero ou potência fora do domínio impedem avaliações válidas. Confira unidades e faixas dos preditores, sobretudo quando há mais de um. A linha de um modelo com múltiplos preditores é desenhada fixando os demais preditores nas médias usadas no ajuste; ela não mostra todas as curvas possíveis para esses preditores.
+### Diagnósticos
+- **CONVERGENTE**: o otimizador chegou a um critério de parada numérico e há uma solução utilizável. Isso não garante bom ajuste, ausência de viés ou validade biológica.
+- **SOLUÇÃO ANINHADA PRESERVADA**: o modelo mais complexo contém um modelo mais simples como caso particular. O ajuste simples foi mantido porque as tentativas não encontraram um resultado melhor. Os coeficientes extras podem ficar em zero; o rótulo não significa que o modelo complexo tenha melhorado.
+- **SOLUÇÃO DEGENERADA**: as previsões ficaram praticamente constantes apesar da variação observada em Y. Trate o ajuste como suspeito, mesmo que exista uma solução numérica; examine coeficientes, fórmula, escala e variação dos preditores.
+- **NÃO CONVERGENTE**: as tentativas não chegaram a um critério de parada com uma solução utilizável. Consulte o motivo de término e verifique dados, fórmula, unidades, valores iniciais e quantidade de observações.
+- **OBSERVAÇÕES INSUFICIENTES**: o número de observações não é suficiente para estimar a quantidade de coeficientes do modelo (o ajuste requer `N > número de coeficientes`).
+- **PREDITOR SEM VARIAÇÃO**: o preditor principal X1 tem o mesmo valor em todas as observações usadas, então não é possível estimar sua relação com Y.
+
+### Métricas da tabela
+- **R²** compara a soma dos quadrados dos resíduos com a variação de Y em torno da média. Mais perto de 1 indica maior aderência dentro dos dados ajustados; pode ser negativo quando o modelo é pior que prever a média.
+- **RMSE** é a raiz do erro quadrático médio, na mesma unidade de Y. Menor é melhor ao comparar modelos na mesma resposta e nas mesmas observações; grandes erros pesam mais.
+- **AIC** e **BIC** combinam erro e penalização pela quantidade de coeficientes. Em geral, menor é preferível ao comparar modelos para a mesma resposta e a mesma amostra. Não são prova de validade externa.
+- **N** é o número de observações usadas; **b0**, **b1**, **b2** e **b3** são os coeficientes estimados. Seu significado depende da fórmula e das unidades de cada preditor.
+
+Um R² elevado ou o rótulo **CONVERGENTE** não prova independência dos erros, ausência de viés ou capacidade de extrapolar. Examine o gráfico de dispersão e os resíduos por idade, tamanho e grupo; observe se o erro aumenta com a idade ou muda de padrão. Quando possível, avalie a predição em dados que não participaram do ajuste. Não escolha um modelo apenas pela aparência da curva ou por uma métrica isolada.
 ### Salvar e reutilizar
 Salve a regressão identificando origem, unidades e significado dos preditores. O cadastro em Volumetria, Crescimento e produção ou Índice de sítio exige mapear cada entrada para o contexto correto. Trocar a unidade de X sem transformar o modelo altera sua interpretação.
 
 ## Aplicar regressões
 ### Como usar
-Selecione a tabela e uma ou mais regressões salvas. Cada regressão pode ter seu próprio mapeamento de X1, X2 e X3. Informe o nome da nova tabela e confira se as colunas são equivalentes às usadas no ajuste.
+Selecione a origem do modelo: regressões salvas, equações vigentes por código de Crescimento e produção ou modelos vigentes por código de Índice de sítio. Escolha a tabela de entrada, marque uma ou mais equações e mapeie X1, X2 e X3 para as colunas correspondentes. Para curvas de crescimento e modelos de sítio, a idade pode ser convertida entre anos e meses quando o nome da coluna deixa a unidade explícita; confira a unidade quando o nome não indica isso.
+### Aplicação por estrato
+Cada equação pode ser limitada a um estrato próprio. Na linha do modelo, escolha **Estrato · coluna** e informe em **Estrato · valor** o número ou texto a comparar. Só as linhas correspondentes recebem previsão nessa equação; as demais permanecem na tabela com a saída vazia. Deixe a coluna de estrato vazia para aplicar a equação à base toda.
 ### Predição direta
-Calcula `Y previsto = f(X)`. O Y observado é opcional nesse modo e serve como referência quando disponível. Coluna ausente ou valor não numérico produz resultado vazio naquela linha.
+Para regressões salvas e Crescimento e produção, calcula `Y previsto = f(X)`. Em Índice de sítio, calcula `IS = Y observado × f(idade-base) / f(idade atual)`; selecione a coluna observada indicada pelo modelo (DAPd ou Hd). Coluna ausente ou valor não numérico produz resultado vazio naquela linha.
 ### Projeção entre ocasiões
-No modo de projeção, calcula `Y₂ = Y₁ × f(i₂) / f(i₁)`. Y₁ é obrigatório e todos os preditores precisam ser mapeados nas duas ocasiões. O denominador precisa ser válido e diferente de zero.
+No modo de projeção, calcula `Y₂ = Y₁ × f(i₂) / f(i₁)`. Y₁ é obrigatório e todos os preditores precisam ser mapeados nas ocasiões i1 e i2. Para Índice de sítio, o resultado é o DAPd ou Hd projetado pela curva selecionada. O denominador precisa ser válido e diferente de zero.
 ### Resultado
 A tabela original é preservada e as previsões vão para uma nova tabela. Antes de aplicar em toda a base, confira algumas linhas por cálculo independente, sobretudo se o modelo usa meses e a tabela está em anos.
 

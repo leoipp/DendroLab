@@ -31,7 +31,7 @@ internal class ToolFormView : DockPanel
         Children.Clear();
         if (actions.Length > 0)
         {
-            var footer = Ui.ActionFooter(actions);
+            var footer = Ui.IconActionFooter(actions);
             SetDock(footer, Dock.Bottom);
             Children.Add(footer);
         }

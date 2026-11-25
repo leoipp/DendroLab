@@ -237,6 +237,60 @@ internal static partial class Ui
             Padding = new Thickness(12, 8, 12, 8) };
     }
 
+    public static Border IconActionFooter(params Button[] buttons)
+    {
+        var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
+        foreach (var button in buttons)
+        {
+            var label = button.Content?.ToString()
+                ?? System.Windows.Automation.AutomationProperties.GetName(button)
+                ?? "Ação";
+            button.ContentTemplate = null;
+            button.Content = new CommandIcon { Kind = ActionIcon(label), Width = 18, Height = 18 };
+            button.ToolTip = label;
+            button.Width = 38;
+            button.MinWidth = 38;
+            button.Height = 36;
+            button.MinHeight = 36;
+            button.Padding = new Thickness(7);
+            button.Margin = new Thickness(3, 0, 0, 0);
+            button.HorizontalAlignment = HorizontalAlignment.Center;
+            System.Windows.Automation.AutomationProperties.SetName(button, label);
+            ToolTipService.SetShowOnDisabled(button, true);
+            actions.Children.Add(button);
+        }
+        return new Border
+        {
+            Child = actions,
+            Background = Brushes.White,
+            BorderBrush = (Brush)Application.Current.FindResource("Ui.Border"),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(12, 8, 12, 8),
+        };
+    }
+
+    private static CommandIconKind ActionIcon(string label)
+    {
+        if (label.Contains("atualiz", StringComparison.OrdinalIgnoreCase)
+            || label.Contains("recarreg", StringComparison.OrdinalIgnoreCase))
+            return CommandIconKind.Updates;
+        if (label.Contains("regress", StringComparison.OrdinalIgnoreCase)
+            && label.Contains("aplic", StringComparison.OrdinalIgnoreCase))
+            return CommandIconKind.ApplyRegression;
+        if (new[] { "execut", "gerar", "calcul", "analis", "audit", "inici", "trein", "ajust", "compar", "extrair", "process", "baixar" }
+            .Any(verb => label.Contains(verb, StringComparison.OrdinalIgnoreCase)))
+            return CommandIconKind.Execute;
+        if (label.StartsWith("salvar", StringComparison.OrdinalIgnoreCase)
+            || label.StartsWith("gravar", StringComparison.OrdinalIgnoreCase))
+            return CommandIconKind.Save;
+        if (label.Contains("export", StringComparison.OrdinalIgnoreCase))
+            return CommandIconKind.Export;
+        if (label.Contains("aplic", StringComparison.OrdinalIgnoreCase)
+            || label.Contains("confirm", StringComparison.OrdinalIgnoreCase))
+            return CommandIconKind.Activate;
+        return CommandIconKind.Execute;
+    }
+
     public static void Section(Panel panel, string title)
     {
         var heading = new TextBlock

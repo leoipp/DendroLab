@@ -283,7 +283,7 @@ internal sealed class TableToolsView : ToolFormView
                 derivedExpression.SelectedText = "[" + selected + "]";
                 derivedExpression.Focus();
             }));
-            Ui.AddHelp(panel, "Exemplo para [Código] = RDBOBA00123P20-001:\nESQUERDA([Código]; 6) → RDBOBA\nMEIO([Código]; 12; 3) → P20\nMEIO([Código]; 12; 1) → P\nSE(MEIO([Código]; 12; 1) = \"P\"; \"Plantio\"; \"Outro\")\nAs posições começam em 1. Use ponto nos decimais. Também: DIREITA, ANTES, DEPOIS, CONTEM, SUBSTITUIR, MAIUSCULA, MINUSCULA, APARAR, TAMANHO, +, -, *, / e & para juntar textos.");
+            Ui.AddHelp(panel, "Exemplo para [Código] = RDBOBA00123P20-001:\nESQUERDA([Código]; 6) → RDBOBA\nMEIO([Código]; 12; 3) → P20\nMEIO([Código]; 12; 1) → P\nSE(MEIO([Código]; 12; 1) = \"P\"; \"Plantio\"; \"Outro\")\nAs posições começam em 1. Use ponto nos decimais. Também: DIREITA, ANTES, DEPOIS, CONTEM, SUBSTITUIR, MAIUSCULA, MINUSCULA, APARAR, TAMANHO, +, -, *, / e & para juntar textos. Em contas (+, -, * e /), se algum valor usado estiver vazio ou for zero, o resultado fica vazio.");
             Ui.Field(panel, "Separador entre valores", derivedSeparator);
             Ui.AddHelp(panel, "Se a expressão ficar vazia, as colunas selecionadas serão concatenadas com o separador. As novas colunas ficam disponíveis para cálculo, filtro e estratificação.");
             Ui.Section(panel,"Revisar e gravar colunas");

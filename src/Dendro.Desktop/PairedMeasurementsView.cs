@@ -17,12 +17,15 @@ internal sealed class PairedMeasurementsView : ToolFormView
     private readonly ComboBox format = Ui.Combo(["Amplo · uma linha por chave", "Longitudinal · uma linha por par"]),
         pairing = Ui.Combo(["Sequenciais · i1–i2, i2–i3…", "Todos os pares · i1–i2, i1–i3…"]);
     private readonly ListBox values = new() { SelectionMode = SelectionMode.Multiple, MinHeight = 100, MaxHeight = 190 };
-    private readonly CheckBox trees = new() { Content = "Por árvore", IsChecked = true };
-    private readonly CheckBox plots = new() { Content = "Por parcela", IsChecked = false };
+    private readonly CheckBox trees = new() { Content = "Árvore", IsChecked = true };
+    private readonly CheckBox plots = new() { Content = "Parcela" };
+    private readonly CheckBox stands = new() { Content = "Talhão" };
+    private readonly CheckBox lots = new() { Content = "Lote" };
+    private readonly CheckBox projects = new() { Content = "Projeto" };
     private readonly TextBox outputName = Ui.Input("Medicoes_pareadas");
     private readonly TextBlock status = Ui.Text("");
     private readonly TextBlock keySummary = Ui.Text("");
-    private string[] treeKeyColumns = [], plotKeyColumns = [];
+    private string[] treeKeyColumns = [], plotKeyColumns = [], standKeyColumns = [], lotKeyColumns = [], projectKeyColumns = [];
     private SourceChoice[] choices = [];
     private bool loading;
 
@@ -47,10 +50,15 @@ internal sealed class PairedMeasurementsView : ToolFormView
         Ui.Field(form, "Coluna de ano ou data de medição", date);
         Ui.Field(form, "Campos que serão comparados ao longo do tempo (selecione vários)", values);
         Ui.Section(form, "Nível do pareamento");
-        form.Children.Add(trees);
-        form.Children.Add(plots);
+        var levelChoices = new WrapPanel { Margin = new Thickness(0, 2, 0, 4) };
+        foreach (var check in new[] { trees, plots, stands, lots, projects })
+        {
+            check.Margin = new Thickness(0, 2, 18, 2);
+            levelChoices.Children.Add(check);
+        }
+        form.Children.Add(levelChoices);
         form.Children.Add(keySummary);
-        Ui.AddHelp(form, "As chaves são usadas diretamente de Projeto > Configurações > Identificação; a data é retirada para encontrar o mesmo indivíduo ou parcela em anos diferentes. Em Ambos, são criadas tabelas separadas para árvores e parcelas.");
+        Ui.AddHelp(form, "Selecione um ou mais níveis. Árvore e parcela usam as chaves de Projeto > Configurações > Identificação. Talhão, lote e projeto usam as colunas correspondentes quando disponíveis, mantendo Contexto_ID para não misturar bases processadas. Uma tabela separada é criada para cada nível selecionado.");
         Ui.Section(form, "Formato do resultado");
         Ui.Field(form, "Organização das medições", format);
         Ui.Field(form, "Pares longitudinais", pairing);
@@ -120,7 +128,7 @@ internal sealed class PairedMeasurementsView : ToolFormView
         string Resolve(string token) => inputMap?[token] is System.Text.Json.Nodes.JsonValue
             ? inputMap.S(token) : token;
         string mappedDate = config.At("arquivo_entrada.colunas").S("data_medicao", "Data_Medicao");
-        string[] dateNames = [mappedDate, "Data_Medicao", "Data de medição", "Data", "Ano", "year"];
+        string[] dateNames = [mappedDate, "Data_Medicao", "Data de medição", "Ano_Medicao", "Data", "Ano", "year"];
         string[] tree = config.At("identificacao.arvore") is System.Text.Json.Nodes.JsonArray treeConfig
             ? treeConfig.Select(n => Resolve(n!.GetValue<string>())).ToArray() : [];
         string[] plot = config.At("identificacao.parcela") is System.Text.Json.Nodes.JsonArray plotConfig
@@ -147,9 +155,26 @@ internal sealed class PairedMeasurementsView : ToolFormView
             .Where(key => columns.Contains(key, StringComparer.Ordinal) && !excludedDates.Contains(key)).ToArray();
         plotKeyColumns = plot.Distinct(StringComparer.Ordinal)
             .Where(key => columns.Contains(key, StringComparer.Ordinal) && !excludedDates.Contains(key)).ToArray();
-        if (treeKeyColumns.Length == 0) treeKeyColumns = plotKeyColumns;
-        keySummary.Text = "Chaves de configuração · árvore: " + FormatKeys(treeKeyColumns)
-            + " · parcela: " + FormatKeys(plotKeyColumns);
+        if (plotKeyColumns.Length == 0 && columns.Contains("Parcela", StringComparer.Ordinal))
+            plotKeyColumns = new[] { "Talhão", "Parcela", "Lote" }
+                .Where(key => columns.Contains(key, StringComparer.Ordinal)).ToArray();
+        string standColumn = new[] { Resolve(inputMap.S("talhao", "Talhão")), "Talhão", "talhao", "Stand" }
+            .FirstOrDefault(key => columns.Contains(key, StringComparer.Ordinal)) ?? "";
+        string lotColumn = new[] { Resolve(inputMap.S("lote", "Lote")), "Lote", "lote", "Lot" }
+            .FirstOrDefault(key => columns.Contains(key, StringComparer.Ordinal)) ?? "";
+        string[] contextColumns = new[] { "Contexto_ID", "Base_Origem", "Tipo_Inventario" }
+            .Where(key => columns.Contains(key, StringComparer.Ordinal)).ToArray();
+        standKeyColumns = columns.Contains(standColumn, StringComparer.Ordinal)
+            ? contextColumns.Append(standColumn).Distinct(StringComparer.Ordinal).ToArray() : [];
+        lotKeyColumns = columns.Contains(lotColumn, StringComparer.Ordinal)
+            ? contextColumns.Append(lotColumn).Distinct(StringComparer.Ordinal).ToArray() : [];
+        projectKeyColumns = contextColumns.Length > 0 ? contextColumns
+            : columns.Contains("Grupo", StringComparer.Ordinal) ? ["Grupo"] : [];
+        keySummary.Text = "Chaves encontradas · árvore: " + FormatKeys(treeKeyColumns)
+            + " · parcela: " + FormatKeys(plotKeyColumns)
+            + " · talhão: " + FormatKeys(standKeyColumns)
+            + " · lote: " + FormatKeys(lotKeyColumns)
+            + " · projeto: " + FormatKeys(projectKeyColumns);
         loading = false;
         status.Text = columns.Length == 0 ? "A origem não tem colunas disponíveis." : "Chaves carregadas das configurações do projeto.";
     }
@@ -164,16 +189,28 @@ internal sealed class PairedMeasurementsView : ToolFormView
         string[] selectedValues = values.SelectedItems.Cast<string>().ToArray();
         if (selectedValues.Length == 0)
             throw new InvalidOperationException("Selecione um ou mais campos para comparar ao longo do tempo.");
-        string[] levels = new[] { (trees, "arvore"), (plots, "parcela") }
-            .Where(item => item.Item1.IsChecked == true).Select(item => item.Item2).ToArray();
-        if (levels.Length == 0) throw new InvalidOperationException("Selecione árvore, parcela ou ambos.");
-        if (levels.Contains("arvore") && treeKeyColumns.Length == 0)
-            throw new InvalidOperationException("Selecione as chaves que identificam uma árvore.");
-        if (levels.Contains("parcela") && plotKeyColumns.Length == 0)
-            throw new InvalidOperationException("Selecione as chaves que identificam uma parcela.");
+        string[] levels = new[]
+        {
+            (trees, "arvore", "Árvores", treeKeyColumns),
+            (plots, "parcela", "Parcelas", plotKeyColumns),
+            (stands, "talhao", "Talhões", standKeyColumns),
+            (lots, "lote", "Lotes", lotKeyColumns),
+            (projects, "projeto", "Projeto", projectKeyColumns),
+        }.Where(item => item.Item1.IsChecked == true).Select(item => item.Item2).ToArray();
+        if (levels.Length == 0) throw new InvalidOperationException("Selecione ao menos um nível: árvore, parcela, talhão, lote ou projeto.");
+        foreach (var item in new[]
+        {
+            (trees, "arvore", treeKeyColumns), (plots, "parcela", plotKeyColumns),
+            (stands, "talhao", standKeyColumns), (lots, "lote", lotKeyColumns),
+        }.Where(item => item.Item1.IsChecked == true && item.Item3.Length == 0))
+            throw new InvalidOperationException($"Não há chaves de {item.Item2} disponíveis nessa origem.");
         string baseName = TableTools.SuggestedName(outputName.Text);
         string formatSuffix = format.SelectedIndex == 1 ? " · Longitudinal" : "";
-        string[] proposed = levels.Select(level => TableTools.SuggestedName(baseName + " · " + (level == "arvore" ? "Árvores" : "Parcelas") + formatSuffix)).ToArray();
+        var levelLabels = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["arvore"] = "Árvores", ["parcela"] = "Parcelas", ["talhao"] = "Talhões", ["lote"] = "Lotes", ["projeto"] = "Projeto",
+        };
+        string[] proposed = levels.Select(level => TableTools.SuggestedName(baseName + " · " + levelLabels[level] + formatSuffix)).ToArray();
         string bank = session.Resolve(session.Meta.S("database_path"));
         var existing = await Task.Run(() => TableStore.Tables(bank));
         if (proposed.Any(name => existing.Contains(name, StringComparer.Ordinal)))
@@ -182,7 +219,8 @@ internal sealed class PairedMeasurementsView : ToolFormView
             dateColumn, selectedValues, treeKeyColumns, plotKeyColumns, levels,
             new[] { "sum", "mean", "max", "min", "unique" }[aggregation.SelectedIndex < 0 ? 0 : aggregation.SelectedIndex],
             format.SelectedIndex == 1 ? "longitudinal" : "wide",
-            pairing.SelectedIndex == 1 ? "all" : "sequential"
+            pairing.SelectedIndex == 1 ? "all" : "sequential",
+            standKeyColumns, lotKeyColumns, projectKeyColumns
         );
         string folder = session.ProjectWorkFolder();
         var cancellation = owner.OperationCancellation;
@@ -208,8 +246,8 @@ internal sealed class PairedMeasurementsView : ToolFormView
         string resultFormat = format.SelectedIndex == 1
             ? pairing.SelectedIndex == 1 ? "longitudinal · todos os pares" : "longitudinal · pares sequenciais"
             : "amplo";
-        status.Text = $"Formato {resultFormat} · {result.ReadRows:N0} linhas lidas · {result.InvalidDates:N0} datas inválidas · {result.EmptyKeys:N0} chaves vazias · {result.DuplicateKeyYears:N0} chave/ano repetidos · N por indivíduo e ocasião incluído.";
-        owner.Log($"Pareamento {resultFormat} concluído: {string.Join("; ", result.Tables.Select(t => $"{t.Table}: {t.Rows:N0} linhas"))}. {selectedValues.Length:N0} campos comparados; N por indivíduo e ocasião incluído.");
+        status.Text = $"Formato {resultFormat} · {result.ReadRows:N0} linhas lidas · {result.InvalidDates:N0} datas inválidas · {result.EmptyKeys:N0} chaves vazias · {result.DuplicateKeyYears:N0} chave/ano repetidos · N por unidade e ocasião incluído.";
+        owner.Log($"Pareamento {resultFormat} concluído: {string.Join("; ", result.Tables.Select(t => $"{t.Table}: {t.Rows:N0} linhas"))}. {selectedValues.Length:N0} campos comparados; N por unidade e ocasião incluído.");
     }
 
     private static string FormatKeys(string[] keys) => keys.Length == 0 ? "não configuradas na origem" : string.Join(", ", keys);

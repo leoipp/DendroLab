@@ -41,6 +41,15 @@ public static class ChartExport
             "AIC",
             "BIC",
             "Status",
+            "Diagnostico",
+            "Algoritmo",
+            "Parametros_iniciais",
+            "Tentativas",
+            "Iteracoes",
+            "Avaliacoes_formula",
+            "Objetivo_inicial",
+            "Objetivo_final",
+            "Motivo_encerramento",
         ]);
         var frontier = new DataTable(["Estrato", "Fronteira", "X", "Y"]);
         var info = new DataTable();
@@ -92,7 +101,16 @@ public static class ChartExport
                 fit.N("rmse", double.NaN),
                 fit.N("aic", double.NaN),
                 fit.N("bic", double.NaN),
-                fit.S("status")
+                fit.S("status"),
+                fit.S("diagnostic_status", fit.S("status")),
+                fit.S("algorithm"),
+                fit?["initial_parameters"]?.ToJsonString() ?? "",
+                fit.N("starts_attempted"),
+                fit.N("iterations"),
+                fit.N("function_evaluations"),
+                fit.N("initial_objective", double.NaN),
+                fit.N("objective", double.NaN),
+                fit.S("termination_reason")
             );
         }
         foreach (var p in chart["frontier_points"] as JsonArray ?? [])

@@ -18,10 +18,16 @@ public sealed record RegressionApplicationSpec(
     SavedRegressionModel Model,
     string[] PredictorColumns,
     string InitialValueColumn = "",
-    string[]? TargetPredictorColumns = null
+    string[]? TargetPredictorColumns = null,
+    double[]? PredictorFactors = null,
+    double[]? TargetPredictorFactors = null,
+    double ReferenceAge = double.NaN,
+    bool CalculateSiteIndex = false,
+    string StratumColumn = "",
+    string StratumValue = ""
 );
 
-public sealed record RegressionApplicationResult(TableResult Table, long InvalidPredictions, long Rows);
+public sealed record RegressionApplicationResult(TableResult Table, long InvalidPredictions, long Rows, long FilteredPredictions = 0);
 
 /// <summary>Stores fitted equations and applies them to new tabular data.</summary>
 public static class RegressionApplication
@@ -128,7 +134,7 @@ public static class RegressionApplication
         var usedIds = new HashSet<string>(StringComparer.Ordinal);
         string[] outputHeaders = EnsureVisibleUniqueHeaders(cursor.Columns);
         var usedColumns = outputHeaders.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var planned = new List<(SavedRegressionModel Model, int[] Indexes, int[] TargetIndexes, Formula Formula, string Output, int InitialValueIndex)>();
+        var planned = new List<(SavedRegressionModel Model, int[] Indexes, double[] Factors, int[] TargetIndexes, double[] TargetFactors, Formula Formula, string Output, int InitialValueIndex, double ReferenceAge, bool CalculateSiteIndex, int StratumIndex, string StratumValue)>();
         foreach (var specification in specifications)
         {
             Validate(specification.Model);
@@ -139,26 +145,54 @@ public static class RegressionApplication
             int[] indexes = specification.PredictorColumns.Select(column => Array.IndexOf(cursor.Columns, column)).ToArray();
             if (indexes.Any(i => i < 0))
                 throw new InvalidDataException($"Uma coluna explicativa de {specification.Model.Name} não existe na base selecionada.");
+            double[] factors = specification.PredictorFactors ?? Enumerable.Repeat(1d, indexes.Length).ToArray();
+            if (factors.Length != indexes.Length || factors.Any(factor => !double.IsFinite(factor) || factor == 0))
+                throw new InvalidDataException($"Os fatores de conversão de {specification.Model.Name} são inválidos.");
             int initialValueIndex = -1;
             int[] targetIndexes = [];
-            if (projection)
+            double[] targetFactors = [];
+            if (projection || specification.CalculateSiteIndex)
             {
                 initialValueIndex = Array.IndexOf(cursor.Columns, specification.InitialValueColumn);
-                if (initialValueIndex < 0 || specification.TargetPredictorColumns?.Length != specification.Model.Predictors)
-                    throw new InvalidDataException($"Mapeie Y1 e os preditores da ocasião i2 para projetar {specification.Model.Name}.");
+                if (initialValueIndex < 0)
+                    throw new InvalidDataException($"Mapeie Y1/valor observado para aplicar {specification.Model.Name}.");
+            }
+            if (projection)
+            {
+                if (specification.TargetPredictorColumns?.Length != specification.Model.Predictors)
+                    throw new InvalidDataException($"Mapeie os preditores da ocasião i2 para projetar {specification.Model.Name}.");
                 targetIndexes = specification.TargetPredictorColumns.Select(column => Array.IndexOf(cursor.Columns, column)).ToArray();
                 if (targetIndexes.Any(i => i < 0))
                     throw new InvalidDataException($"Mapeie todos os preditores da ocasião i2 para projetar {specification.Model.Name}.");
+                targetFactors = specification.TargetPredictorFactors ?? Enumerable.Repeat(1d, targetIndexes.Length).ToArray();
+                if (targetFactors.Length != targetIndexes.Length || targetFactors.Any(factor => !double.IsFinite(factor) || factor == 0))
+                    throw new InvalidDataException($"Os fatores de conversão de i2 para {specification.Model.Name} são inválidos.");
             }
+            if (specification.CalculateSiteIndex && (!double.IsFinite(specification.ReferenceAge) || specification.ReferenceAge <= 0))
+                throw new InvalidDataException($"Informe uma idade-base positiva para calcular o índice de sítio de {specification.Model.Name}.");
+            int stratumIndex = -1;
+            if (specification.StratumColumn.Length > 0)
+            {
+                stratumIndex = Array.IndexOf(cursor.Columns, specification.StratumColumn);
+                if (stratumIndex < 0)
+                    throw new InvalidDataException($"A coluna de estrato de {specification.Model.Name} não existe na base selecionada.");
+                if (string.IsNullOrWhiteSpace(specification.StratumValue))
+                    throw new InvalidDataException($"Informe o valor do estrato para {specification.Model.Name}.");
+            }
+            else if (!string.IsNullOrWhiteSpace(specification.StratumValue))
+                throw new InvalidDataException($"Escolha a coluna do estrato de {specification.Model.Name}.");
             string baseName = TableTools.SuggestedName((projection ? "Proj_" : "Prev_") + specification.Model.Name);
             string output = baseName;
             for (int suffix = 2; !usedColumns.Add(output); suffix++)
                 output = TableTools.SuggestedName(baseName + "_" + suffix);
-            planned.Add((specification.Model, indexes, targetIndexes, new Formula(specification.Model.Formula, Symbols(specification.Model)), output, initialValueIndex));
+            planned.Add((specification.Model, indexes, factors, targetIndexes, targetFactors,
+                new Formula(specification.Model.Formula, Symbols(specification.Model)), output,
+                initialValueIndex, specification.ReferenceAge, specification.CalculateSiteIndex,
+                stratumIndex, specification.StratumValue.Trim()));
         }
 
         string outputPath = Path.Combine(folder, $"{Guid.NewGuid():N}.dlb");
-        long rows = 0, invalidPredictions = 0;
+        long rows = 0, invalidPredictions = 0, filteredPredictions = 0;
         var reporter = new TableProgressReporter(progress);
         try
         {
@@ -173,6 +207,12 @@ public static class RegressionApplication
                     for (int index = 0; index < planned.Count; index++)
                     {
                         var item = planned[index];
+                        if (item.StratumIndex >= 0 && !MatchesStratum(sourceRow[item.StratumIndex], item.StratumValue))
+                        {
+                            row[sourceRow.Length + index] = null;
+                            filteredPredictions++;
+                            continue;
+                        }
                         var values = new double[item.Model.Predictors];
                         bool valid = true;
                         for (int predictor = 0; predictor < values.Length; predictor++)
@@ -181,6 +221,7 @@ public static class RegressionApplication
                                 valid = false;
                                 break;
                             }
+                            else values[predictor] *= item.Factors[predictor];
                         double Evaluate(double[] inputs) => item.Formula.Evaluate(symbol =>
                             symbol switch
                             {
@@ -196,7 +237,10 @@ public static class RegressionApplication
                             valid = TryNumber(sourceRow[item.InitialValueIndex], out initialValue);
                             var targetValues = new double[values.Length];
                             for (int predictor = 0; valid && predictor < targetValues.Length; predictor++)
+                            {
                                 valid = TryNumber(sourceRow[item.TargetIndexes[predictor]], out targetValues[predictor]);
+                                if (valid) targetValues[predictor] *= item.TargetFactors[predictor];
+                            }
                             if (valid)
                             {
                                 double f1 = Evaluate(values);
@@ -205,8 +249,24 @@ public static class RegressionApplication
                                     predicted = initialValue * f2 / f1;
                             }
                         }
+                        else if (valid && item.CalculateSiteIndex)
+                        {
+                            double observed = double.NaN;
+                            valid = TryNumber(sourceRow[item.InitialValueIndex], out observed);
+                            if (valid)
+                            {
+                                double current = Evaluate(values);
+                                var referenceValues = (double[])values.Clone();
+                                referenceValues[0] = item.ReferenceAge;
+                                double reference = Evaluate(referenceValues);
+                                if (double.IsFinite(observed) && double.IsFinite(current) && current != 0
+                                    && double.IsFinite(reference))
+                                    predicted = observed * reference / current;
+                            }
+                        }
                         else if (valid)
                             predicted = Evaluate(values);
+                        if (item.CalculateSiteIndex && predicted <= 0) predicted = double.NaN;
                         if (double.IsFinite(predicted)) row[sourceRow.Length + index] = predicted;
                         else { row[sourceRow.Length + index] = null; invalidPredictions++; }
                     }
@@ -214,13 +274,13 @@ public static class RegressionApplication
                     rows++;
                     if ((rows & 2047) == 0)
                         reporter.Report(cursor.TotalRows > 0 ? 90d * rows / cursor.TotalRows.Value : null,
-                            $"Aplicando regressões · {rows:N0} linhas", rows);
+                            $"Aplicando equações · {rows:N0} linhas", rows);
                 }
                 cancellation.ThrowIfCancellationRequested();
                 writer.Complete();
             }
             reporter.Report(100, $"Aplicação concluída · {rows:N0} linhas", rows, true);
-            return new(new(outputPath, TableTools.SuggestedName(tableName), rows), invalidPredictions, rows);
+            return new(new(outputPath, TableTools.SuggestedName(tableName), rows), invalidPredictions, rows, filteredPredictions);
         }
         catch
         {
@@ -260,5 +320,14 @@ public static class RegressionApplication
         string text = TableCursor.Text(value).Trim();
         return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out number) && double.IsFinite(number)
             || double.TryParse(text, NumberStyles.Float, CultureInfo.GetCultureInfo("pt-BR"), out number) && double.IsFinite(number);
+    }
+
+    private static bool MatchesStratum(object? source, string filter)
+    {
+        if (source is double or float or decimal or int or long or short or byte)
+            return TryNumber(source, out double sourceNumber)
+                && TryNumber(filter, out double filterNumber)
+                && sourceNumber == filterNumber;
+        return string.Equals(TableCursor.Text(source).Trim(), filter.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 }

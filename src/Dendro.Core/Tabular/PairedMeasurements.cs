@@ -12,7 +12,10 @@ public sealed record PairedMeasurementOptions(
     string[] Levels,
     string Aggregation,
     string Format = "wide",
-    string Pairing = "sequential"
+    string Pairing = "sequential",
+    string[]? StandKeys = null,
+    string[]? LotKeys = null,
+    string[]? ProjectKeys = null
 );
 
 public sealed record PairedMeasurementsResult(
@@ -60,9 +63,9 @@ public static class PairedMeasurements
         IProgress<TableProgress>? progress = null
     )
     {
-        if (options.Levels.Length is < 1 or > 2 || options.Levels.Any(l => l is not ("arvore" or "parcela"))
+        if (options.Levels.Length is < 1 or > 5 || options.Levels.Any(l => l is not ("arvore" or "parcela" or "talhao" or "lote" or "projeto"))
             || options.Levels.Distinct(StringComparer.Ordinal).Count() != options.Levels.Length)
-            throw new InvalidDataException("Selecione árvore, parcela ou ambos os níveis.");
+            throw new InvalidDataException("Selecione ao menos um nível válido: árvore, parcela, talhão, lote ou projeto.");
         if (options.Aggregation is not ("sum" or "mean" or "max" or "min" or "unique"))
             throw new InvalidDataException("Selecione uma regra válida para valores repetidos.");
         if (options.Format is not ("wide" or "longitudinal"))
@@ -82,14 +85,21 @@ public static class PairedMeasurements
         var levels = new List<LevelState>();
         foreach (string level in options.Levels)
         {
-            string[] names = (level == "arvore" ? options.TreeKeys : options.PlotKeys)
+            string[] configuredKeys = level switch
+            {
+                "arvore" => options.TreeKeys,
+                "parcela" => options.PlotKeys,
+                "talhao" => options.StandKeys ?? [],
+                "lote" => options.LotKeys ?? [],
+                "projeto" => options.ProjectKeys ?? [],
+                _ => [],
+            };
+            string[] names = configuredKeys
                 .Where(k => !string.IsNullOrWhiteSpace(k))
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
-            if (names.Length == 0)
-                throw new InvalidDataException(level == "arvore"
-                    ? "Não há chaves de árvore configuradas. Confira Projeto > Configurações > Identificação."
-                    : "Não há chaves de parcela configuradas. Confira Projeto > Configurações > Identificação.");
+            if (names.Length == 0 && level != "projeto")
+                throw new InvalidDataException($"Não há chaves para o nível {LevelLabel(level)} na origem. Confira as colunas desse nível.");
             int[] indexes = names.Select(Require).ToArray();
             if (indexes.Contains(dateColumn))
                 throw new InvalidDataException("A data de medição não pode fazer parte da chave usada para parear.");
@@ -166,7 +176,7 @@ public static class PairedMeasurements
             foreach (var level in levels)
             {
                 cancellation.ThrowIfCancellationRequested();
-                string label = level.Name == "arvore" ? "Árvores" : "Parcelas";
+                string label = LevelLabel(level.Name);
                 string tableName = TableTools.SuggestedName($"{cleanName} · {label}"
                     + (options.Format == "longitudinal" ? " · Longitudinal" : ""));
                 string[] keyNames = level.KeyNames.Select((field, index) =>
@@ -267,6 +277,16 @@ public static class PairedMeasurements
         value == null || string.IsNullOrWhiteSpace(TableCursor.Text(value))
             ? ""
             : TableTools.Key(value);
+
+    private static string LevelLabel(string level) => level switch
+    {
+        "arvore" => "Árvores",
+        "parcela" => "Parcelas",
+        "talhao" => "Talhões",
+        "lote" => "Lotes",
+        "projeto" => "Projeto",
+        _ => level,
+    };
 
     private static string VisibleHeader(string? value, string fallback)
     {

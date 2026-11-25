@@ -65,8 +65,12 @@ public sealed class ColumnExpression
                 string? op = Take("&") ? "&" : Take("+") ? "+" : Take("-") ? "-" : null;
                 if (op == null) return node;
                 var a = node; var b = Product();
-                node = row => op == "&" ? TableCursor.Text(a(row)) + TableCursor.Text(b(row))
-                    : op == "+" ? Number(a(row)) + Number(b(row)) : Number(a(row)) - Number(b(row));
+                node = row => {
+                    if (op == "&") return TableCursor.Text(a(row)) + TableCursor.Text(b(row));
+                    object? left = a(row), right = b(row);
+                    if (IsBlankOrZero(left) || IsBlankOrZero(right)) return null;
+                    return op == "+" ? Number(left) + Number(right) : Number(left) - Number(right);
+                };
             }
         }
         private Func<object?[], object?> Product()
@@ -77,14 +81,18 @@ public sealed class ColumnExpression
                 string? op = Take("*") ? "*" : Take("/") ? "/" : null;
                 if (op == null) return node;
                 var a = node; var b = Atom();
-                node = row => op == "*" ? Number(a(row)) * Number(b(row)) : Number(a(row)) / Number(b(row));
+                node = row => {
+                    object? left = a(row), right = b(row);
+                    if (IsBlankOrZero(left) || IsBlankOrZero(right)) return null;
+                    return op == "*" ? Number(left) * Number(right) : Number(left) / Number(right);
+                };
             }
         }
         private Func<object?[], object?> Atom()
         {
             Space();
             if (Take("(")) { var n = Expression(); if (!Take(")")) throw Bad("Falta fechar parênteses"); return n; }
-            if (Take("-")) { var n = AtomBounded(); return row => -Number(n(row)); }
+            if (Take("-")) { var n = AtomBounded(); return row => { object? value = n(row); return IsBlankOrZero(value) ? null : -Number(value); }; }
             if (Take("["))
             {
                 int start = pos; while (pos < text.Length && text[pos] != ']') pos++;
@@ -159,6 +167,9 @@ public sealed class ColumnExpression
         private static double Number(object? value) => value is double n ? n
             : double.TryParse(TableCursor.Text(value), NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) ? parsed
             : throw new InvalidDataException("O cálculo exige um valor numérico.");
+        private static bool IsBlankOrZero(object? value) => value == null
+            || string.IsNullOrWhiteSpace(TableCursor.Text(value))
+            || double.TryParse(TableCursor.Text(value), NumberStyles.Float, CultureInfo.InvariantCulture, out double number) && number == 0;
         private static bool Truth(object? value) => value is bool b ? b : value is double n ? n != 0
             : TableCursor.Text(value) is "Falso" or "" ? false : true;
     }

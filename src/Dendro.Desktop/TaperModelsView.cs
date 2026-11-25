@@ -61,7 +61,7 @@ internal sealed class TaperModelsView : DockPanel
         Ui.AddHelp(form,"O ajuste usa ID preenchido, DAP > 0, H > 1,3 m, 0 ≤ h < H e d > 0. Medições inválidas ficam na tabela de saída e são contabilizadas. Bias = observado − estimado. Os coeficientes são ajustados na escala original do diâmetro, por mínimos quadrados não lineares.");
         form.Children.Add(status);
         var host=new DockPanel();
-        var footer=Ui.ActionFooter(Ui.AsyncButton("Ajustar modelos",()=>owner.Execute(Run),Ui.ActionEmphasis.Primary));
+        var footer=Ui.IconActionFooter(Ui.AsyncButton("Ajustar modelos",()=>owner.Execute(Run),Ui.ActionEmphasis.Primary));
         DockPanel.SetDock(footer,Dock.Bottom);host.Children.Add(footer);host.Children.Add(Ui.Scroll(form));
         var saved=new DockPanel();
         var actions=new WrapPanel{Margin=new Thickness(8,1,8,4)};

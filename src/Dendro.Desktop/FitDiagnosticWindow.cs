@@ -37,6 +37,12 @@ internal static class FitDiagnosticWindow
         var form = Ui.Form();
         form.Children.Add(Ui.Text(fit.S("group") + " · " + fit.S("model"), 18));
         form.Children.Add(Ui.Text($"N = {pairs.Length:N0}    R² = {fit.N("r2"):0.####}    RMSE = {fit.N("rmse"):0.####}    Erro médio = {residuals.Average():0.####}"));
+        form.Children.Add(Ui.Text($"Diagnóstico: {fit.S("diagnostic_status", fit.S("status"))} · Algoritmo: {fit.S("algorithm", "legado")}"));
+        form.Children.Add(Ui.Text($"Tentativas: {fit.N("starts_attempted"):N0} · Iterações: {fit.N("iterations"):N0} · Avaliações da fórmula: {fit.N("function_evaluations"):N0} · Tempo: {fit.N("elapsed_ms"):N0} ms"));
+        form.Children.Add(Ui.Text($"Encerramento: {fit.S("termination_reason", "não registrado")}"));
+        if (fit["diagnostics"] is JsonArray diagnostics)
+            foreach (var diagnostic in diagnostics.Select(value => value?.GetValue<string>()).Where(value => !string.IsNullOrWhiteSpace(value)))
+                form.Children.Add(Ui.Text("Alerta: " + diagnostic));
         form.Children.Add(Ui.Text("Resíduo = estimado − observado. Valores positivos indicam superestimação."));
         var charts = new Grid { Height = 370 };
         for (int i = 0; i < 3; i++) charts.ColumnDefinitions.Add(new ColumnDefinition());

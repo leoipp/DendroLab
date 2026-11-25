@@ -14,13 +14,7 @@ internal sealed partial class ChartView : DockPanel
     private static DockPanel ChartActionPanel(UIElement form, params Button[] actions)
     {
         var panel = new DockPanel();
-        var footer = Ui.ActionFooter(actions);
-        if (footer.Child is Grid row)
-        {
-            row.HorizontalAlignment = HorizontalAlignment.Right;
-            foreach (var column in row.ColumnDefinitions) column.Width = GridLength.Auto;
-            foreach (var button in actions) button.Margin = new Thickness(0);
-        }
+        var footer = Ui.IconActionFooter(actions);
         DockPanel.SetDock(footer, Dock.Bottom);
         panel.Children.Add(footer);
         panel.Children.Add(Ui.Scroll(form));
@@ -1144,7 +1138,7 @@ internal sealed partial class ChartView : DockPanel
             {
                 "group",
                 "model",
-                "status",
+                "diagnostic_status",
                 "r2",
                 "rmse",
                 "aic",
@@ -1160,7 +1154,9 @@ internal sealed partial class ChartView : DockPanel
                 rows.Add(
                     new JsonArray(
                         headers
-                            .Select(h => fit![h]?.DeepClone())
+                            .Select(h => h == "diagnostic_status"
+                                ? fit!["diagnostic_status"]?.DeepClone() ?? fit["status"]?.DeepClone()
+                                : fit![h]?.DeepClone())
                             .ToArray()
                     )
                 );
@@ -1168,7 +1164,7 @@ internal sealed partial class ChartView : DockPanel
             {
                 "Estrato",
                 "Modelo",
-                "Status",
+                "Diagnóstico",
                 "R²",
                 "RMSE",
                 "AIC",
