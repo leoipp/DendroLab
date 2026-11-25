@@ -112,7 +112,7 @@ internal sealed class ModelsView : DockPanel
     private void Refresh()
     {
         var t = new DataTable();
-        int maxBeta = growth ? 2 : Rows.OfType<JsonObject>().SelectMany(r => r.AsObject().Select(p => p.Key))
+        int maxBeta = Rows.OfType<JsonObject>().SelectMany(r => r.AsObject().Select(p => p.Key))
             .Select(key => Regex.Match(key, "^b(\\d+)$"))
             .Where(match => match.Success && int.TryParse(match.Groups[1].Value, out int n) && n is >= 3 and <= 31)
             .Select(match => int.Parse(match.Groups[1].Value)).DefaultIfEmpty(2).Max();
@@ -243,7 +243,6 @@ internal sealed class ModelsView : DockPanel
         {
             var names = Regex.Matches(formula.Text, @"\bb(?:[3-9]|[12]\d|3[01])\b").Select(m => m.Value)
                 .Concat(row.AsObject().Select(p => p.Key).Where(key => Regex.IsMatch(key, @"^b(?:[3-9]|[12]\d|3[01])$")))
-                .Where(key => !growth || key == "b3")
                 .Distinct(StringComparer.Ordinal).OrderBy(key => int.Parse(key.AsSpan(1))).ToArray();
             foreach (string key in names)
                 if (!extraCoefficientInputs.ContainsKey(key))
@@ -328,8 +327,10 @@ internal sealed class ModelsView : DockPanel
                 }
                 if (growth)
                 {
-                    if (extraCoefficientInputs.TryGetValue("b3", out var b3) && !string.IsNullOrWhiteSpace(b3.Text))
-                        request["b3"] = Ui.Number(b3.Text);
+                    var coefficients = new JsonObject();
+                    foreach (var (key, input) in extraCoefficientInputs)
+                        if (!string.IsNullOrWhiteSpace(input.Text)) coefficients[key] = Ui.Number(input.Text);
+                    request["coefficients"] = coefficients;
                     request["year"] = (int)Ui.Number(year.Text);
                     request["current"] = current.IsChecked == true;
                     bool custom = model!.SelectedIndex >= definitions.Count;

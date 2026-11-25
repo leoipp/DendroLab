@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.6.0"
+  #define AppVersion "1.6.4"
 #endif
 #ifndef PayloadDir
   #error Informe /DPayloadDir com a publicação self-contained.

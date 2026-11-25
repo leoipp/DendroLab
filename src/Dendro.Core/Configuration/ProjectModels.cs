@@ -161,10 +161,24 @@ public static class ProjectModels
             ["modelo_nome"] = builtin?.Name ?? custom.S("nome"),
             ["unidade_idade"] = custom.S("unidade_idade", "meses"),
         };
-        if (request["b3"] is not null)
+        var coefficients = request["coefficients"] as JsonObject;
+        if (coefficients is not null)
+        {
+            foreach (string coefficient in ModelDefinition.Coefficients.Skip(3))
+                if (coefficients[coefficient] is { } value)
+                    row[coefficient] = value.DeepClone();
+        }
+        else if (request["b3"] is not null)
+        {
+            // Keep compatibility with callers that still send the original single extra beta.
             row["b3"] = request["b3"]!.DeepClone();
-        else if (index >= 0 && models[index].S("modelo") == family && models[index]?["b3"] is not null)
-            row["b3"] = models[index]!["b3"]!.DeepClone();
+        }
+        else if (index >= 0 && models[index].S("modelo") == family)
+        {
+            foreach (string coefficient in ModelDefinition.Coefficients.Skip(3))
+                if (models[index]?[coefficient] is { } value)
+                    row[coefficient] = value.DeepClone();
+        }
         if (custom?["entradas"] is not null)
             row["entradas"] = custom["entradas"]!.DeepClone();
         if (request["fixed_inputs"] is JsonObject fixedInputs)
