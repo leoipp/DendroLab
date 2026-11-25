@@ -169,6 +169,7 @@ internal static class StreamingDirectProcessor
     {
         JsonObject processing = config.Obj("processador");
         if (processing.S("modo", "completo") != "resumo_direto"
+            || processing.At("taper").B("enabled")
             || processing.B("remover_duplicadas")
             || config.At("ajuste_altura").S("h_mode", "KEEP_FILE") != "KEEP_FILE"
             || config.At("cadastro.fallback_idade").B("ativo")) return null;

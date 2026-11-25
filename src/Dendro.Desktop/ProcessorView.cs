@@ -6,11 +6,13 @@ using System.Windows.Threading;
 using Dendro.Core.Configuration;
 using Dendro.Core.Processing;
 using Dendro.Core.Tabular;
+using Dendro.Core.Regression;
 
 namespace Dendro.Desktop;
 
 internal sealed class ProcessorView : DockPanel
 {
+    private sealed record TaperChoice(string Key, JsonObject[] Fits, string Model, string Label, string StratumColumn);
     internal bool SourcesChanged =>
         choicesLoaded && !choices
             .Select(c => c.Path)
@@ -27,6 +29,12 @@ internal sealed class ProcessorView : DockPanel
     private readonly ComboBox mode = Ui.Combo(["Inventário com revisão e aprovação", "Resumo direto por nível"]);
     private readonly CheckBox classDistribution = new() { Content = "Calcular distribuição por classes de DAP e volume" };
     private readonly TextBox classWidth = Ui.Input("20"), volumeClassInterval = Ui.Input("0.1");
+    private readonly CheckBox taperEnabled = new() { Content = "Calcular volumes pelo ajuste de taper" };
+    private readonly ComboBox taperFit = Ui.Combo([]);
+    private readonly CheckBox taperWithBark = new() { Content = "Os diâmetros do ajuste de taper foram medidos com casca" };
+    private readonly TextBox taperStump = Ui.Input("0.3"), taperLength = Ui.Input("2.2"), taperMinimumLength = Ui.Input("1.0"), taperDmin = Ui.Input("0");
+    private readonly CheckBox taperDiscardShort = new() { Content = "Descartar a última tora se menor que o comprimento mínimo", IsChecked = true };
+    private TaperChoice[] taperChoices = [];
     private readonly ComboBox inventoryType = Ui.Combo(["IFC", "IFPC", "MISTO"]), factorScope = Ui.Combo(["Talhão", "Lote"]);
     private readonly Dictionary<string, CheckBox> summaryLevels = new();
     private readonly List<(string Path, CheckBox Box)> choices = new();
@@ -80,6 +88,28 @@ internal sealed class ProcessorView : DockPanel
         volumeClassInterval.Text = session.Data.At("processador").N("intervalo_classe_volume_m3", 0.1).ToString(System.Globalization.CultureInfo.InvariantCulture);
         Ui.Field(classSettings, "Intervalo de classe de volume (m³/árvore)", volumeClassInterval);
         form.Children.Add(classSettings);
+        var taperSettings = new StackPanel();
+        Ui.Section(taperSettings, "Aproveitamento por taper");
+        taperEnabled.IsChecked = session.Data.At("processador.taper").B("enabled");
+        taperWithBark.IsChecked = session.Data.At("processador.taper").B("diameters_with_bark");
+        taperStump.Text = session.Data.At("processador.taper").N("stump_m", .3).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        taperLength.Text = session.Data.At("processador.taper").N("section_length_m", 2.2).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        taperMinimumLength.Text = session.Data.At("processador.taper").N("minimum_length_m", 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        taperDmin.Text = session.Data.At("processador.taper").N("minimum_diameter_cm", 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        taperDiscardShort.IsChecked = session.Data.At("processador.taper").B("discard_short", true);
+        LoadTaperChoices(session.Data.At("processador.taper").S("fit_key"));
+        taperSettings.Children.Add(taperEnabled);
+        Ui.Field(taperSettings, "Ajuste salvo (modelo e estratos)", taperFit);
+        taperSettings.Children.Add(taperWithBark);
+        Ui.AddHelp(taperSettings, "O processamento calcula o volume total acima do toco e o volume comercial aceito pelas regras de seccionamento. Marque com casca somente se essa foi a base dos diâmetros usados no ajuste. O resultado não altera VTCC/VCCC nem o fator operacional.");
+        var taperDimensions = new Grid(); taperDimensions.ColumnDefinitions.Add(new ColumnDefinition()); taperDimensions.ColumnDefinitions.Add(new ColumnDefinition());
+        for (int row = 0; row < 2; row++) taperDimensions.RowDefinitions.Add(new RowDefinition());
+        AddTaperField(taperDimensions, 0, 0, "Altura do toco (m)", taperStump);
+        AddTaperField(taperDimensions, 1, 0, "Comprimento máximo da tora (m)", taperLength);
+        AddTaperField(taperDimensions, 0, 1, "Comprimento mínimo da tora (m)", taperMinimumLength);
+        AddTaperField(taperDimensions, 1, 1, "Dmin no topo (cm)", taperDmin);
+        taperSettings.Children.Add(taperDimensions); taperSettings.Children.Add(taperDiscardShort);
+        form.Children.Add(taperSettings);
         Ui.Section(form,"Inventários de entrada");
         inventory = new Button { HorizontalContentAlignment = HorizontalAlignment.Left };
         var menu = inventoryMenu = new ContextMenu { StaysOpen = true };
@@ -125,6 +155,8 @@ internal sealed class ProcessorView : DockPanel
         Ui.AddHelp(factorSettings, "Vazio = 1. Aplica equação × fator por árvore, antes das somas.");
         form.Children.Add(factorSettings);
         factor.LostKeyboardFocus += (_, _) => TryCapture(); classWidth.LostKeyboardFocus += (_, _) => TryCapture(); volumeClassInterval.LostKeyboardFocus += (_, _) => TryCapture();
+        foreach (var input in new[] { taperStump, taperLength, taperMinimumLength, taperDmin }) input.LostKeyboardFocus += (_, _) => TryCapture();
+        taperEnabled.Click += (_, _) => TryCapture(); taperWithBark.Click += (_, _) => TryCapture(); taperDiscardShort.Click += (_, _) => TryCapture(); taperFit.SelectionChanged += (_, _) => TryCapture();
         classDistribution.Click += (_, _) => TryCapture();
         inventoryType.SelectionChanged += (_, _) => TryCapture(); factorScope.SelectionChanged += (_, _) => TryCapture();
         mode.SelectionChanged += (_, _) => { summaries.Visibility = factorSettings.Visibility = mode.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
@@ -246,6 +278,31 @@ internal sealed class ProcessorView : DockPanel
         }
     }
 
+    private static void AddTaperField(Grid grid, int column, int row, string label, Control control)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 12, 0) };
+        Ui.Field(panel, label, control); Grid.SetColumn(panel, column); Grid.SetRow(panel, row); grid.Children.Add(panel);
+    }
+
+    private void LoadTaperChoices(string selectedKey)
+    {
+        taperChoices = session.Meta.Arr("taper_fits").OfType<JsonObject>()
+            .Where(fit => fit.S("status") == "OK" && fit["coefficients"] is JsonArray)
+            .GroupBy(fit => (Path: fit.S("path"), Model: fit.S("model")))
+            .Select(group =>
+            {
+                var fits = group.ToArray(); var first = fits[0];
+                string key = new JsonArray(group.Key.Path, group.Key.Model).ToJsonString();
+                string strata = first.S("stratum_column");
+                return new TaperChoice(key, fits, group.Key.Model,
+                    $"{first.S("name")} · {session.ContentName(first.S("source_path"))} · {fits.Length} estrato(s)", strata);
+            }).OrderBy(choice => choice.Label, StringComparer.CurrentCultureIgnoreCase).ToArray();
+        taperFit.ItemsSource = taperChoices.Select(choice => choice.Label).ToArray();
+        int selected = Array.FindIndex(taperChoices, choice => choice.Key == selectedKey);
+        taperFit.SelectedIndex = selected >= 0 ? selected : taperChoices.Length > 0 ? 0 : -1;
+        if (taperChoices.Length == 0) taperFit.ToolTip = "Nenhum ajuste OK salvo no catálogo de taper.";
+    }
+
     public void Capture()
     {
         double? value = Ui.Factor(factor.Text);
@@ -264,6 +321,36 @@ internal sealed class ProcessorView : DockPanel
         if (classDistribution.IsChecked == true && (!double.IsFinite(volumeInterval) || volumeInterval <= 0))
             throw new InvalidOperationException("O intervalo de classe de volume deve ser maior que zero.");
         if (double.IsFinite(volumeInterval)) processing["intervalo_classe_volume_m3"] = volumeInterval;
+        double TaperValue(TextBox input, double fallback)
+        {
+            double parsed = Ui.Number(input.Text);
+            return double.IsFinite(parsed) ? parsed : fallback;
+        }
+        var taper = new JsonObject
+        {
+            ["enabled"] = taperEnabled.IsChecked == true,
+            ["diameters_with_bark"] = taperWithBark.IsChecked == true,
+            ["stump_m"] = TaperValue(taperStump, .3), ["section_length_m"] = TaperValue(taperLength, 2.2),
+            ["minimum_length_m"] = TaperValue(taperMinimumLength, 1), ["minimum_diameter_cm"] = TaperValue(taperDmin, 0),
+            ["discard_short"] = taperDiscardShort.IsChecked == true,
+        };
+        if (taperFit.SelectedIndex >= 0)
+        {
+            var choice = taperChoices[taperFit.SelectedIndex];
+            taper["fit_key"] = choice.Key; taper["model"] = choice.Model;
+            taper["formula"] = choice.Fits[0].S("formula"); taper["stratum_column"] = choice.StratumColumn;
+            taper["fits"] = new JsonArray(choice.Fits.Select(fit => (JsonNode?)fit.DeepClone()).ToArray());
+        }
+        if (taperEnabled.IsChecked == true)
+        {
+            if (taperFit.SelectedIndex < 0) throw new InvalidOperationException("Salve um ajuste de taper com status OK e selecione-o para calcular volumes no processamento.");
+            if (taperWithBark.IsChecked != true) throw new InvalidOperationException("Confirme que os diâmetros do ajuste de taper foram medidos com casca para calcular e comparar volumes com casca.");
+            double stump = Ui.Number(taperStump.Text), section = Ui.Number(taperLength.Text), minLength = Ui.Number(taperMinimumLength.Text), dmin = Ui.Number(taperDmin.Text);
+            if (!double.IsFinite(stump) || stump < 0 || !double.IsFinite(section) || section <= 0 || !double.IsFinite(minLength) || minLength <= 0 || !double.IsFinite(dmin) || dmin < 0
+                || Math.Abs(stump * 10 - Math.Round(stump * 10)) > 1e-8 || Math.Abs(section * 10 - Math.Round(section * 10)) > 1e-8 || Math.Abs(minLength * 10 - Math.Round(minLength * 10)) > 1e-8)
+                throw new InvalidOperationException("Altura do toco e comprimentos devem ser múltiplos de 0,1 m; Dmin deve ser zero ou maior.");
+        }
+        processing["taper"] = taper;
         foreach (var pair in summaryLevels) processing.Obj("saidas")[pair.Key] = pair.Value.IsChecked == true;
         DirectInventorySummary.Validate(processing);
         bool changed =
@@ -377,7 +464,7 @@ internal sealed class ProcessorView : DockPanel
                                 owner.SetProgress((completed * 100.0 + 98 + (double)copied / Math.Max(1, total)) / inputs.Length);
                                 owner.StatusText.Text = $"Publicando banco: {copied / 1048576.0:N1} de {total / 1048576.0:N1} MB…";
                             }));
-                        owner.Log($"{session.ContentName(path)} · {run.S("inventory_type")} · V1 original criada. Revise e aprove antes de exportar.");
+                        owner.Log($"{session.ContentName(path)} · {run.S("inventory_type")} · V1 original publicada em Aguardando revisão.");
                     }
                     else
                     {

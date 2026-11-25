@@ -36,7 +36,7 @@ Os módulos e as funções acima são inventário do código/documentação, nã
 
 ## Base local entregue
 
-`Dendro.Core.Auditing.AuditLedger` cria um arquivo de auditoria separado em `%LOCALAPPDATA%\DENDRO\audit-ledger.db` e mantém registros de execução, achados, recomendações e eventos de decisão. Estados e confiança são validados, e decisões geram histórico. Não abre nem altera DLB. A **Central de auditoria**, acessível pelo ribbon **Projeto** mesmo sem um projeto aberto, exibe dez áreas catalogadas como **Não testado** e pode registrar o reconhecimento do catálogo local. Esse registro não executa funcionalidades, cálculos ou testes. Ainda não há agentes, tarefas recorrentes, coleta de métricas, ações de aprovação/rejeição na UI ou chamadas de IA.
+As auditorias do produto são executadas fora do aplicativo durante o desenvolvimento e a revisão. Não há central, catálogo de auditoria ou ledger local exposto ao usuário; o DendroLab deve apresentar funcionalidades prontas para uso. Agentes de auditoria, tarefas recorrentes e decisões de aprovação pertencem ao fluxo externo de desenvolvimento, não ao app distribuído.
 
 ## Plano incremental compatível
 

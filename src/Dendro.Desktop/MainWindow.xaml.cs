@@ -131,7 +131,7 @@ public partial class MainWindow : Window
             if (busy || closing || historyRefreshing || !Session.IsOpen || Session.FilePath.Length == 0) return;
             historyRefreshing = true;
             try { await Session.RefreshHistory(); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Log("Atualização do histórico indisponível: " + ex.Message); }
+            catch (Exception ex) { Log("Atualização do histórico indisponível: " + ex.Message); }
             finally { historyRefreshing = false; }
         };
         sourceAvailabilityTimer.Tick += async (_, _) => await RefreshSourceAvailability();
@@ -2146,22 +2146,6 @@ public partial class MainWindow : Window
     private void ToolsClick(object s, RoutedEventArgs e) => ToolsPane.Show();
 
     private void HistoryClick(object s, RoutedEventArgs e) => HistoryPane.Show();
-
-    private void AuditCenterClick(object s, RoutedEventArgs e)
-    {
-        var center = new Window
-        {
-            Title = "Central de auditoria",
-            Owner = this,
-            Width = 980,
-            Height = 640,
-            MinWidth = Math.Min(720, SystemParameters.WorkArea.Width),
-            MinHeight = Math.Min(420, SystemParameters.WorkArea.Height),
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = new AuditCenterView(),
-        };
-        center.ShowDialog();
-    }
 
     private void ClearHistoryClick(object s, RoutedEventArgs e) => HistoryText.Clear();
 

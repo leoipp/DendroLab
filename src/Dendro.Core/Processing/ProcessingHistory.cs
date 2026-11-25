@@ -64,9 +64,10 @@ public static class ProcessingHistory
         var info = new DataTable(["Item", "Valor"]);
         foreach (var pair in cfg.At("processador.execucao")!.AsObject().Where(p => p.Value is JsonValue)) info.Add(pair.Key, pair.Value.Display());
         sheets.Add(new("PROCESSAMENTO", info));
-        var factors = new DataTable(["Processamento_Original_ID", "Nivel", "Codigo", "Fator"]);
+        var factors = new DataTable(["Processamento_Original_ID", "Nivel", "Codigo", "Metodo", "Fator", "Volume_Operacional_Observado"]);
         foreach (var factor in cfg.At("processador.execucao")!.AsObject().Arr("factors"))
-            factors.Add(cfg.At("processador.execucao").S("family_id"), cfg.At("processador.execucao").S("factor_scope"), factor.S("code"), factor.N("factor"));
+            factors.Add(cfg.At("processador.execucao").S("family_id"), cfg.At("processador.execucao").S("factor_scope"), factor.S("code"),
+                cfg.At("processador.execucao").S("factor_method", "manual"), factor.N("factor"), factor.N("operational_volume"));
         if (factors.Count > 1) sheets.Add(new("FATORES APLICADOS", factors));
     }
 
@@ -81,12 +82,12 @@ public static class ProcessingHistory
             data.Text(r, familyColumn) != original.S("family_id") || data.Text(r, runColumn) != original.S("id")))
             throw new InvalidDataException("A tabela selecionada não corresponde ao processamento original deste inventário.");
         int key = data.Require(scope == "talhao" ? "Talhão" : "Lote"), volume = data.Require("VTCC_Original");
-        var table = new DataTable(["Processamento_Original_ID", "Nivel", "Codigo", "Fator", "Arvores", "VTCC_Original", "Contexto_ID", "Base_Origem", "Tipo_Inventario"]);
+        var table = new DataTable(["Processamento_Original_ID", "Nivel", "Codigo", "Fator", "Arvores", "VTCC_Original", "Contexto_ID", "Base_Origem", "Tipo_Inventario", "Volume_Operacional_Observado"]);
         foreach (var group in Enumerable.Range(1, data.Count - 1).GroupBy(r => FactorKey(data, r, data.Text(0, key))).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
             int first = group.First();
             table.Add(original.S("family_id"), scope, data.Text(first, key), 1d, (double)group.Count(), group.Sum(r => double.IsFinite(data.Number(r, volume)) ? data.Number(r, volume) : 0),
-                data.Text(first, data.Column("Contexto_ID")), data.Text(first, data.Column("Base_Origem")), data.Text(first, data.Column("Tipo_Inventario")));
+                data.Text(first, data.Column("Contexto_ID")), data.Text(first, data.Column("Base_Origem")), data.Text(first, data.Column("Tipo_Inventario")), 0d);
         }
         return table;
     }
@@ -97,9 +98,14 @@ public static class ProcessingHistory
         return scope.Length == 0 ? code : new JsonArray(scope, code).ToJsonString();
     }
 
-    public static Dictionary<string, double> ValidateFactors(DataTable factors, DataTable template)
+    public static Dictionary<string, double> ValidateFactors(DataTable factors, DataTable template, string method = "manual")
     {
+        if (method is not ("manual" or "calculado")) throw new InvalidDataException("Método do fator operacional inválido.");
         int id = factors.Require("Processamento_Original_ID"), level = factors.Require("Nivel"), code = factors.Require("Codigo"), value = factors.Require("Fator");
+        int observedColumn = factors.Column("Volume_Operacional_Observado");
+        int baselineVolumeColumn = template.Require("VTCC_Original");
+        if (method == "calculado" && observedColumn < 0)
+            throw new InvalidDataException("A tabela de fatores precisa conter a coluna Volume_Operacional_Observado para o método calculado.");
         string expectedId = template.Text(1, 0), expectedScope = template.Text(1, 1);
         var known = Enumerable.Range(1, template.Count - 1).Select(r => FactorKey(template, r)).ToHashSet(StringComparer.Ordinal);
         var result = new Dictionary<string, double>(StringComparer.Ordinal);
@@ -108,10 +114,24 @@ public static class ProcessingHistory
             if (factors.Text(row, id) != expectedId || factors.Text(row, level) != expectedScope)
                 throw new InvalidDataException($"Linha {row + 1}: os fatores pertencem a outro inventário ou nível.");
             string key = FactorKey(factors, row); double factor = factors.Number(row, value);
-            if (!known.Contains(key) || !double.IsFinite(factor) || factor is < 0 or > 1 || !result.TryAdd(key, factor))
-                throw new InvalidDataException($"Linha {row + 1}: código desconhecido/duplicado ou fator fora do intervalo 0 a 1.");
+            if (method == "calculado")
+            {
+                double observed = factors.Number(row, observedColumn);
+                double baseline = Enumerable.Range(1, template.Count - 1)
+                    .Where(r => FactorKey(template, r) == key)
+                    .Select(r => template.Number(r, baselineVolumeColumn)).DefaultIfEmpty(double.NaN).Single();
+                if (!double.IsFinite(observed) || observed < 0 || !double.IsFinite(baseline) || baseline < 0
+                    || (baseline == 0 && observed > 0))
+                    throw new InvalidDataException($"Linha {row + 1}: informe um volume operacional não negativo; não é possível calcular o fator quando o VTCC inventariado é zero e o volume observado é positivo.");
+                factor = baseline == 0 ? 1 : observed / baseline;
+                factors.Set(row, value, factor);
+            }
+            else if (!double.IsFinite(factor) || factor is < 0 or > 1)
+                throw new InvalidDataException($"Linha {row + 1}: o fator manual deve estar entre 0 e 1.");
+            if (!known.Contains(key) || !double.IsFinite(factor) || factor < 0 || !result.TryAdd(key, factor))
+                throw new InvalidDataException($"Linha {row + 1}: código desconhecido/duplicado ou fator operacional inválido.");
         }
-        if (result.Count != known.Count) throw new InvalidDataException("A tabela de fatores precisa conter todos os talhões/lotes. Use 1 para manter sem correção.");
+        if (result.Count != known.Count) throw new InvalidDataException("A tabela de fatores precisa conter todos os talhões/lotes. Use fator 1 ou informe volume operacional zero quando não houver aproveitamento.");
         return result;
     }
 
@@ -121,7 +141,8 @@ public static class ProcessingHistory
         string scope = revision.S("factor_scope");
         if (revision.S("family_id") != original.S("family_id") || revision.N("number") < 2) throw new InvalidDataException("Revisão incompatível com o inventário original.");
         var template = FactorTemplate(baseline, original, scope);
-        var mapping = ValidateFactors(factors, template);
+        string method = revision.S("factor_method", "manual");
+        var mapping = ValidateFactors(factors, template, method);
         DataTable Read(string name) => TableStore.Read(new(baseline, InternalPrefix + name));
         var stored = Read("CONFIG"); var cfg = JsonNode.Parse(stored.Text(1, 0))!.AsObject();
         cfg.Obj("processador")["execucao"] = revision.DeepClone();
@@ -129,15 +150,19 @@ public static class ProcessingHistory
         var input = Read("INPUT"); var calc = TableStore.Read(new(baseline, Trees)); var plots = TableStore.Read(new(baseline, Plots)); var stands = Read("STANDS");
         int keyColumn = calc.Require(scope == "talhao" ? "Talhão" : "Lote");
         int baseVolume = calc.Require("VTCC_Original"), factorColumn = calc.Require("Fator_Volume");
+        int operationalFactorColumn = calc.Ensure("Fator_Aproveitamento_Operacional");
         int standColumn = calc.Require("Talhão"), plotColumn = calc.Require("Parcela"), dateColumn = calc.Require("Data_Medicao");
         string[] volumeTypes = Dendro.Core.Configuration.ModelDefinition.VolumeTypes;
         int[] volumeColumns = volumeTypes.Select(calc.Column).ToArray();
+        int[] inventoriedColumns = volumeTypes.Select(type => calc.Ensure(type + "_Inventariado")).ToArray();
+        int[] operationalColumns = volumeTypes.Select(type => calc.Ensure(type + "_Operacional")).ToArray();
         var totals = new Dictionary<string, (double[] Values, bool[] Present, double Original, int Rows)>(StringComparer.Ordinal);
         for (int row = 1; row < calc.Count; row++)
         {
             cancellation.ThrowIfCancellationRequested();
             double factor = mapping[FactorKey(calc, row, calc.Text(0, keyColumn))], raw = calc.Number(row, baseVolume);
             calc.Set(row, factorColumn, factor);
+            calc.Set(row, operationalFactorColumn, factor);
             string key = calc.Column("Parcela_ID") >= 0 ? calc.Text(row, calc.Require("Parcela_ID")) : Key(calc.Text(row, standColumn), calc.Text(row, plotColumn), calc.Text(row, dateColumn));
             (double[] Values, bool[] Present, double Original, int Rows) total = totals.TryGetValue(key, out var previous)
                 ? previous
@@ -148,6 +173,8 @@ public static class ProcessingHistory
                 double estimate = calc.Number(row, volumeColumns[i]);
                 if (!double.IsFinite(estimate)) continue;
                 double corrected = estimate * factor;
+                calc.Set(row, inventoriedColumns[i], estimate);
+                calc.Set(row, operationalColumns[i], corrected);
                 calc.Set(row, volumeColumns[i], corrected);
                 total.Values[i] += corrected;
                 total.Present[i] = true;
@@ -166,8 +193,18 @@ public static class ProcessingHistory
                 string type = volumeTypes[i];
                 if (!total.Present[i]) continue;
                 double estimate = total.Values[i];
-                if (plots.Column(type) >= 0) Set(type, estimate);
-                if (plots.Column(type + "_ha") >= 0) Set(type + "_ha", estimate * 10000 / area);
+                if (plots.Column(type) >= 0)
+                {
+                    Set(type + "_Inventariado", plots.Number(row, plots.Require(type)));
+                    Set(type + "_Operacional", estimate);
+                    Set(type, estimate);
+                }
+                if (plots.Column(type + "_ha") >= 0)
+                {
+                    Set(type + "_ha_Inventariado", plots.Number(row, plots.Require(type + "_ha")));
+                    Set(type + "_ha_Operacional", estimate * 10000 / area);
+                    Set(type + "_ha", estimate * 10000 / area);
+                }
             }
             double perHa = double.IsFinite(volumeHa) ? volumeHa : double.NaN;
             double correctedCommercial = total.Present[1] ? total.Values[1] : double.NaN;
@@ -181,16 +218,23 @@ public static class ProcessingHistory
             Set("VMI", stemsHa > 0 ? perHa / stemsHa : double.NaN); Set("VMI_real", total.Rows > 0 ? total.Values[0] / total.Rows : double.NaN);
             Set("Dif_IFC_pct", expected > 0 ? (perHa - expected) / expected * 100 : double.NaN); Set("IcV", expected > 0 ? perHa / expected : double.NaN);
             Set("Fator_Volume", total.Original > 0 ? total.Values[0] / total.Original : mapping[FactorKey(plots, row, scope == "talhao" ? "Talhão" : "Lote")]);
+            Set("Fator_Aproveitamento_Operacional", mapping[FactorKey(plots, row, scope == "talhao" ? "Talhão" : "Lote")]);
         }
         var standGroups = Enumerable.Range(1, plots.Count - 1).GroupBy(p => (plots.Text(p, 0), plots.Text(p, plots.Require("Data_Medicao")), plots.Text(p, plots.Column("Contexto_ID"))))
             .ToDictionary(g => g.Key, g => g.ToArray());
+        var standColumns = new HashSet<string>(["VTCC_ha", "VCCC_ha", "VTSC_ha", "VCSC_ha", "VMI", "Dif_IFC_pct", "IcV"], StringComparer.Ordinal);
+        foreach (string type in volumeTypes)
+        {
+            standColumns.Add(type + "_ha_Inventariado");
+            standColumns.Add(type + "_ha_Operacional");
+        }
         for (int row = 1; row < stands.Count; row++)
         {
             var group = standGroups[(stands.Text(row, 0), stands.Text(row, stands.Require("Data_Medicao")), stands.Text(row, stands.Column("Contexto_ID")))];
-            foreach (string column in new[] { "VTCC_ha", "VCCC_ha", "VTSC_ha", "VCSC_ha", "VMI", "Dif_IFC_pct", "IcV" })
+            foreach (string column in standColumns)
             {
-                if (stands.Column(column) < 0) continue;
-                stands.Set(row, stands.Require(column), Dendro.Core.Mathematics.InventoryMath.Mean(group.Select(p => plots.Number(p, plots.Require(column)))));
+                if (plots.Column(column) < 0) continue;
+                stands.Set(row, stands.Ensure(column), Dendro.Core.Mathematics.InventoryMath.Mean(group.Select(p => plots.Number(p, plots.Require(column)))));
             }
         }
         Stamp(cfg, calc, plots, stands);

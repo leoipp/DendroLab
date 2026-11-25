@@ -279,14 +279,17 @@ public sealed class DlbEncryptionKey : IDisposable
     }
 }
 
-/// <summary>Single active desktop project key, propagated through async operations.</summary>
+/// <summary>Key for the single active desktop project, shared with background callbacks.</summary>
 public static class DlbEncryptionSession
 {
-    private static readonly AsyncLocal<DlbEncryptionKey?> key = new();
-    public static DlbEncryptionKey? Current { get => key.Value; set => key.Value = value; }
+    // The desktop application has one active project. Keep its key at session
+    // scope so dispatcher timers and other callbacks can read encrypted DLBs
+    // after the async open operation has completed.
+    private static DlbEncryptionKey? key;
+    public static DlbEncryptionKey? Current { get => key; set => key = value; }
     public static void Clear()
     {
-        key.Value?.Dispose();
-        key.Value = null;
+        key?.Dispose();
+        key = null;
     }
 }

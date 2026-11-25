@@ -7,6 +7,7 @@ using System.Text.Json;
 namespace Dendro.Desktop;
 
 internal sealed record CopernicusOAuthCredentials(string ClientId, string ClientSecret);
+internal sealed record DlbPasswordReminder(string Path, DateTimeOffset ExpiresAtUtc, string Password);
 
 internal static class WindowsCredentialStore
 {
@@ -19,6 +20,10 @@ internal static class WindowsCredentialStore
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "DENDRO",
         "copernicus-oauth.bin");
+    private static readonly string DlbPasswordsFolder = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "DENDRO",
+        "dlb-passwords");
 
     [StructLayout(LayoutKind.Sequential)]
     private struct DataBlob
@@ -84,6 +89,63 @@ internal static class WindowsCredentialStore
     internal static void RemoveCopernicusCredentials()
     {
         if (File.Exists(CopernicusPath)) File.Delete(CopernicusPath);
+    }
+
+    internal static string? ReadDlbPassword(string path)
+    {
+        string normalizedPath = Path.GetFullPath(path);
+        string credentialPath = DlbCredentialPath(normalizedPath);
+        if (!File.Exists(credentialPath)) return null;
+        try
+        {
+            var reminder = JsonSerializer.Deserialize<DlbPasswordReminder>(
+                Transform(File.ReadAllBytes(credentialPath), protect: false));
+            if (reminder == null
+                || !string.Equals(reminder.Path, normalizedPath, StringComparison.OrdinalIgnoreCase)
+                || reminder.ExpiresAtUtc <= DateTimeOffset.UtcNow
+                || string.IsNullOrEmpty(reminder.Password))
+            {
+                File.Delete(credentialPath);
+                return null;
+            }
+            return reminder.Password;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.Security.Cryptography.CryptographicException or System.Text.Json.JsonException
+            or Win32Exception)
+        {
+            try { File.Delete(credentialPath); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return null;
+        }
+    }
+
+    internal static void SaveDlbPassword(string path, string password)
+    {
+        string normalizedPath = Path.GetFullPath(path);
+        var reminder = new DlbPasswordReminder(normalizedPath, DateTimeOffset.UtcNow.AddDays(7), password);
+        byte[] encrypted = Transform(JsonSerializer.SerializeToUtf8Bytes(reminder), protect: true);
+        string credentialPath = DlbCredentialPath(normalizedPath);
+        Directory.CreateDirectory(DlbPasswordsFolder);
+        string temporary = credentialPath + ".tmp";
+        File.WriteAllBytes(temporary, encrypted);
+        File.Move(temporary, credentialPath, overwrite: true);
+    }
+
+    internal static void RemoveDlbPassword(string path)
+    {
+        string credentialPath = DlbCredentialPath(Path.GetFullPath(path));
+        try { if (File.Exists(credentialPath)) File.Delete(credentialPath); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private static string DlbCredentialPath(string path)
+    {
+        string identity = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(path.ToUpperInvariant())));
+        return Path.Combine(DlbPasswordsFolder, identity + ".bin");
     }
 
     private static byte[] Transform(byte[] input, bool protect)

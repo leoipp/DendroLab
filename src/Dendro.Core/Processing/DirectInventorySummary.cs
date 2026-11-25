@@ -57,7 +57,8 @@ public sealed class DirectInventorySummary : IDisposable
         public readonly string Curve = curve;
         public readonly int Year = year;
         public readonly double Effective = effective;
-        public double Volume, CommercialVolume = double.NaN, Area, AgeSum;
+        public double Volume, CommercialVolume = double.NaN, TaperTotal, TaperCommercial, TaperDiffTotal, TaperDiffCommercial, Area, AgeSum;
+        public int TaperCount;
         public readonly double[] TypedVolumes = new double[4];
         public readonly int[] TypedVolumeCounts = new int[4];
         public string Measurement = "";
@@ -123,7 +124,8 @@ public sealed class DirectInventorySummary : IDisposable
     public void Add(string stand, string plot, string lot, int year, long sourceRow, double age,
         double treeVolume, bool stem, double area, double effective, string inferred, string planted,
         double dap = double.NaN, double height = double.NaN, string? plotId = null, InventoryContext? context = null, string measurement = "", string curveId = "",
-        double commercialVolume = double.NaN, double vtcc = double.NaN, double vtsc = double.NaN, double vcsc = double.NaN)
+        double commercialVolume = double.NaN, double vtcc = double.NaN, double vtsc = double.NaN, double vcsc = double.NaN,
+        double taperTotal = double.NaN, double taperCommercial = double.NaN)
     {
         rows++;
         if (double.IsFinite(treeVolume)) volume += treeVolume;
@@ -173,8 +175,13 @@ public sealed class DirectInventorySummary : IDisposable
                 p.TypedVolumeCounts[index]++;
             }
         if (double.IsFinite(commercialVolume)) p.CommercialVolume = double.IsFinite(p.CommercialVolume) ? p.CommercialVolume + commercialVolume : commercialVolume;
+        if (double.IsFinite(taperTotal) && double.IsFinite(taperCommercial)) { p.TaperTotal += taperTotal; p.TaperCommercial += taperCommercial; p.TaperCount++; }
+        if (double.IsFinite(taperTotal) && double.IsFinite(vtcc)) p.TaperDiffTotal += taperTotal - vtcc;
+        if (double.IsFinite(taperCommercial) && double.IsFinite(commercialVolume)) p.TaperDiffCommercial += taperCommercial - commercialVolume;
         if (trees != null) AddRow(trees, [stand, plot, lot, year == 0 ? null : (double)year,
-            (double)sourceRow, dap, height, Math.PI * Math.Pow(dap / 10, 2) / 40000, age, treeVolume, vtcc, commercialVolume, vtsc, vcsc,
+            (double)sourceRow, dap, height, Math.PI * Math.Pow(dap / 10, 2) / 40000, age, treeVolume, vtcc, commercialVolume, vtsc, vcsc, taperTotal, taperCommercial,
+            double.IsFinite(taperTotal) && double.IsFinite(vtcc) ? taperTotal - vtcc : double.NaN,
+            double.IsFinite(taperCommercial) && double.IsFinite(commercialVolume) ? taperCommercial - commercialVolume : double.NaN,
             inferred, planted, key, context.Id, context.Origin, context.Type]);
     }
     public ProcessingResult Complete(int removedDuplicates = 0)
@@ -185,6 +192,16 @@ public sealed class DirectInventorySummary : IDisposable
             double[] values = group.Select(plot => plot.TypedVolume(index)).Where(double.IsFinite).ToArray();
             return values.Length > 0 ? values.Sum() : double.NaN;
         }).ToArray();
+        double TaperSum(IEnumerable<Plot> group, bool commercial)
+        {
+            var valid = group.Where(plot => plot.TaperCount > 0).ToArray();
+            return valid.Length == 0 ? double.NaN : valid.Sum(plot => commercial ? plot.TaperCommercial : plot.TaperTotal);
+        }
+        double TaperDifference(IEnumerable<Plot> group, bool commercial)
+        {
+            var valid = group.Where(plot => plot.TaperCount > 0).ToArray();
+            return valid.Length == 0 ? double.NaN : valid.Sum(plot => commercial ? plot.TaperDiffCommercial : plot.TaperDiffTotal);
+        }
         double[] TypedPerHa(Plot[] group, string level, double effective)
         {
             var result = new double[volumeTypes.Length];
@@ -259,7 +276,7 @@ public sealed class DirectInventorySummary : IDisposable
                         siteIndexValue, all.Sum(p => p.BasalArea), .. typedHa, stemsHa,
                         stemsHa > 0 ? volumeHa / stemsHa : double.NaN, effective, totalVolume, .. typedTotals, totalStems,
                         (double)all.Sum(p => p.Invalid), age, age * 12, first.Measurement, first.Area / first.Rows,
-                        first.Id, first.Context.Id, first.Context.Origin, first.Context.Type]);
+                        TaperSum(all, false), TaperSum(all, true), TaperDifference(all, false), TaperDifference(all, true), first.Id, first.Context.Id, first.Context.Origin, first.Context.Type]);
                 }
                 else
                 {
@@ -271,7 +288,7 @@ public sealed class DirectInventorySummary : IDisposable
                         .. (level == "talhao" ? new object?[] { age, age * 12 } : Array.Empty<object?>()),
                         .. (level is "talhao" or "lote" or "projeto" ? new object?[] { absoluteError, samplingError } : Array.Empty<object?>()),
                         all.Select(p => p.Measurement).Where(s => s.Length > 0).Order(StringComparer.Ordinal).LastOrDefault() ?? "",
-                        "", first.Context.Id, first.Context.Origin, first.Context.Type]);
+                        TaperSum(all, false), TaperSum(all, true), TaperDifference(all, false), TaperDifference(all, true), "", first.Context.Id, first.Context.Origin, first.Context.Type]);
                 }
             }
         }
@@ -297,6 +314,8 @@ public sealed class DirectInventorySummary : IDisposable
         writer.Add(info, ["Amostra e totais", "Volume/fustes amostrados são somas observadas. Por hectare: média entre parcelas por talhão; lote/projeto ponderam talhões por área efetiva. Totais dependem dessa área e ficam vazios se desconhecida."]);
         writer.Add(info, ["Erro amostral", $"Erro absoluto e erro amostral (%) do volume principal são calculados nos níveis de lote e projeto com IC t de {confidence:P0}, ponderação por área efetiva entre talhões e variância dentro de cada talhão. Exigem ao menos {minimumPlots:G} parcelas no total e duas por talhão. Graus de liberdade usam aproximação de Satterthwaite; não há correção para população finita porque o tamanho populacional por talhão não está disponível. O erro absoluto está em m³/ha."]);
         writer.Add(info, ["Modelos de volume", "Cada tipo usa a equação cadastrada. Modelos configurados como razão multiplicam o volume anterior da sequência; modelos de saída direta usam o valor calculado e o fator informado no resumo direto."]);
+        if (processing?.At("taper").B("enabled") == true)
+            writer.Add(info, ["Volumes por taper", "Volume_Taper_Total_m3 integra o fuste acima do toco; Volume_Taper_Comercial_m3 soma as toras aceitas por comprimento e Dmin. As diferenças são taper menos VTCC/VCCC. Ajuste declarado com casca. São estimativas independentes das equações de volume e não aplicam fator operacional."]);
         if (vcccPairs > 0) writer.Add(info, ["Auditoria de hierarquia dos volumes", $"VTCC > VCCC: {vcccViolations:N0} violações em {vcccPairs:N0} árvores avaliadas."]);
         writer.Add(info, ["Volumes ausentes", "Fustes_sem_volume identifica DAP positivo sem volume válido; reveja os dados antes de interpretar VMI e totais."]);
         writer.Add(info, ["Remover árvores duplicadas", processing?.B("remover_duplicadas") == true ? "Ativado: mantém a primeira ocorrência de cada chave configurada." : "Desativado."]);

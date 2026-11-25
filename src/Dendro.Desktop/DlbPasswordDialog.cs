@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Security.Cryptography;
 using System.IO;
+using System.ComponentModel;
 using Dendro.Core.Tabular;
 
 namespace Dendro.Desktop;
@@ -51,21 +52,45 @@ internal static class DlbPasswordDialog
 
     internal static DlbEncryptionKey? Unlock(Window owner, string path)
     {
+        string? savedPassword = WindowsCredentialStore.ReadDlbPassword(path);
+        if (savedPassword != null)
+        {
+            try { return DlbEncryptionKey.UnlockFile(path, savedPassword.AsSpan()); }
+            catch (CryptographicException) { WindowsCredentialStore.RemoveDlbPassword(path); }
+        }
+
         var password = new PasswordBox { MaxLength = 1024, Margin = new Thickness(0, 8, 0, 8) };
+        var remember = new CheckBox
+        {
+            Content = "Lembrar a senha neste computador por 7 dias",
+            Margin = new Thickness(0, 0, 0, 8),
+            IsChecked = savedPassword != null,
+        };
         var error = new TextBlock { Foreground = Brushes.Firebrick, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 8) };
         var content = new StackPanel { Margin = new Thickness(20) };
         content.Children.Add(new TextBlock { Text = $"Informe a senha para abrir {Path.GetFileName(path)}.", TextWrapping = TextWrapping.Wrap });
-        content.Children.Add(password); content.Children.Add(error);
+        content.Children.Add(password); content.Children.Add(remember); content.Children.Add(error);
         var dialog = Ui.Dialog("Desbloquear projeto DLB", content, 500, 220);
         dialog.Owner = owner; dialog.SizeToContent = SizeToContent.Height;
         DlbEncryptionKey? result = null;
         var cancel = Ui.Button("Cancelar", () => dialog.DialogResult = false);
+        string? reminderError = null;
         var accept = Ui.Button("Abrir projeto", () =>
         {
             try
             {
                 string candidate = password.Password;
                 result = DlbEncryptionKey.UnlockFile(path, candidate.AsSpan());
+                if (remember.IsChecked == true)
+                {
+                    try { WindowsCredentialStore.SaveDlbPassword(path, candidate); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                        or System.Security.Cryptography.CryptographicException or Win32Exception)
+                    {
+                        reminderError = ex.Message;
+                    }
+                }
+                else WindowsCredentialStore.RemoveDlbPassword(path);
                 password.Clear();
                 dialog.DialogResult = true;
             }
@@ -79,6 +104,9 @@ internal static class DlbPasswordDialog
         var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
         actions.Children.Add(cancel); actions.Children.Add(accept); content.Children.Add(actions);
         dialog.Loaded += (_, _) => password.Focus();
-        return dialog.ShowDialog() == true ? result : null;
+        bool accepted = dialog.ShowDialog() == true;
+        if (accepted && reminderError != null)
+            Ui.Alert("DendroLab", "Projeto desbloqueado, mas não foi possível lembrar a senha: " + reminderError, Ui.MessageTone.Warning);
+        return accepted ? result : null;
     }
 }

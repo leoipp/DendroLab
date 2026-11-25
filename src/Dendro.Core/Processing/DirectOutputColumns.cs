@@ -11,7 +11,7 @@ public static class DirectOutputColumns
         "VTCC_amostrado_m3", "VCCC_amostrado_m3", "VTSC_amostrado_m3", "VCSC_amostrado_m3",
         "VTCC_m3_ha", "VCCC_m3_ha", "VTSC_m3_ha", "VCSC_m3_ha",
         "VTCC_total_m3", "VCCC_total_m3", "VTSC_total_m3", "VCSC_total_m3",
-        "Erro_Absoluto_m3_ha", "Erro_Amostral_pct",
+        "Erro_Absoluto_m3_ha", "Erro_Amostral_pct", "Volume_Taper_Total_m3", "Volume_Taper_Comercial_m3", "Dif_Taper_Total_VTCC_m3", "Dif_Taper_Comercial_VCCC_m3",
     };
 
     public static bool DefaultEnabled(string level, string column) => !NewOptionalColumns.Contains(column);
@@ -21,17 +21,17 @@ public static class DirectOutputColumns
         string[] context = ["Parcela_ID", "Contexto_ID", "Base_Origem", "Tipo_Inventario"];
         if (level == "arvore")
             return ["Talhão", "Parcela", "Lote", "Ano_Medicao", "Linha_Origem", "DAP", "H", "AS", "Idade_anos", "Volume_m3",
-                .. VolumeTypes.Select(type => type + "_m3"), RegistryAgeFallback.FlagColumn, RegistryAgeFallback.DateColumn, .. context];
+                .. VolumeTypes.Select(type => type + "_m3"), "Volume_Taper_Total_m3", "Volume_Taper_Comercial_m3", "Dif_Taper_Total_VTCC_m3", "Dif_Taper_Comercial_VCCC_m3", RegistryAgeFallback.FlagColumn, RegistryAgeFallback.DateColumn, .. context];
         if (level == "parcela")
             return ["Grupo", "Talhão", "Parcela", "Lote", "Ano_Medicao", "N_Parcelas", "DAP_medio", "Dq", "H_medio", "DAPd", "Hd", "IS", "AB",
                 .. VolumeTypes.Select(type => type + "_m3_ha"), "Fustes_ha", "VMI_m3_fuste", "Area_efetiva_ha", "Volume_total_m3",
-                .. VolumeTypes.Select(type => type + "_total_m3"), "Fustes_totais_estimados", "Fustes_sem_volume", "Idade_anos", "Idade_meses", "Data_Medicao", "area_corr", .. context];
+                .. VolumeTypes.Select(type => type + "_total_m3"), "Fustes_totais_estimados", "Fustes_sem_volume", "Idade_anos", "Idade_meses", "Data_Medicao", "area_corr", "Volume_Taper_Total_m3", "Volume_Taper_Comercial_m3", "Dif_Taper_Total_VTCC_m3", "Dif_Taper_Comercial_VCCC_m3", .. context];
         return ["Grupo", "Talhão", "Parcela", "Lote", "Ano_Medicao", "N_Parcelas", "Volume_amostrado_m3",
             .. VolumeTypes.Select(type => type + "_amostrado_m3"), "Fustes_amostrados", "VMI_amostrado_m3_fuste",
             .. VolumeTypes.Select(type => type + "_m3_ha"), "Fustes_ha", "VMI_m3_fuste", "DAPd", "Hd", "IS", "Area_efetiva_ha", "Volume_total_m3",
             .. VolumeTypes.Select(type => type + "_total_m3"), "Fustes_totais_estimados", "Fustes_sem_volume",
             .. (level == "talhao" ? new[] { "Idade_anos", "Idade_meses" } : Array.Empty<string>()),
-            .. (level is "talhao" or "lote" or "projeto" ? new[] { "Erro_Absoluto_m3_ha", "Erro_Amostral_pct" } : Array.Empty<string>()), "Data_Medicao", .. context];
+            .. (level is "talhao" or "lote" or "projeto" ? new[] { "Erro_Absoluto_m3_ha", "Erro_Amostral_pct" } : Array.Empty<string>()), "Data_Medicao", "Volume_Taper_Total_m3", "Volume_Taper_Comercial_m3", "Dif_Taper_Total_VTCC_m3", "Dif_Taper_Comercial_VCCC_m3", .. context];
     }
 
     public static bool Required(string level, string column) => column is "Contexto_ID" or "Base_Origem" or "Tipo_Inventario" or "Ano_Medicao"
@@ -43,8 +43,10 @@ public static class DirectOutputColumns
         || level == "talhao" && column == "Talhão" || level == "lote" && column == "Lote" || level == "projeto" && column == "Grupo";
 
     public static bool Enabled(JsonNode? processing, string level, string column) => column != "Volume_m3_ha"
-        && (Required(level, column)
-        || (processing?["colunas_direto"]?[level].B(column, DefaultEnabled(level, column)) ?? DefaultEnabled(level, column)));
+        && ((processing?["taper"]?.B("enabled") == true
+                && (column.StartsWith("Volume_Taper_", StringComparison.Ordinal) || column.StartsWith("Dif_Taper_", StringComparison.Ordinal)))
+            || Required(level, column)
+            || (processing?["colunas_direto"]?[level].B(column, DefaultEnabled(level, column)) ?? DefaultEnabled(level, column)));
 
     public static void Validate(JsonNode? processing)
     {

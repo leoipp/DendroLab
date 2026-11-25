@@ -102,7 +102,9 @@ public sealed class InventoryProcessor
         InventoryContext Inventory,
         double Volume,
         double CommercialVolume,
-        VolumeEstimates Estimates
+        VolumeEstimates Estimates,
+        double TaperTotal,
+        double TaperCommercial
     );
 
     private sealed class PlotAggregate(Tree first, int dominantTreesPerPlot)
@@ -110,7 +112,7 @@ public sealed class InventoryProcessor
         public Tree First { get; } = first;
         public DominantTreeMetrics Dominant { get; } = new(dominantTreesPerPlot);
         public int Rows, Stems, DapCount, HeightCount, EffectiveCount, AreaCount, AgeCount, VolumeCount, CommercialCount;
-        public double Volume, VolumeSum, CommercialVolumeSum, AreaSum, AgeSum, EffectiveSum, DapSum, HeightSum;
+        public double Volume, VolumeSum, CommercialVolumeSum, TaperTotal, TaperCommercial, AreaSum, AgeSum, EffectiveSum, DapSum, HeightSum;
         public VolumeEstimates EstimateSums = VolumeEstimates.Empty;
         public readonly int[] EstimateCounts = new int[4];
 
@@ -119,6 +121,7 @@ public sealed class InventoryProcessor
             if (First.Stand != tree.Stand || First.Lot != tree.Lot || First.Plot != tree.Plot)
                 throw new InvalidDataException("A chave de parcela está agrupando talhões, lotes ou números de parcela diferentes. Revise as colunas da chave em Configurações > Identificação.");
             Rows++;
+            if (double.IsFinite(tree.TaperTotal) && double.IsFinite(tree.TaperCommercial)) { TaperTotal += tree.TaperTotal; TaperCommercial += tree.TaperCommercial; }
             if (!double.IsNaN(tree.Volume)) { Volume += tree.Volume; VolumeSum += tree.Volume; VolumeCount++; }
             if (!double.IsNaN(tree.CommercialVolume)) { CommercialVolumeSum += tree.CommercialVolume; CommercialCount++; }
             foreach (string type in ModelDefinition.VolumeTypes)
@@ -263,6 +266,8 @@ public sealed class InventoryProcessor
             )
             .ToArray();
         NormalizeInputUnits(input, c[3], c[4], cfg);
+        TaperBuckingCalculator? taperCalculator = cfg.At("processador.taper").B("enabled") ? new TaperBuckingCalculator(cfg) : null;
+        int taperStratumColumn = taperCalculator?.StratumColumn.Length > 0 ? input.Require(taperCalculator.StratumColumn) : -1;
         int original = projectedInput?.SourceWidth ?? input.Width;
         bool directMode = cfg["processador"].S("modo", "completo") == "resumo_direto";
         using var direct = directMode ? new DirectInventorySummary(output, cfg) : null;
@@ -512,7 +517,7 @@ public sealed class InventoryProcessor
         ]) : new DataTable(["EQ_COD"]);
         bool temporal = cfg["estatisticas"].B("chave_temporal_ativa");
         int fallbackFlag = input.Column(RegistryAgeFallback.FlagColumn), fallbackDate = input.Column(RegistryAgeFallback.DateColumn);
-        bool spoolCalculationRows = compact && !directMode && retainCalculationRows && !useCurves
+        bool spoolCalculationRows = compact && !directMode && retainCalculationRows && !useCurves && taperCalculator == null
             && !height.B("debug") && !ProcessingHistory.Enabled(cfg)
             && fallbackFlag < 0 && fallbackDate < 0
             && cfg.At("saida.sheets").B("resultado_arvore", true);
@@ -525,6 +530,10 @@ public sealed class InventoryProcessor
         using var calcSpool = spoolCalculationRows
             ? new CompactTableSpool(Path.GetTempPath(), Enumerable.Range(0, calc.Width).Select(column => calc.Text(0, column)).ToArray(), "RESULTADO - ARVORES")
             : null;
+        int calcTaperTotal = taperCalculator == null ? -1 : calc.Ensure("Volume_Taper_Total_m3");
+        int calcTaperCommercial = taperCalculator == null ? -1 : calc.Ensure("Volume_Taper_Comercial_m3");
+        int calcTaperDiffTotal = taperCalculator == null ? -1 : calc.Ensure("Dif_Taper_Total_VTCC_m3");
+        int calcTaperDiffCommercial = taperCalculator == null ? -1 : calc.Ensure("Dif_Taper_Comercial_VCCC_m3");
         var usedEquationCodes = retainCalculationRows && !spoolCalculationRows
             ? null
             : new HashSet<string>(StringComparer.Ordinal);
@@ -574,7 +583,9 @@ public sealed class InventoryProcessor
                 calc.Number(row, 6), calc.Number(row, 8), registry.Number(registryRow, ca), calc.Text(row, 7),
                 calc.Text(row, 11), measurement, identification.PlotKey(row), identification.Context(row), calc.Number(row, 9), calc.Number(row, 10),
                 new(calc.Number(row, calc.Column("VTCC")), calc.Number(row, calc.Column("VCCC")),
-                    calc.Number(row, calc.Column("VTSC")), calc.Number(row, calc.Column("VCSC"))));
+                    calc.Number(row, calc.Column("VTSC")), calc.Number(row, calc.Column("VCSC"))),
+                calcTaperTotal >= 0 ? calc.Number(row, calcTaperTotal) : double.NaN,
+                calcTaperCommercial >= 0 ? calc.Number(row, calcTaperCommercial) : double.NaN);
         }
         bool releaseInputRowsAsProcessed = !useCurves
             && !ProcessingHistory.Enabled(cfg)
@@ -584,9 +595,15 @@ public sealed class InventoryProcessor
         int keepFileHeightObserved = mode == "KEEP_FILE" && !useRna ? input.Column("H_obs") : -1;
         int keepFileHeightFinal = mode == "KEEP_FILE" && !useRna ? input.Column("H_final") : -1;
         int keepFileFilledHeightCount = 0;
+        int totalInputRows = input.Count - 1;
         for (int r = 1; r < input.Count; r++)
         {
-            if (r % 2048 == 0) cancellation.ThrowIfCancellationRequested();
+            if (r % 2048 == 0)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                int percent = 30 + (int)Math.Min(34, 34d * r / Math.Max(1, totalInputRows));
+                progress?.Invoke(percent, $"Calculando árvores: {r:N0} de {totalInputRows:N0} linhas…");
+            }
             if (keepFileHeightObserved >= 0 && keepFileHeightFinal >= 0
                 && !(input.Number(r, keepFileHeightObserved) > 0)
                 && input.Number(r, keepFileHeightFinal) > 0)
@@ -637,7 +654,7 @@ public sealed class InventoryProcessor
                 identification.Context(r),
                 double.NaN,
                 double.NaN,
-                VolumeEstimates.Empty
+                VolumeEstimates.Empty, double.NaN, double.NaN
             );
             bool zeroMeasure = dap == 0 && h == 0;
             VolumeEstimates estimates = zeroMeasure
@@ -686,6 +703,7 @@ public sealed class InventoryProcessor
             }
             string primaryVolumeType = codeVolumeTypes[0];
             double volume = estimates.Get(primaryVolumeType), commercialVolume = estimates.Vccc;
+            var taperEstimate = taperCalculator?.Calculate(dap / 10, h / 10, taperStratumColumn >= 0 ? input.Text(r, taperStratumColumn) : "");
             var eq = modelsByType[primaryVolumeType][code];
             if (double.IsInfinity(volume))
                 throw new InvalidDataException(
@@ -696,13 +714,15 @@ public sealed class InventoryProcessor
             {
                 direct.Add(stand, plot, lot, t.Year, r + 1, age, volume, dap > 0, area, effective,
                     input.Text(r, fallbackFlag), input.Text(r, fallbackDate), dap, h, t.PlotIdentity, t.Inventory, t.Measurement, t.Curve,
-                    commercialVolume, estimates.Vtcc, estimates.Vtsc, estimates.Vcsc);
+                    commercialVolume, estimates.Vtcc, estimates.Vtsc, estimates.Vcsc,
+                    taperEstimate?.Total ?? double.NaN, taperEstimate?.Commercial ?? double.NaN);
                 if (releaseInputRowsAsProcessed) input.ReleaseRowValues(r);
                 continue;
             }
             processedTrees++;
             if (!double.IsNaN(volume)) processedVolume += volume;
-            var measuredTree = t with { Volume = volume, CommercialVolume = commercialVolume, Estimates = estimates };
+            var measuredTree = t with { Volume = volume, CommercialVolume = commercialVolume, Estimates = estimates,
+                TaperTotal = taperEstimate?.Total ?? double.NaN, TaperCommercial = taperEstimate?.Commercial ?? double.NaN };
             if (plotAggregates != null)
             {
                 if (!plotAggregates.TryGetValue(t.PlotIdentity, out var aggregate))
@@ -738,6 +758,13 @@ public sealed class InventoryProcessor
                     estimates.Vtsc,
                     estimates.Vcsc
                 );
+                if (calcTaperTotal >= 0)
+                {
+                    calc.Set(calc.Count - 1, calcTaperTotal, measuredTree.TaperTotal);
+                    calc.Set(calc.Count - 1, calcTaperCommercial, measuredTree.TaperCommercial);
+                    calc.Set(calc.Count - 1, calcTaperDiffTotal, double.IsFinite(measuredTree.TaperTotal) && double.IsFinite(estimates.Vtcc) ? measuredTree.TaperTotal - estimates.Vtcc : double.NaN);
+                    calc.Set(calc.Count - 1, calcTaperDiffCommercial, double.IsFinite(measuredTree.TaperCommercial) && double.IsFinite(estimates.Vccc) ? measuredTree.TaperCommercial - estimates.Vccc : double.NaN);
+                }
                 if (fallbackFlag >= 0) {
                     calc.Set(calc.Count - 1, calcFallbackFlag, input.Value(r, fallbackFlag));
                     calc.Set(calc.Count - 1, calcFallbackDate, input.Value(r, fallbackDate));
@@ -842,9 +869,13 @@ public sealed class InventoryProcessor
             stands.Ensure(type + "_ha");
         }
         if (versioned) { plots.Ensure("Data_Medicao"); stands.Ensure("Data_Medicao"); }
+        int plotTaperTotal = taperCalculator == null ? -1 : plots.Ensure("Volume_Taper_Total_m3");
+        int plotTaperCommercial = taperCalculator == null ? -1 : plots.Ensure("Volume_Taper_Comercial_m3");
+        int plotTaperDiffTotal = taperCalculator == null ? -1 : plots.Ensure("Dif_Taper_Total_VTCC_m3");
+        int plotTaperDiffCommercial = taperCalculator == null ? -1 : plots.Ensure("Dif_Taper_Comercial_VCCC_m3");
         void AddPlot(Tree first, VolumeEstimates estimates, double volume, double commercialVolume, double area, int stems, double age, double effective,
             double meanDap, double meanHeight, double meanVolume, DominantTreeMetrics dominant,
-            IEnumerable<ModelContext>? curveContexts)
+            IEnumerable<ModelContext>? curveContexts, double taperTotal = double.NaN, double taperCommercial = double.NaN)
         {
             double perHa = volume * 10000 / area, stemsHa = stems * 10000 / area, expected = double.NaN;
             JsonNode? curve = null;
@@ -899,6 +930,12 @@ public sealed class InventoryProcessor
             }
             if (siteIndex != null)
                 plots.Set(plots.Count - 1, plots.Require("IS"), siteIndex.Calculate(first.Curve, age, dominant.Dap, dominant.Height));
+            if (plotTaperTotal >= 0)
+            {
+                plots.Set(plots.Count - 1, plotTaperTotal, taperTotal); plots.Set(plots.Count - 1, plotTaperCommercial, taperCommercial);
+                plots.Set(plots.Count - 1, plotTaperDiffTotal, double.IsFinite(taperTotal) && double.IsFinite(estimates.Vtcc) ? taperTotal - estimates.Vtcc : double.NaN);
+                plots.Set(plots.Count - 1, plotTaperDiffCommercial, double.IsFinite(taperCommercial) && double.IsFinite(estimates.Vccc) ? taperCommercial - estimates.Vccc : double.NaN);
+            }
             if (versioned)
             {
                 plots.Set(plots.Count - 1, plots.Require("Data_Medicao"), first.Measurement);
@@ -914,7 +951,7 @@ public sealed class InventoryProcessor
                 .ThenBy(item => item.First.Year).ThenBy(item => item.First.Plot, StringComparer.Ordinal).ThenBy(item => item.First.Row))
                 AddPlot(aggregate.First, aggregate.EstimateSums, aggregate.Volume, aggregate.CommercialVolume, aggregate.MeanArea, aggregate.Stems, aggregate.MeanAge,
                     aggregate.MeanEffective, aggregate.MeanDap, aggregate.MeanHeight, aggregate.MeanVolume,
-                    aggregate.Dominant, null);
+                    aggregate.Dominant, null, aggregate.TaperTotal, aggregate.TaperCommercial);
         }
         else if (plotRows != null)
         {
@@ -934,7 +971,7 @@ public sealed class InventoryProcessor
                     stemsHa = aggregate.Stems * 10000 / aggregate.MeanArea;
                 AddPlot(first, aggregate.EstimateSums, aggregate.Volume, aggregate.CommercialVolume, aggregate.MeanArea, aggregate.Stems, aggregate.MeanAge,
                     aggregate.MeanEffective, aggregate.MeanDap, aggregate.MeanHeight, aggregate.MeanVolume,
-                    aggregate.Dominant, rows.Select(row => Context(FromCalcRow(row), perHa, stemsHa)));
+                    aggregate.Dominant, rows.Select(row => Context(FromCalcRow(row), perHa, stemsHa)), aggregate.TaperTotal, aggregate.TaperCommercial);
             }
         }
         else
@@ -973,7 +1010,9 @@ public sealed class InventoryProcessor
                 foreach (var tree in group) dominant.Add(tree.Dap, tree.Height);
                 double perHa = volume * 10000 / area, stemsHa = stems * 10000 / area;
                 AddPlot(first, estimates, volume, commercialVolume, area, stems, age, effective, meanDap, meanHeight, meanVolume, dominant,
-                    useCurves ? group.Select(tree => Context(tree, perHa, stemsHa)) : null);
+                    useCurves ? group.Select(tree => Context(tree, perHa, stemsHa)) : null,
+                    group.Where(tree => double.IsFinite(tree.TaperTotal)).Sum(tree => tree.TaperTotal),
+                    group.Where(tree => double.IsFinite(tree.TaperCommercial)).Sum(tree => tree.TaperCommercial));
             }
         }
         int[] positions = [3, 4, 12, 13, 14, 15, 9, 10, 18, 19, 20];

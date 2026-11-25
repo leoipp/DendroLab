@@ -2,15 +2,25 @@
 
 ## Uso
 
-1. Salve o projeto. Em Configurações, confira os mapeamentos do inventário. Em **Identificação**, escolha as colunas das chaves de árvore e parcela e as colunas que identificam cada base.
-2. No Processador, selecione **Inventário com revisão e aprovação**, indique **IFC**, **IFPC** ou **MISTO** e o nível inicial dos fatores: talhão ou lote. Em bases mistas, configure a coluna que indica IFC/IFPC em cada linha ou use Fontes com nomes que identifiquem o tipo.
-3. Execute. A V1 é sempre original, com fator 1, e é publicada no histórico. O Resumo direto mantém seu fluxo anterior.
-4. Abra **Revisão de inventário**, ou clique com o botão direito na versão nos Conteúdos.
-5. Abra as tabelas de árvores e parcelas para avaliar o resultado. Se não for necessário corrigir, aprove a V1.
-6. Para corrigir, preencha fatores entre 0 e 1 na grade. Também é possível exportar a tabela de fatores, preenchê-la no Excel e importá-la. Não altere o ID de origem, nível ou códigos.
-7. Clique em **Criar nova versão corrigida**. O app sempre aplica o fator ao VTCC da V1, nunca ao volume já corrigido. Alturas e suas informações de ajuste são reaproveitadas.
-8. A aprovação usa o usuário do Windows; qualquer usuário pode aprovar nesta versão. Só uma aprovação fica vigente por inventário. Aprovações anteriores continuam no histórico.
-9. Selecione as abas e exporte o Excel da versão aprovada vigente. A aba PROCESSAMENTO identifica a versão, o responsável e a aprovação e acompanha o arquivo.
+1. Salve o projeto. Confira os mapeamentos e as chaves de árvore/parcela em **Configurações > Identificação**.
+2. No Processador, selecione **Inventário com revisão e aprovação**, indique IFC, IFPC ou MISTO e execute.
+3. O resultado original V1 é publicado em **Aguardando revisão**. Abra **Revisão de inventário**, selecione essa versão e clique em **Iniciar revisão**.
+4. Consulte as tabelas por árvore e parcela. Para aceitar o resultado operacional sem ajuste, aprove a versão.
+5. Para pedir uma correção, informe a justificativa e clique em **Solicitar ajustes**. O motivo fica no histórico da versão.
+6. Na versão devolvida, selecione o escopo por talhão ou lote e o método do fator:
+   - **Manual:** informe a fração de aproveitamento entre 0 e 1.
+   - **Calculado:** informe o volume operacional observado em m³ por grupo. O fator é calculado como volume observado dividido pelo VTCC inventariado. Valores acima de 1 são aceitos e destacados para conferência.
+7. Informe a justificativa do ajuste e clique em **Criar versão corrigida e reenviar**. A nova versão usa sempre a V1 como base e volta para **Aguardando revisão**. Ela preserva os volumes inventariados, registra os fatores e acrescenta colunas de volume operacional; DAP e altura não são alterados.
+8. Inicie a revisão da versão nova e aprove somente quando estiver pronta. A aprovação exige a versão mais recente e não permite fatores editados ainda não publicados.
+9. Exporte o Excel somente da versão aprovada vigente. A aba PROCESSAMENTO acompanha a versão, o método, o responsável e a aprovação.
+
+### Volumes estimados pelo taper
+
+No mesmo Processador, habilite **Calcular volumes pelo ajuste de taper**, selecione um conjunto salvo com status OK e configure altura do toco, comprimento máximo e mínimo das toras, Dmin e descarte da última tora curta. Para habilitar a comparação com VTCC/VCCC, confirme que os diâmetros usados no ajuste foram medidos com casca. Em ajustes estratificados, o processamento usa a coluna de estrato gravada no ajuste e exige esse cabeçalho nos inventários selecionados.
+
+O processamento grava por árvore e soma por parcela/grupo **Volume_Taper_Total_m3** (volume modelado acima do toco), **Volume_Taper_Comercial_m3** (volume das toras que atendem às regras configuradas) e as diferenças para VTCC e VCCC. Esses números são estimativas baseadas no perfil de taper e nas regras de seccionamento. Eles não substituem os volumes das equações nem definem ou aplicam o fator operacional. O conjunto de coeficientes e as regras são congelados no processamento para permitir revisão e reprodução posterior, tanto no modo com revisão quanto no resumo direto.
+
+O usuário do Windows é registrado no histórico, mas o DLB não aplica papéis de processador, revisor ou aprovador. Qualquer usuário com acesso ao projeto pode iniciar uma revisão e aprovar uma versão.
 
 ## Dados guardados
 
@@ -29,10 +39,10 @@ As áreas das parcelas são verificadas antes do cadastro, RNA e volumes, após 
 - Resultados por árvore e parcela de cada versão. As chaves são configuráveis. O padrão da árvore usa talhão, parcela, cova, fuste, fila e data; o da parcela usa talhão, parcela e data. Origem da base e tipo IFC/IFPC acompanham ambas. A opção de remover duplicadas mantém a primeira ocorrência e registra a quantidade removida; desmarcada, duplicatas impedem a publicação.
 - Parcelas com medições em datas diferentes ficam em linhas separadas, mesmo no mesmo ano.
 - IDs do inventário e processamento, número de versão, IFC/IFPC, usuário, datas, estado e eventos de aprovação.
-- VTCC original e corrigido e fator aplicado. Na parcela, o fator agregado é a razão entre os volumes corrigido e original quando o original é positivo.
+- VTCC inventariado e operacional, método e fator aplicado. As tabelas de árvores, parcelas e talhões preservam colunas de volume inventariado e volume operacional. Na parcela, o fator agregado é a razão entre os volumes operacional e inventariado quando o inventariado é positivo.
 - Entrada e configuração congeladas para recompor relatórios. Essas tabelas internas não aparecem nos seletores e na exportação.
 - A receita interna completa fica na V1. As revisões referenciam o original, evitando repetir a entrada e a configuração congeladas em todas as versões.
-- Revisões posteriores não substituem resultados anteriores. As tabelas históricas não aceitam remoção nem edição direta. Para análises com colunas adicionais, copie a tabela para outra tabela do projeto.
+- Revisões posteriores não substituem resultados anteriores. A linha do tempo não aceita ramificações: uma revisão deve partir da versão mais recente. As tabelas históricas não aceitam remoção nem edição direta. Para análises com colunas adicionais, copie a tabela para outra tabela do projeto.
 
 O histórico começa nas novas execuções completas. Resultados antigos continuam acessíveis como resultados legados; não é inventada uma configuração histórica que não tenha sido guardada.
 

@@ -53,10 +53,19 @@ public static class ProcessingCatalog
                 var records = catalog.Arr("records");
                 if (records.Any(r => r.S("id") == record.S("id"))) throw new InvalidDataException("Identificador de processamento já publicado.");
                 string family = record.S("family_id");
-                int next = records.Where(r => r.S("family_id") == family).Select(r => (int)r.N("number")).DefaultIfEmpty(0).Max() + 1;
+                var familyRecords = records.OfType<JsonObject>().Where(r => r.S("family_id") == family).ToArray();
+                int next = familyRecords.Select(r => (int)r.N("number")).DefaultIfEmpty(0).Max() + 1;
                 if (record.N("number") != next) throw new InvalidOperationException("Outro usuário publicou uma revisão desta base. Atualize o histórico e gere a nova versão novamente; os fatores preenchidos podem ser reaproveitados.");
-                if (next > 1 && !records.Any(r => r.S("id") == record.S("parent_id") && r.S("family_id") == family))
-                    throw new InvalidDataException("Versão de origem não encontrada.");
+                if (next > 1)
+                {
+                    var latest = familyRecords.SingleOrDefault(r => r.N("number") == next - 1);
+                    if (latest == null || latest.S("id") != record.S("parent_id"))
+                        throw new InvalidOperationException("Crie a revisão a partir da versão mais recente para manter uma única linha do tempo.");
+                    if (record.N("parent_revision", -1) != latest.N("revision"))
+                        throw new InvalidOperationException("A versão de origem foi atualizada por outra pessoa. Atualize o histórico e prepare a revisão novamente.");
+                    if (latest.S("status") is not ("em_revisao" or "ajustes_solicitados" or "em_analise"))
+                        throw new InvalidOperationException("A revisão só pode ser criada durante uma revisão ativa ou após uma solicitação de ajustes.");
+                }
                 cancellation.ThrowIfCancellationRequested();
                 catalog["database_path"] = Path.GetFileName(project);
                 records.Add(record.DeepClone());
@@ -66,13 +75,30 @@ public static class ProcessingCatalog
     public static JsonObject ChangeStatus(string project, JsonArray seed, string id, int expectedRevision, string status, string note = "",
         CancellationToken cancellation = default)
         => Update(project, seed, catalog => {
-            if (status is not ("em_analise" or "aprovado")) throw new InvalidDataException("Estado inválido.");
+            if (status is not ("em_revisao" or "ajustes_solicitados" or "aprovado")) throw new InvalidDataException("Estado inválido.");
             var record = catalog.Arr("records").OfType<JsonObject>().SingleOrDefault(r => r.S("id") == id)
                 ?? throw new InvalidDataException("Processamento não encontrado.");
             if (record.N("revision") != expectedRevision) throw new InvalidOperationException("Este processamento foi atualizado por outro usuário. Atualize o histórico antes de continuar.");
             if (record.S("status") == "aprovado") throw new InvalidOperationException("Uma versão aprovada é preservada. Crie uma revisão para aplicar novos fatores.");
+            string currentStatus = record.S("status");
+            bool legacyAwaitingReview = currentStatus is "processado" or "em_analise";
+            if (status == "em_revisao" && currentStatus is not ("aguardando_revisao" or "ajustes_solicitados") && !legacyAwaitingReview)
+                throw new InvalidOperationException("Somente uma versão aguardando revisão ou devolvida pode entrar em revisão.");
+            if (status == "ajustes_solicitados")
+            {
+                if (currentStatus != "em_revisao" && currentStatus != "em_analise")
+                    throw new InvalidOperationException("Inicie a revisão antes de solicitar ajustes.");
+                if (string.IsNullOrWhiteSpace(note)) throw new InvalidOperationException("Informe o motivo para devolver esta versão para ajustes.");
+            }
             if (status == "aprovado")
             {
+                if (currentStatus != "em_revisao" && !legacyAwaitingReview)
+                    throw new InvalidOperationException("Inicie a revisão antes de aprovar a versão.");
+                int latestNumber = catalog.Arr("records").OfType<JsonObject>()
+                    .Where(r => r.S("family_id") == record.S("family_id"))
+                    .Select(r => (int)r.N("number")).DefaultIfEmpty(0).Max();
+                if (record.N("number") != latestNumber)
+                    throw new InvalidOperationException("Apenas a versão mais recente pode ser aprovada. Revise a versão pendente mais nova.");
                 if (catalog.Arr("records").Any(r => r.S("family_id") == record.S("family_id") && r.B("current_approved") && r.N("number") > record.N("number")))
                     throw new InvalidOperationException("Já existe uma versão posterior aprovada. Crie uma nova revisão para alterar o resultado vigente.");
                 foreach (var older in catalog.Arr("records").OfType<JsonObject>().Where(r => r.S("family_id") == record.S("family_id")))
@@ -114,9 +140,10 @@ public static class ProcessingCatalog
         if (inventoryType is not ("IFC" or "IFPC" or "MISTO") || scope is not ("talhao" or "lote")) throw new InvalidDataException("Tipo de inventário ou nível de fator inválido.");
         string id = Guid.NewGuid().ToString("N");
         return new JsonObject { ["id"] = id, ["family_id"] = parent?.S("family_id") ?? id, ["parent_id"] = parent?.S("id") ?? "",
-            ["number"] = number, ["source_path"] = source, ["inventory_type"] = inventoryType, ["factor_scope"] = scope,
+            ["number"] = number, ["parent_revision"] = parent?.N("revision") ?? -1, ["source_path"] = source, ["inventory_type"] = inventoryType, ["factor_scope"] = scope,
             ["created"] = DateTimeOffset.Now.ToString("O"), ["user"] = User, ["machine"] = Environment.MachineName,
-            ["status"] = "processado", ["revision"] = 0, ["current_approved"] = false,
-            ["audit"] = new JsonArray(new JsonObject { ["status"] = "processado", ["user"] = User, ["at"] = DateTimeOffset.Now.ToString("O") }) };
+            ["status"] = "aguardando_revisao", ["revision"] = 0, ["current_approved"] = false,
+            ["factor_method"] = "manual",
+            ["audit"] = new JsonArray(new JsonObject { ["status"] = "aguardando_revisao", ["user"] = User, ["at"] = DateTimeOffset.Now.ToString("O") }) };
     }
 }

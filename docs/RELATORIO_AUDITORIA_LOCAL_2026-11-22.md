@@ -11,18 +11,18 @@ Foram aplicadas correções locais aos achados reproduzíveis. O resumo abaixo �
 - **Falha fatal:** exceções não tratadas passam a ser registradas e encerram o app com código de falha, em vez de manter a sessão num estado potencialmente inconsistente.
 - **CI:** workflow do instalador executa núcleo e WPF antes de empacotar, falha em caso de teste vermelho e publica logs/TRX como artefato de diagnóstico.
 - **DLB:** novo formato `DNDRDB05` cifra o catálogo e os blocos com AES-256-GCM. Uma chave de dados aleatória por arquivo é protegida por chave derivada da senha via PBKDF2-HMAC-SHA-256 (600.000 iterações). DLB legado segue legível e é migrado ao salvar, com substituição atômica. Não há recuperação de senha.
-- **Assinatura:** SignTool x64 foi localizado no Windows SDK; não há certificado de assinatura de código com chave privada nos repositórios de certificados verificados. Os artefatos ainda não são assinados e o atualizador ainda não autentica o publicador.
+- **Assinatura:** foi criado um certificado autoassinado de desenvolvimento com chave privada não exportável em `CurrentUser\My`. Ele serve para assinatura local, sem confiança pública. Os artefatos de distribuição ainda não são assinados e o atualizador ainda não autentica o publicador.
 
 ### Verificação após as correções
 
 - `dotnet build src/Dendro.Desktop/Dendro.Desktop.csproj -c Release --no-restore`: passou após remover a ponte, **0 avisos e 0 erros**.
-- `dotnet build DENDRO.slnx -c Release --no-restore`: passou, **0 avisos e 0 erros**.
-- `dotnet test tests/Dendro.Core.Tests/Dendro.Core.Tests.csproj -c Release --no-restore`: **251/251 passaram**; os testes focados de criptografia DLB e treinamento nativo passaram **11/11**.
+- `dotnet build DENDRO.slnx -c Release --no-restore`: passou após remover a interface de auditoria, **0 avisos e 0 erros**.
+- `dotnet test tests/Dendro.Core.Tests/Dendro.Core.Tests.csproj -c Release --no-restore`: **251/251 passaram** antes da remoção dos testes do ledger de auditoria; os testes focados de criptografia DLB e treinamento nativo passaram **11/11**. Não rodei a suíte novamente após a remoção da funcionalidade interna.
 - `scripts/desktop.ps1 -Test -NoBuild`: passou. Self-test WPF integrado: **216 verificações**; workflow: **61**; duplicadas: **7**; exclusão persistente: **25**; menus: **104**.
 - `--self-test-gis-contents`: **67 verificações aprovadas**; `--self-test-ui-results` e `--self-test-ui-layout` também passaram em execuções focadas.
 - O DLB autorizado foi aberto somente para leitura: **938.106.302 bytes**, catálogo v2, **94 conjuntos** e **30.181.198 linhas**. A leitura completa conferiu os hashes de todos os blocos e interpretou os metadados do projeto; o arquivo original não foi alterado. Isso demonstra integridade estrutural, não validação científica dos resultados.
 - A varredura de `ProcessStartInfo`/`Process.Start` não encontrou runtime Python/R nem subprocesso de computação no DendroLab. Permanecem dois usos de processo externos por propósito: abrir um link de copyright no navegador padrão e executar o instalador do atualizador após conferir o SHA-256 publicado no release. Esse hash detecta divergência no download, mas ainda não autentica quem publicou o release. `PickleData.cs` continua sendo um leitor C# inerte para modelos legados.
-- O SignTool localizado é `C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe`. Sem certificado com chave privada, não foi possível assinar nem verificar identidade do publicador. A revisão do mecanismo de atualização e a integração do certificado ao pipeline ainda precisam ser concluídas.
+- O SignTool localizado é `C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe`. O certificado autoassinado não autentica o publicador para usuários externos; integrar assinatura confiável ao pipeline depende da decisão futura sobre distribuição pela Microsoft Store ou certificado de autoridade pública.
 
 ### Onde Python é usado
 
@@ -153,9 +153,9 @@ O `MainWindow` fixa mínimos de 1050×680 (`MainWindow.xaml:14-17`) e usa `Math.
 | UX com usuários, leitores de tela e dispositivos pequenos | Não testado; riscos de layout/nome acessível identificados por inspeção |
 | Operação SaaS, RBAC multiusuário e agentes LLM 24/7 | Não aplicável ao checkout desktop atual; essa infraestrutura não existe |
 
-## Sistema de auditoria adicionado ao checkout
+## Auditoria do produto
 
-Foi adicionada uma central local que apresenta o catálogo inicial e registra o reconhecimento do catálogo. Ela não executa os módulos nem valida cálculos. O ledger local de achados/recomendações é separado dos projetos `.dlb`. A central abre por botão no ribbon e não exige abrir um projeto. O fluxo de inferência por IA, a execução automática de testes e as decisões de aprovação ainda não estão implementados.
+A interface experimental de catálogo/registro foi removida do DendroLab. Auditorias, agentes e decisões de desenvolvimento permanecem no fluxo externo; usuários do aplicativo não veem estados internos de validação.
 
 ## Próximas diretrizes recomendadas
 
